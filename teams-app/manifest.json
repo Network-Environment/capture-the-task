@@ -2,7 +2,7 @@
   "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
   "manifestVersion": "1.17",
   "version": "0.1.0",
-  "id": "REPLACE-WITH-BOT-APP-ID",
+  "id": "5d8a8dca-c7d4-40e4-af8f-cebacab9c739",
   "developer": {
     "name": "Tristan Energy",
     "websiteUrl": "https://example.com",
@@ -18,7 +18,7 @@
   "accentColor": "#2D6A4F",
   "bots": [
     {
-      "botId": "REPLACE-WITH-BOT-APP-ID",
+      "botId": "5d8a8dca-c7d4-40e4-af8f-cebacab9c739",
       "scopes": ["personal"],
       "supportsFiles": true,
       "isNotificationOnly": false
