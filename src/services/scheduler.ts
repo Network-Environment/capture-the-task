@@ -34,7 +34,9 @@ export function computeNextRun(cron?: string, runOnce?: string, from = new Date(
   if (runOnce) return new Date(runOnce).toISOString();
   if (!cron) throw new Error("job needs cron or runOnce");
   const it = CronExpressionParser.parse(cron, { currentDate: from, tz: TZ });
-  return it.next().toISOString();
+  const next = it.next().toISOString();
+  if (!next) throw new Error(`cron expression has no next occurrence: ${cron}`);
+  return next;
 }
 
 export async function scheduleJob(

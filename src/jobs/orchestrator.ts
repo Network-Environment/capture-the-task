@@ -69,7 +69,7 @@ async function claim(job: Job & { _etag?: string }): Promise<Job | null> {
 
 async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Promise<void> {
   console.log(`[orchestrator] running ${job.id} (${job.name})`);
-  const retryCount = Number((job as Record<string, unknown>).retryCount ?? 0);
+  const retryCount = Number((job as unknown as Record<string, unknown>).retryCount ?? 0);
   try {
     const result = await runAgent(
       { userId: job.userId, conversationRef: job.conversationRef },

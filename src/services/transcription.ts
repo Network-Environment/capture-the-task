@@ -19,7 +19,7 @@ export async function downloadAudio(audioUrl: string, bearerToken?: string): Pro
 export async function transcribeBuffer(audioBytes: Buffer): Promise<string> {
   const form = new FormData();
   form.append("definition", JSON.stringify({ locales: ["en-US"], profanityFilterMode: "None" }));
-  form.append("audio", new Blob([audioBytes]), "memo.m4a");
+  form.append("audio", new Blob([new Uint8Array(audioBytes)]), "memo.m4a");
 
   const res = await fetch(
     `https://${REGION}.api.cognitive.microsoft.com/speechtotext/transcriptions:transcribe?api-version=2024-11-15`,
