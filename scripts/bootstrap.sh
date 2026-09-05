@@ -7,8 +7,9 @@
 # What it creates:
 #   1. Bot app registration (single-tenant) + client secret
 #      - Graph delegated permission Tasks.ReadWrite (for Microsoft To Do)
-#   2. CI app registration for GitHub Actions with OIDC federated credential
-#      (no secret) + Contributor role on the resource group
+#   2. CI app registration for GitHub Actions with OIDC federated credentials
+#      (no secret) for BOTH subject formats GitHub may present
+#      (name-based and org@id/repo@id) + Contributor on the resource group
 #   3. Resource group (so the role assignment has a target)
 #   4. Patched copies of teams-app/manifest.json and .env with real IDs
 #
@@ -115,27 +116,95 @@ CI_APP_ID=$(get_or_create_app "$CI_APP_NAME")
 az ad sp show --id "$CI_APP_ID" >/dev/null 2>&1 || az ad sp create --id "$CI_APP_ID" >/dev/null
 CI_APP_OBJECT_ID=$(az ad app show --id "$CI_APP_ID" --query id -o tsv)
 
-# Federated credential bound to the repo's `production` environment
-FC_NAME="github-${GITHUB_ENV_NAME}"
-if ! az ad app federated-credential show --id "$CI_APP_OBJECT_ID" --federated-credential-id "$FC_NAME" >/dev/null 2>&1; then
-  az ad app federated-credential create --id "$CI_APP_OBJECT_ID" --parameters "{
-    \"name\": \"$FC_NAME\",
-    \"issuer\": \"https://token.actions.githubusercontent.com\",
-    \"subject\": \"repo:${GITHUB_REPO}:environment:${GITHUB_ENV_NAME}\",
-    \"audiences\": [\"api://AzureADTokenExchange\"]
-  }" -o none
-  echo "federated credential created for repo:${GITHUB_REPO}:environment:${GITHUB_ENV_NAME}"
-else
-  echo "federated credential already exists"
+# Wait for the service principal to replicate — assigning by appId in the
+# seconds after create is what produced "No subscriptions found" (login
+# succeeded, RBAC saw nothing) on the first pipeline run.
+CI_SP_OBJECT_ID=""
+for i in $(seq 1 12); do
+  CI_SP_OBJECT_ID=$(az ad sp show --id "$CI_APP_ID" --query id -o tsv 2>/dev/null || true)
+  if [[ -n "$CI_SP_OBJECT_ID" ]]; then
+    break
+  fi
+  echo "waiting for CI service principal to replicate ($i/12)..."
+  sleep 5
+done
+if [[ -z "$CI_SP_OBJECT_ID" ]]; then
+  echo "ERROR: CI service principal never became visible. Re-run this script." >&2
+  exit 1
 fi
 
-# Contributor on the resource group only (least privilege for the pipeline)
-az role assignment create \
-  --assignee "$CI_APP_ID" \
-  --role Contributor \
-  --scope "/subscriptions/${SUB_ID}/resourceGroups/${RG}" \
-  --only-show-errors -o none 2>/dev/null || echo "role assignment already exists"
-echo "Contributor granted on $RG"
+# GitHub Actions may present either the name-based subject or the immutable
+# org@id/repo@id form. Create both so azure/login succeeds either way.
+ensure_federated_credential() {
+  local name="$1"
+  local subject="$2"
+  if az ad app federated-credential show --id "$CI_APP_OBJECT_ID" --federated-credential-id "$name" >/dev/null 2>&1; then
+    echo "federated credential '$name' already exists"
+    return 0
+  fi
+  local existing
+  existing=$(az ad app federated-credential list --id "$CI_APP_OBJECT_ID" \
+    --query "[?subject=='${subject}'].name | [0]" -o tsv)
+  if [[ -n "$existing" ]]; then
+    echo "federated credential for subject already exists as '$existing'"
+    return 0
+  fi
+  az ad app federated-credential create --id "$CI_APP_OBJECT_ID" --parameters "{
+    \"name\": \"$name\",
+    \"issuer\": \"https://token.actions.githubusercontent.com\",
+    \"subject\": \"$subject\",
+    \"audiences\": [\"api://AzureADTokenExchange\"]
+  }" -o none
+  echo "federated credential created: $subject"
+}
+
+ensure_federated_credential \
+  "github-${GITHUB_ENV_NAME}" \
+  "repo:${GITHUB_REPO}:environment:${GITHUB_ENV_NAME}"
+
+GH_OWNER_ID=""
+GH_REPO_ID=""
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  GH_OWNER_ID=$(gh api "repos/${GITHUB_REPO}" --jq .owner.id)
+  GH_REPO_ID=$(gh api "repos/${GITHUB_REPO}" --jq .id)
+else
+  GH_JSON=$(curl -fsS "https://api.github.com/repos/${GITHUB_REPO}" 2>/dev/null || true)
+  if [[ -n "$GH_JSON" ]] && command -v node >/dev/null 2>&1; then
+    GH_OWNER_ID=$(printf '%s' "$GH_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const j=JSON.parse(d);process.stdout.write(String(j.owner.id))})")
+    GH_REPO_ID=$(printf '%s' "$GH_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const j=JSON.parse(d);process.stdout.write(String(j.id))})")
+  fi
+fi
+if [[ -n "$GH_OWNER_ID" && -n "$GH_REPO_ID" ]]; then
+  OWNER="${GITHUB_REPO%%/*}"
+  REPO="${GITHUB_REPO##*/}"
+  ensure_federated_credential \
+    "github-${GITHUB_ENV_NAME}-ids" \
+    "repo:${OWNER}@${GH_OWNER_ID}/${REPO}@${GH_REPO_ID}:environment:${GITHUB_ENV_NAME}"
+else
+  echo "WARNING: could not resolve GitHub org/repo numeric IDs."
+  echo "  If azure/login later fails with AADSTS700213, add a second federated"
+  echo "  credential whose subject matches the claim GitHub printed in the log"
+  echo "  (repo:Org@NNNN/repo@NNNN:environment:${GITHUB_ENV_NAME})."
+fi
+
+# Contributor on the resource group only. Assign by object id so we do not
+# race Entra lookup-by-appId. Fail loud — do not mask errors as "already exists".
+SCOPE="/subscriptions/${SUB_ID}/resourceGroups/${RG}"
+EXISTING_RA=$(az role assignment list \
+  --assignee-object-id "$CI_SP_OBJECT_ID" \
+  --scope "$SCOPE" \
+  --query "[?roleDefinitionName=='Contributor'].id | [0]" -o tsv)
+if [[ -n "$EXISTING_RA" ]]; then
+  echo "Contributor already assigned on $RG"
+else
+  az role assignment create \
+    --assignee-object-id "$CI_SP_OBJECT_ID" \
+    --assignee-principal-type ServicePrincipal \
+    --role Contributor \
+    --scope "$SCOPE" \
+    --only-show-errors -o none
+  echo "Contributor granted on $RG"
+fi
 
 # -----------------------------------------------------------------------------
 # 4. Admin identity (for alerts) — your own object id
