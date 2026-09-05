@@ -40,9 +40,12 @@ param dailyTokenBudget string = '5000000'
 @description('Cron timezone for scheduled jobs')
 param jobsTimezone string = 'America/Chicago'
 
-@description('App Service plan SKU. New subscriptions often have 0 quota for B1; F1 (Free) deploys without a quota request. B1+ enables alwaysOn (needed for the Photon stream and 60s job poller to stay warm).')
-@allowed(['F1', 'B1', 'B2', 'S1', 'P0v3', 'P1v3'])
-param planSku string = 'F1'
+@description('Region for the App Service plan and web app only. Kept separate from `location` because App Service SKU quota is granted per region: this subscription has 0 quota for every Basic/Free SKU in eastus, but centralus and westus2 allow any SKU. Move back to `location` once an eastus B1 quota request is approved.')
+param appLocation string = location
+
+@description('App Service plan SKU. F1 (Free) forces alwaysOn off, which stops the 60s job poller and the Photon stream from staying warm.')
+@allowed(['F1', 'B1', 'B2', 'S1', 'P0v4', 'P1v4'])
+param planSku string = 'B1'
 
 var planAlwaysOn = planSku != 'F1'
 
@@ -255,14 +258,14 @@ resource depEmbed 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' 
 // ---------- App Service ----------
 resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: 'plan-${appName}'
-  location: location
+  location: appLocation
   sku: { name: planSku }
   properties: { reserved: true } // linux
 }
 
 resource app 'Microsoft.Web/sites@2024-04-01' = {
   name: 'app-${appName}-${suffix}'
-  location: location
+  location: appLocation
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
