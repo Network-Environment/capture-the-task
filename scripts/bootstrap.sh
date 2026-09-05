@@ -100,7 +100,53 @@ az ad app update --id "$BOT_APP_ID" \
 echo "OAuth redirect URI set"
 
 # -----------------------------------------------------------------------------
-# 2. Resource group (needed as role-assignment scope before infra deploys)
+# 2. Resource providers. A new subscription has most of these unregistered, and
+# ARM preflight does NOT catch it — the Bicep deploy fails partway through with
+# MissingSubscriptionRegistration. Registering is idempotent and free.
+# -----------------------------------------------------------------------------
+echo
+echo "== Resource providers =="
+RPS=(
+  Microsoft.Web              # App Service plan + site
+  Microsoft.Storage          # notes blobs
+  Microsoft.DocumentDB       # Cosmos
+  Microsoft.CognitiveServices # Speech + Foundry models
+  Microsoft.Insights         # App Insights
+  Microsoft.BotService       # Azure Bot + Teams channel
+)
+PENDING=()
+for rp in "${RPS[@]}"; do
+  state=$(az provider show -n "$rp" --query registrationState -o tsv 2>/dev/null || echo "NotRegistered")
+  if [[ "$state" == "Registered" ]]; then
+    echo "  $rp already registered"
+  else
+    az provider register -n "$rp" --only-show-errors >/dev/null
+    PENDING+=("$rp")
+    echo "  $rp registering..."
+  fi
+done
+for i in $(seq 1 30); do
+  [[ ${#PENDING[@]} -eq 0 ]] && break
+  STILL=()
+  for rp in "${PENDING[@]}"; do
+    state=$(az provider show -n "$rp" --query registrationState -o tsv 2>/dev/null || echo "")
+    if [[ "$state" == "Registered" ]]; then
+      echo "  $rp registered"
+    else
+      STILL+=("$rp")
+    fi
+  done
+  PENDING=("${STILL[@]}")
+  [[ ${#PENDING[@]} -eq 0 ]] && break
+  sleep 10
+done
+if [[ ${#PENDING[@]} -gt 0 ]]; then
+  echo "WARNING: still registering: ${PENDING[*]}"
+  echo "  Deploy may fail with MissingSubscriptionRegistration; re-run the pipeline once they finish."
+fi
+
+# -----------------------------------------------------------------------------
+# 2b. Resource group (needed as role-assignment scope before infra deploys)
 # -----------------------------------------------------------------------------
 echo
 echo "== Resource group =="
