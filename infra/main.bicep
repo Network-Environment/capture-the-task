@@ -40,6 +40,12 @@ param dailyTokenBudget string = '5000000'
 @description('Cron timezone for scheduled jobs')
 param jobsTimezone string = 'America/Chicago'
 
+@description('App Service plan SKU. New subscriptions often have 0 quota for B1; F1 (Free) deploys without a quota request. B1+ enables alwaysOn (needed for the Photon stream and 60s job poller to stay warm).')
+@allowed(['F1', 'B1', 'B2', 'S1', 'P0v3', 'P1v3'])
+param planSku string = 'F1'
+
+var planAlwaysOn = planSku != 'F1'
+
 // ---- Model deployments created in Foundry. Verify names/versions in your region's model catalog. ----
 // Claude models must be deployed via the Foundry portal today; set CHAT deployments to their names afterward.
 param cheapModelName string = 'gpt-5-mini'
@@ -250,7 +256,7 @@ resource depEmbed 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' 
 resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: 'plan-${appName}'
   location: location
-  sku: { name: 'B1' }
+  sku: { name: planSku }
   properties: { reserved: true } // linux
 }
 
@@ -262,7 +268,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
     httpsOnly: true
     siteConfig: {
       linuxFxVersion: 'NODE|20-lts'
-      alwaysOn: true
+      alwaysOn: planAlwaysOn
       appCommandLine: 'node dist/index.js'
       appSettings: [
         // --- Bot identity ---
