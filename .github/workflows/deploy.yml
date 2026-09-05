@@ -28,7 +28,7 @@ jobs:
       - run: npm prune --omit=dev
       - name: Package
         run: zip -rq app.zip dist node_modules config package.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: app
           path: app.zip
