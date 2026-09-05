@@ -1,0 +1,20 @@
+{
+  "routes": {
+    "triage":    { "deployment": "CHEAP_DEPLOYMENT",   "maxTokens": 600,  "temperature": 0 },
+    "agent":     { "deployment": "STANDARD_DEPLOYMENT","maxTokens": 1500, "temperature": 0 },
+    "synthesis": { "deployment": "STANDARD_DEPLOYMENT","maxTokens": 1200, "temperature": 0.3 },
+    "digest":    { "deployment": "PREMIUM_DEPLOYMENT", "maxTokens": 2500, "temperature": 0.3 }
+  },
+  "escalation": {
+    "from": "triage",
+    "to": "agent",
+    "on": ["parse_failure", "low_confidence"]
+  },
+  "_notes": [
+    "Values name env vars that hold Foundry deployment names, so swapping",
+    "models is an app-setting change, not a deploy.",
+    "Suggested mapping: CHEAP=Haiku-4.5 or gpt-5-mini class, STANDARD=Sonnet-5",
+    "or gpt-5 class, PREMIUM=Opus-5 class (weekly digests only).",
+    "Triage runs on every capture — that is where cheap routing pays for itself."
+  ]
+}

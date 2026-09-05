@@ -1,0 +1,31 @@
+{
+  "servers": [
+    {
+      "name": "smartsheet",
+      "transport": "http",
+      "url": "https://mcp.smartsheet.com",
+      "authEnv": "SMARTSHEET_API_TOKEN",
+      "enabled": true,
+      "allowTools": [
+        "search",
+        "get_sheet",
+        "get_sheet_summary",
+        "add_rows",
+        "update_rows",
+        "list_workspaces"
+      ],
+      "description": "PMO tool. Sheets, rows, project data.",
+      "confirmTools": [
+        "add_rows",
+        "update_rows"
+      ]
+    }
+  ],
+  "_notes": [
+    "Add an integration = add an entry here. No code changes.",
+    "authEnv names the env var holding the bearer token.",
+    "allowTools is an allowlist \u2014 omit it to expose every tool the server offers.",
+    "Keep allowlists tight on write-capable servers; the agent can call anything listed.",
+    "confirmTools: write-capable tools parked for human approval before execution."
+  ]
+}

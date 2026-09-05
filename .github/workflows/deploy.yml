@@ -1,0 +1,110 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC federation to Azure — no stored secrets/credentials
+  contents: read
+
+env:
+  RESOURCE_GROUP: rg-taskbrain
+  NODE_VERSION: "20"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm prune --omit=dev
+      - name: Package
+        run: zip -rq app.zip dist node_modules config package.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app
+          path: app.zip
+
+  infra:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy Bicep (infra + all runtime app settings + model deployments)
+        env:
+          # Required (from scripts/bootstrap.sh output)
+          BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+          BOT_APP_PASSWORD: ${{ secrets.BOT_APP_PASSWORD }}
+          ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+          ADMIN_AAD_OBJECT_ID: ${{ secrets.ADMIN_AAD_OBJECT_ID }}
+          # Optional integrations — leave unset to disable
+          SMARTSHEET_API_TOKEN: ${{ secrets.SMARTSHEET_API_TOKEN }}
+          SPECTRUM_PROJECT_ID: ${{ secrets.SPECTRUM_PROJECT_ID }}
+          SPECTRUM_PROJECT_SECRET: ${{ secrets.SPECTRUM_PROJECT_SECRET }}
+        run: |
+          test -n "$BOT_APP_ID" -a -n "$BOT_APP_PASSWORD" -a -n "$ADMIN_KEY" || { echo "missing required secrets (BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_KEY) — run scripts/bootstrap.sh"; exit 1; }
+          az deployment group create \
+            -g $RESOURCE_GROUP \
+            -f infra/main.bicep \
+            --mode Incremental \
+            -p appName=taskbrain \
+               botAppId="$BOT_APP_ID" \
+               botAppPassword="$BOT_APP_PASSWORD" \
+               adminKey="$ADMIN_KEY" \
+               adminAadObjectId="$ADMIN_AAD_OBJECT_ID" \
+               smartsheetApiToken="$SMARTSHEET_API_TOKEN" \
+               spectrumProjectId="$SPECTRUM_PROJECT_ID" \
+               spectrumProjectSecret="$SPECTRUM_PROJECT_SECRET" 
+
+  deploy:
+    needs: [build, infra]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: app
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Resolve app name
+        id: app
+        run: |
+          NAME=$(az webapp list -g $RESOURCE_GROUP --query "[?starts_with(name,'app-taskbrain')].name | [0]" -o tsv)
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+      - name: Deploy package
+        run: az webapp deploy -g $RESOURCE_GROUP -n ${{ steps.app.outputs.name }} --src-path app.zip --type zip
+      - name: Smoke test (retries while the app warms up)
+        run: |
+          for i in $(seq 1 12); do
+            if curl -sf https://${{ steps.app.outputs.name }}.azurewebsites.net/healthz; then echo; echo "healthy"; exit 0; fi
+            echo "waiting ($i/12)..."; sleep 10
+          done
+          echo "app did not become healthy"; exit 1
+
+# Setup (one-time):
+# 1. Entra app registration for CI with federated credential:
+#    subject: repo:<org>/<repo>:environment:production
+# 2. Grant it Contributor on rg-taskbrain.
+# 3. Repo secrets (bootstrap.sh prints them, or sets them with `gh` if installed):
+#    required: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+#              BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_KEY, ADMIN_AAD_OBJECT_ID
+#    optional: SMARTSHEET_API_TOKEN, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET
+# 4. Everything else (Cosmos/Storage/Speech/Foundry keys and endpoints, model
+#    deployment names) is wired by Bicep into App Service settings on deploy.
+#    Nothing runtime lives in the repo.

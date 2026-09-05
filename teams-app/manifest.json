@@ -1,0 +1,29 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "0.1.0",
+  "id": "REPLACE-WITH-BOT-APP-ID",
+  "developer": {
+    "name": "Tristan Energy",
+    "websiteUrl": "https://example.com",
+    "privacyUrl": "https://example.com/privacy",
+    "termsOfUseUrl": "https://example.com/terms"
+  },
+  "name": { "short": "TaskBrain", "full": "TaskBrain — capture anything" },
+  "description": {
+    "short": "Voice/text capture into your second brain",
+    "full": "Send TaskBrain a voice memo or a thought. It transcribes, classifies, files tasks to Microsoft To Do, stores ideas as linked markdown notes in Azure, and recalls anything on request."
+  },
+  "icons": { "color": "color.png", "outline": "outline.png" },
+  "accentColor": "#2D6A4F",
+  "bots": [
+    {
+      "botId": "REPLACE-WITH-BOT-APP-ID",
+      "scopes": ["personal"],
+      "supportsFiles": true,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["token.botframework.com"]
+}
