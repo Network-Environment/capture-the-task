@@ -5,16 +5,20 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
 permissions:
   id-token: write   # OIDC federation to Azure — no stored secrets/credentials
   contents: read
 
 env:
   RESOURCE_GROUP: rg-taskbrain
-  NODE_VERSION: "20"
+  NODE_VERSION: "22"
 
 jobs:
-  build:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,17 +29,13 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - run: npm prune --omit=dev
-      - name: Package
-        run: zip -rq app.zip dist node_modules config package.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: app
-          path: app.zip
 
   infra:
     runs-on: ubuntu-latest
     environment: production
+    outputs:
+      app-name: ${{ steps.deploy.outputs.app-name }}
+      registry-name: ${{ steps.deploy.outputs.registry-name }}
     steps:
       - uses: actions/checkout@v4
       - uses: azure/login@v2
@@ -43,7 +43,8 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Deploy Bicep (infra + all runtime app settings + model deployments)
+      - name: Deploy Bicep (infra + runtime settings + container registry)
+        id: deploy
         env:
           # Required (from scripts/bootstrap.sh output)
           BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
@@ -56,13 +57,16 @@ jobs:
           SPECTRUM_PROJECT_SECRET: ${{ secrets.SPECTRUM_PROJECT_SECRET }}
         run: |
           test -n "$BOT_APP_ID" -a -n "$BOT_APP_PASSWORD" -a -n "$ADMIN_KEY" || { echo "missing required secrets (BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_KEY) — run scripts/bootstrap.sh"; exit 1; }
-          az deployment group create \
+          OUTPUTS=$(az deployment group create \
             -g $RESOURCE_GROUP \
             -f infra/main.bicep \
             --mode Incremental \
+            --query properties.outputs \
+            -o json \
             -p appName=taskbrain \
                planSku=B1 \
                appLocation=centralus \
+               containerImageTag="${GITHUB_SHA}" \
                cheapModelName=gpt-4.1-mini \
                cheapModelVersion=2025-04-14 \
                standardModelName=gpt-5-mini \
@@ -73,44 +77,53 @@ jobs:
                adminAadObjectId="$ADMIN_AAD_OBJECT_ID" \
                smartsheetApiToken="$SMARTSHEET_API_TOKEN" \
                spectrumProjectId="$SPECTRUM_PROJECT_ID" \
-               spectrumProjectSecret="$SPECTRUM_PROJECT_SECRET" 
+               spectrumProjectSecret="$SPECTRUM_PROJECT_SECRET")
+          echo "app-name=$(jq -r '.appName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
+          echo "registry-name=$(jq -r '.registryName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
 
   deploy:
-    needs: [build, infra]
+    needs: [validate, infra]
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: app
+      - uses: actions/checkout@v4
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Resolve app name
-        id: app
+      - name: Build and push immutable image in ACR
         run: |
-          NAME=$(az webapp list -g $RESOURCE_GROUP --query "[?starts_with(name,'app-taskbrain')].name | [0]" -o tsv)
-          echo "name=$NAME" >> $GITHUB_OUTPUT
-      - name: Deploy package
-        run: az webapp deploy -g $RESOURCE_GROUP -n ${{ steps.app.outputs.name }} --src-path app.zip --type zip
-      - name: Smoke test (retries while the app warms up)
+          az acr build \
+            --registry "${{ needs.infra.outputs.registry-name }}" \
+            --image "taskbrain:${GITHUB_SHA}" \
+            --image "taskbrain:latest" \
+            --file Dockerfile \
+            .
+      - name: Restart App Service onto the new image
+        run: az webapp restart -g "$RESOURCE_GROUP" -n "${{ needs.infra.outputs.app-name }}"
+      - name: Smoke test (retries while App Service pulls the image)
         run: |
-          for i in $(seq 1 12); do
-            if curl -sf https://${{ steps.app.outputs.name }}.azurewebsites.net/healthz; then echo; echo "healthy"; exit 0; fi
-            echo "waiting ($i/12)..."; sleep 10
+          for i in $(seq 1 30); do
+            if curl --connect-timeout 5 --max-time 10 -sf \
+              "https://${{ needs.infra.outputs.app-name }}.azurewebsites.net/healthz"; then
+              echo
+              echo "healthy on image ${GITHUB_SHA}"
+              exit 0
+            fi
+            echo "waiting for container ($i/30)..."
+            sleep 10
           done
           echo "app did not become healthy"; exit 1
 
 # Setup (one-time):
 # 1. Entra app registration for CI with federated credential:
 #    subject: repo:<org>/<repo>:environment:production
-# 2. Grant it Contributor on rg-taskbrain.
+# 2. Grant it Contributor, RBAC Administrator, ACR Tasks Contributor, and
+#    AcrPush on rg-taskbrain (bootstrap does this).
 # 3. Repo secrets (bootstrap.sh prints them, or sets them with `gh` if installed):
 #    required: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
 #              BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_KEY, ADMIN_AAD_OBJECT_ID
 #    optional: SMARTSHEET_API_TOKEN, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET
-# 4. Everything else (Cosmos/Storage/Speech/Foundry keys and endpoints, model
-#    deployment names) is wired by Bicep into App Service settings on deploy.
-#    Nothing runtime lives in the repo.
+# 4. Bicep creates a Basic ACR. The App Service system identity has AcrPull;
+#    CI builds in ACR via OIDC and deploys immutable Git SHA image tags.

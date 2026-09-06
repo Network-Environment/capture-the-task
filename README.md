@@ -92,15 +92,10 @@ teams-app/manifest.json    Teams app package
    bot app registration + secret + Graph consent, CI identity with GitHub
    OIDC federation + RBAC, resource group, and it patches manifest/.env and
    prints every value for GitHub secrets and App Service settings.
-1. `az deployment sub create -l eastus -f infra/main.bicep -p appName=taskbrain`
-2. Create model deployments in the Foundry resource: one chat model
-   (e.g. `gpt-5` or a Claude deployment) and `text-embedding-3-small`.
-3. Register the bot's Entra app; grant delegated Graph scope `Tasks.ReadWrite`
-   (admin consent) if you want To Do integration; add OAuth connection
-   `graph-connection` on the Bot Service.
-4. `cp .env.example .env`, fill values, `npm install && npm run build`,
-   deploy to the App Service (`az webapp deploy`).
-5. Zip `teams-app/` (manifest + icons) and upload via Teams admin center or
+1. Push to `main`: CI deploys Bicep (including Basic ACR, model deployments,
+   Bot OAuth, and App Service settings), builds an immutable image inside ACR,
+   restarts App Service onto that image, and checks `/healthz`.
+2. Zip `teams-app/` (manifest + icons) and upload via Teams admin center or
    sideload. Pin it. Send it a voice memo.
 
 ## Cost profile (personal scale, ~30 captures/day)
@@ -112,6 +107,7 @@ teams-app/manifest.json    Teams app package
 | Embeddings | <$1 |
 | Cosmos DB serverless + Blob | $5–15 |
 | App Service B1 (or Functions consumption ≈ $0) | $0–13 |
+| Azure Container Registry Basic | ~$5 |
 | Bot Service (standard channel, S1 free tier for Teams) | $0 |
 
 ## Later upgrades (designed-for, not built)
@@ -126,10 +122,11 @@ teams-app/manifest.json    Teams app package
 
 Source of truth is GitHub; `.github/workflows/deploy.yml` deploys on push to
 main using **OIDC federated credentials** (no service-principal secrets stored
-in GitHub). Pipeline: build/typecheck → Bicep incremental deploy → zip deploy
-to App Service → smoke test on /healthz. Runtime secrets live as App Service
-settings / Key Vault references, never in the repo. One-time setup steps are
-commented at the bottom of the workflow file.
+in GitHub). Pipeline: build/typecheck → Bicep incremental deploy → remote image
+build in ACR tagged with the Git SHA → App Service restart → `/healthz` smoke
+test. App Service pulls through managed identity (`AcrPull`); no registry
+password, application zip, Kudu extraction, or mutable deployment artifact is
+used. Runtime secrets live as App Service settings, never in the repo.
 
 ## Observability & admin
 

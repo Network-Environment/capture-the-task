@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Agentic voice/text capture bot for Teams with an Azure second brain",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",

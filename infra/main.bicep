@@ -49,6 +49,9 @@ param planSku string = 'B1'
 
 var planAlwaysOn = planSku != 'F1'
 
+@description('Immutable container tag deployed to App Service. CI passes the Git commit SHA.')
+param containerImageTag string = 'bootstrap'
+
 // ---- Model deployments created in Foundry. Verify names/versions in your region's model catalog. ----
 // New Pay-As-You-Go subscriptions often have 0 TPM for full gpt-5 / gpt-4.1 / gpt-4o.
 // Defaults here are the mini-class models that actually have quota so a first deploy
@@ -61,6 +64,17 @@ param embedModelName string = 'text-embedding-3-small'
 param embedModelVersion string = '1'
 
 var suffix = uniqueString(resourceGroup().id)
+
+// ---------- Container registry ----------
+resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+  name: 'acr${appName}${suffix}'
+  location: location
+  sku: { name: 'Basic' }
+  properties: {
+    adminUserEnabled: false
+    publicNetworkAccess: 'Enabled'
+  }
+}
 
 // ---------- Storage: markdown notes (the portable brain) ----------
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
@@ -279,9 +293,9 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
     serverFarmId: plan.id
     httpsOnly: true
     siteConfig: {
-      linuxFxVersion: 'NODE|20-lts'
+      linuxFxVersion: 'DOCKER|${registry.properties.loginServer}/taskbrain:${containerImageTag}'
+      acrUseManagedIdentityCreds: true
       alwaysOn: planAlwaysOn
-      appCommandLine: 'node dist/index.js'
       appSettings: [
         // --- Bot identity ---
         { name: 'MicrosoftAppType', value: 'SingleTenant' }
@@ -315,14 +329,26 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'DAILY_TOKEN_BUDGET', value: dailyTokenBudget }
         { name: 'JOBS_TIMEZONE', value: jobsTimezone }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
-        // No WEBSITE_RUN_FROM_PACKAGE: the '1' form is Windows-only. On Linux it
-        // makes zip deploy park the package in /home/data/SitePackages without
-        // mounting it, leaving wwwroot empty and node dist/index.js unresolvable.
-        { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'false' }
+        { name: 'WEBSITES_PORT', value: '3978' }
       ]
     }
   }
   identity: { type: 'SystemAssigned' }
+}
+
+// App Service pulls from ACR without registry credentials or stored secrets.
+var acrPullRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+)
+resource appAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, app.id, acrPullRoleId)
+  scope: registry
+  properties: {
+    roleDefinitionId: acrPullRoleId
+    principalId: app.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
 }
 
 // ---------- Bot Service ----------
@@ -370,6 +396,9 @@ resource graphConnection 'Microsoft.BotService/botServices/connections@2023-09-1
 }
 
 output appHostname string = app.properties.defaultHostName
+output appName string = app.name
+output registryName string = registry.name
+output registryLoginServer string = registry.properties.loginServer
 output storageAccount string = storage.name
 output cosmosAccount string = cosmos.name
 output speechEndpoint string = speech.properties.endpoint

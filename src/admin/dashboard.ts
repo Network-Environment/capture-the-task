@@ -7,7 +7,7 @@
  * renders. If you outgrow it, the same queries feed a React artifact or a
  * Workbook — the data layer doesn't change.
  */
-import { Request, Response, Next } from "restify";
+import { Request, Response } from "restify";
 import { dayStats, recentEvents } from "../services/activityLog";
 import { CosmosClient } from "@azure/cosmos";
 
@@ -17,11 +17,11 @@ const cosmos = new CosmosClient({
 });
 const db = cosmos.database(process.env.COSMOS_DB ?? "taskbrain");
 
-export async function adminPage(req: Request, res: Response, next: Next): Promise<void> {
+export async function adminPage(req: Request, res: Response): Promise<void> {
   const key = (req.query?.key as string) ?? req.header("x-admin-key");
   if (!process.env.ADMIN_KEY || key !== process.env.ADMIN_KEY) {
     res.send(401, "unauthorized");
-    return next();
+    return;
   }
 
   const [stats, events, jobs, lessons] = await Promise.all([
@@ -65,7 +65,6 @@ export async function adminPage(req: Request, res: Response, next: Next): Promis
   res.sendRaw(200, html(stats, modelRows, jobRows, lessonRows, eventRows), {
     "Content-Type": "text/html",
   });
-  return next();
 }
 
 function esc(s: string): string {

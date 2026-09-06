@@ -1,0 +1,12 @@
+.git
+.github
+.cursor
+.env
+*.zip
+dist
+node_modules
+teams-app
+test
+scripts
+HANDBOOK.md
+README.md

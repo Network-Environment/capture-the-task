@@ -108,6 +108,7 @@ echo
 echo "== Resource providers =="
 RPS=(
   Microsoft.Web                    # App Service plan + site
+  Microsoft.ContainerRegistry      # application image registry + ACR Tasks
   Microsoft.Storage                # notes blobs
   Microsoft.DocumentDB             # Cosmos
   Microsoft.CognitiveServices      # Speech + Foundry (AIServices) models — there is no Microsoft.Foundry RP
@@ -235,24 +236,36 @@ else
   echo "  (repo:Org@NNNN/repo@NNNN:environment:${GITHUB_ENV_NAME})."
 fi
 
-# Contributor on the resource group only. Assign by object id so we do not
-# race Entra lookup-by-appId. Fail loud — do not mask errors as "already exists".
+# Contributor deploys resources. Role Based Access Control Administrator lets
+# Bicep grant the App Service managed identity AcrPull on the registry. ACR
+# Tasks Contributor runs remote builds; AcrPush publishes their resulting tags.
+# All roles are RG-scoped; CI cannot assign access outside this application.
+# Assign by object id so we do not race Entra lookup-by-appId.
 SCOPE="/subscriptions/${SUB_ID}/resourceGroups/${RG}"
-EXISTING_RA=$(az role assignment list \
-  --assignee-object-id "$CI_SP_OBJECT_ID" \
-  --scope "$SCOPE" \
-  --query "[?roleDefinitionName=='Contributor'].id | [0]" -o tsv)
-if [[ -n "$EXISTING_RA" ]]; then
-  echo "Contributor already assigned on $RG"
-else
+ensure_role_assignment() {
+  local role="$1"
+  local existing
+  existing=$(az role assignment list \
+    --assignee-object-id "$CI_SP_OBJECT_ID" \
+    --scope "$SCOPE" \
+    --query "[?roleDefinitionName=='${role}'].id | [0]" -o tsv)
+  if [[ -n "$existing" ]]; then
+    echo "$role already assigned on $RG"
+    return 0
+  fi
   az role assignment create \
     --assignee-object-id "$CI_SP_OBJECT_ID" \
     --assignee-principal-type ServicePrincipal \
-    --role Contributor \
+    --role "$role" \
     --scope "$SCOPE" \
     --only-show-errors -o none
-  echo "Contributor granted on $RG"
-fi
+  echo "$role granted on $RG"
+}
+
+ensure_role_assignment "Contributor"
+ensure_role_assignment "Role Based Access Control Administrator"
+ensure_role_assignment "Container Registry Tasks Contributor"
+ensure_role_assignment "AcrPush"
 
 # -----------------------------------------------------------------------------
 # 4. Admin identity (for alerts) — your own object id

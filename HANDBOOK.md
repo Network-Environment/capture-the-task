@@ -62,24 +62,26 @@ scripts/bootstrap.sh (once, out of band)
   └─ emits / sets GitHub secrets ──────────────────────────────┐
                                                                 ▼
 .github/workflows/deploy.yml (on push to main)
-  ├─ build → test → zip (dist + node_modules + config + package.json)
+  ├─ build → test
   ├─ az login via OIDC (AZURE_CLIENT_ID / TENANT / SUBSCRIPTION)
   ├─ Bicep deploy ← secrets: BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_KEY,
   │                 ADMIN_AAD_OBJECT_ID, [SMARTSHEET_API_TOKEN,
   │                 SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET]
   │     infra/main.bicep
-  │       ├─ creates every resource + 3 Foundry model deployments
+  │       ├─ creates every resource + 3 Foundry models + Basic ACR
+  │       ├─ gives the App Service system identity AcrPull on ACR
   │       └─ WRITES ALL APP SETTINGS: keys via listKeys() (Cosmos, Storage,
   │          Speech, Foundry), endpoints, deployment names, and the secrets
   │          above → the code's process.env is fully populated
-  ├─ zip deploy → App Service (alwaysOn, node dist/index.js)
+  ├─ az acr build → taskbrain:<git-sha> (build happens inside Azure)
+  ├─ App Service pulls the immutable image through managed identity
   └─ smoke test /healthz (retries)
                                                                 ▼
-runtime: src/config.ts loads /config/*.json from the deploy zip;
+runtime: src/config.ts loads /config/*.json from the container image;
          every process.env read in src/ has a Bicep-written setting.
 
-Manual after first deploy (cannot be scripted): Bot Service OAuth
-connection (Graph/To Do), Teams app package upload, Photon project setup.
+Manual after first deploy: Teams app package upload and Photon project setup.
+The Bot Service Graph OAuth connection is deployed by Bicep.
 ```
 
 ```
@@ -153,6 +155,7 @@ SCHEDULER — jobs-as-data
 | `config/agents.json` | agent profiles (persona, tools glob, route) |
 | `config/model.routes.json` | task classes → deployment env vars, escalation rule |
 | `infra/main.bicep` | all Azure resources |
+| `Dockerfile` | multi-stage production image (Node 22, non-root runtime) |
 | `scripts/bootstrap.sh` | one-time Entra/M365 setup (idempotent) |
 | `.github/workflows/deploy.yml` | CI/CD via OIDC |
 | `teams-app/manifest.json` | Teams app package (needs color.png 192², outline.png 32²) |
@@ -254,7 +257,7 @@ app setting.
 
 ## 4. Deploy runbook (exact order)
 
-**Prereqs:** az CLI 2.60+, Node 20, `gh` CLI (optional but recommended), an
+**Prereqs:** az CLI 2.60+, Node 22, `gh` CLI (optional but recommended), an
 account with Application Administrator + Owner on the subscription, a GitHub
 repo, org permission to upload Teams apps.
 
@@ -262,7 +265,8 @@ repo, org permission to upload Teams apps.
    `./scripts/bootstrap.sh <org>/<repo> rg-taskbrain eastus`
    Creates the bot app registration (+2-year secret, Graph Tasks.ReadWrite,
    admin consent, OAuth redirect), the CI app with GitHub OIDC federation and
-   Contributor on the RG, the resource group, and an admin key. Patches
+   Contributor + RBAC Administrator on the RG, required resource providers,
+   the resource group, and an admin key. Patches
    `teams-app/manifest.json` and `.env`. If `gh` is authenticated it sets all
    required GitHub secrets and creates the `production` environment; otherwise
    it prints them for you to paste. Idempotent; re-runs mint a new bot secret
@@ -270,30 +274,27 @@ repo, org permission to upload Teams apps.
 2. **Local sanity:** `npm ci && npx tsc --noEmit && npm test`. (Also
    review Bicep model params against your region's Foundry catalog.)
 3. **Push to `main`.** Pipeline: build → tests → OIDC login → Bicep (all
-   resources, three model deployments, every app setting) → zip deploy →
-   health check. The infra job fails fast if required secrets are missing.
-4. **Bot Service OAuth connection (one-time, portal):** bot resource →
-   Configuration → Add OAuth Connection: name `graph-connection`, provider
-   Azure Active Directory v2, bot app id/secret, your tenant, scope
-   `Tasks.ReadWrite`. Without it, tasks still save to the brain.
-5. **Teams package:** add `color.png` (192×192) and `outline.png` (32×32)
+   resources, ACR, three model deployments, every app setting, Bot OAuth) →
+   build an immutable image in ACR → App Service restart → health check.
+   No zip artifact or Kudu/OneDeploy extraction is involved.
+4. **Teams package:** add `color.png` (192×192) and `outline.png` (32×32)
    beside the patched manifest; zip the three at the root; Teams admin center →
    Manage apps → Upload new app; scope via app permission policy if desired.
-6. **iMessage via Photon (optional):** create a project at app.photon.codes,
+5. **iMessage via Photon (optional):** create a project at app.photon.codes,
    provision a line, add `SPECTRUM_PROJECT_ID` / `SPECTRUM_PROJECT_SECRET` as
    GitHub secrets (`gh secret set …`), fill `config/channels.json` identities
    (E.164 phone → Entra object id: `az ad user show --id user@domain --query
    id`), push. Logs show `[imessage] Photon stream connected`.
-7. **Smartsheet (optional):** add `SMARTSHEET_API_TOKEN` as a GitHub secret
+6. **Smartsheet (optional):** add `SMARTSHEET_API_TOKEN` as a GitHub secret
    and push. Tools appear as `smartsheet__*`.
-8. **Verify:** "hello" → welcome; a text task → To Do (or brain fallback); a
+7. **Verify:** "hello" → welcome; a text task → To Do (or brain fallback); a
    voice memo → transcribed capture; "what did I capture today?" → recall;
    "every Friday at 4 summarize open Smartsheet risks" → job scheduled;
    `/admin?key=$ADMIN_KEY` shows all of it.
 
-Ordering constraints: bootstrap before the first pipeline run (federated
-credential, RG, secrets); OAuth connection after the first infra deploy (needs
-the bot resource). Everything else is order-independent and re-runnable.
+Ordering constraint: bootstrap must run before the first pipeline
+(federated credential, RBAC, RG, providers, secrets). Everything else is
+order-independent and re-runnable.
 
 ## 5. Operations
 
