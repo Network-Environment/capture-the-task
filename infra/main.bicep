@@ -315,7 +315,9 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'DAILY_TOKEN_BUDGET', value: dailyTokenBudget }
         { name: 'JOBS_TIMEZONE', value: jobsTimezone }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
-        { name: 'WEBSITE_RUN_FROM_PACKAGE', value: '1' }
+        // No WEBSITE_RUN_FROM_PACKAGE: the '1' form is Windows-only. On Linux it
+        // makes zip deploy park the package in /home/data/SitePackages without
+        // mounting it, leaving wwwroot empty and node dist/index.js unresolvable.
         { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'false' }
       ]
     }
