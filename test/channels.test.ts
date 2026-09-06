@@ -8,7 +8,7 @@ test("unknown phone numbers resolve to nobody (allowlist)", () => {
 });
 
 test("identity map round-trips", () => {
-  const phone = "+15550000000";
+  const phone = "+16152393232";
   const user = resolveIMessageUser(phone);
   assert.ok(user);
   assert.strictEqual(phoneForUser(user!), phone);

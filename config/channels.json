@@ -3,8 +3,8 @@
     "enabled": true,
     "allowActions": false,
     "identities": {
-      "+15550000000": "REPLACE-WITH-YOUR-ENTRA-OBJECT-ID",
-      "+15550000001": "REPLACE-WITH-OWNER-ENTRA-OBJECT-ID"
+      "+16152393232": "bceb24c5-ef85-4301-9ab2-073805d535aa",
+      "+17815719387": "4f323599-0df8-47f7-aa01-46dbb211894c"
     }
   },
   "_notes": [
