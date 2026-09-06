@@ -41,6 +41,12 @@ server.post("/api/messages", async (req, res) => {
   await adapter.process(req, res, (context) => bot.run(context));
 });
 
+// Sign-in can land on the root (Easy Auth only preserves a return path when the
+// user started at a protected URL), so send the bare hostname to the dashboard.
+server.get("/", (_req, res, next) => {
+  res.redirect(302, "/admin", next);
+});
+
 server.get("/admin", adminPage);
 
 server.get("/healthz", (_req, res, next) => {
