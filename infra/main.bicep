@@ -50,10 +50,12 @@ param planSku string = 'B1'
 var planAlwaysOn = planSku != 'F1'
 
 // ---- Model deployments created in Foundry. Verify names/versions in your region's model catalog. ----
-// Claude models must be deployed via the Foundry portal today; set CHAT deployments to their names afterward.
-param cheapModelName string = 'gpt-5-mini'
-param cheapModelVersion string = '2025-08-07'
-param standardModelName string = 'gpt-5'
+// New Pay-As-You-Go subscriptions often have 0 TPM for full gpt-5 / gpt-4.1 / gpt-4o.
+// Defaults here are the mini-class models that actually have quota so a first deploy
+// can complete. Swap standardModelName back to gpt-5 once GlobalStandard quota is granted.
+param cheapModelName string = 'gpt-4.1-mini'
+param cheapModelVersion string = '2025-04-14'
+param standardModelName string = 'gpt-5-mini'
 param standardModelVersion string = '2025-08-07'
 param embedModelName string = 'text-embedding-3-small'
 param embedModelVersion string = '1'

@@ -107,12 +107,14 @@ echo "OAuth redirect URI set"
 echo
 echo "== Resource providers =="
 RPS=(
-  Microsoft.Web              # App Service plan + site
-  Microsoft.Storage          # notes blobs
-  Microsoft.DocumentDB       # Cosmos
-  Microsoft.CognitiveServices # Speech + Foundry models
-  Microsoft.Insights         # App Insights
-  Microsoft.BotService       # Azure Bot + Teams channel
+  Microsoft.Web                    # App Service plan + site
+  Microsoft.Storage                # notes blobs
+  Microsoft.DocumentDB             # Cosmos
+  Microsoft.CognitiveServices      # Speech + Foundry (AIServices) models — there is no Microsoft.Foundry RP
+  Microsoft.MachineLearningServices # Foundry hub/project in ai.azure.com
+  Microsoft.Capacity               # Azure Portal Quotas blade
+  Microsoft.Insights               # App Insights
+  Microsoft.BotService             # Azure Bot + Teams channel
 )
 PENDING=()
 for rp in "${RPS[@]}"; do
