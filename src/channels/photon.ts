@@ -2,8 +2,8 @@
  * iMessage channel via Photon (spectrum-ts).
  *
  * Runs a single long-lived Spectrum stream inside the App Service process:
- * inbound messages arrive over gRPC, replies and attachment bytes go back
- * over the same connection. No public URL, no webhook, no signing secret —
+ * inbound messages arrive over the SDK stream, replies and attachment bytes go
+ * back over the same connection. No public URL, no webhook, no signing secret —
  * Photon has no HTTP send endpoint, so the SDK stream is the only way to do
  * two-way messaging anyway.
  *
@@ -17,7 +17,7 @@
  * spectrum-ts is ESM-only and this project compiles to CommonJS, so the SDK
  * is pulled in with a dynamic import; static imports fail to compile.
  */
-import type { ContentBuilder, Message, Space, SpectrumInstance, Platform, PlatformInstance } from "spectrum-ts" with { "resolution-mode": "import" };
+import type { SpectrumInstance, Platform, PlatformInstance } from "spectrum-ts" with { "resolution-mode": "import" };
 import { processCapture } from "../pipeline";
 import { saveConversationRef } from "../services/conversations";
 import { logActivity } from "../services/activityLog";
@@ -34,13 +34,14 @@ type IMessagePlatform = (typeof import("spectrum-ts/providers/imessage", {
 }))["imessage"];
 type IMessageInstance = IMessagePlatform extends Platform<infer Def> ? PlatformInstance<Def> : never;
 
-/** `text()` is generic over a non-empty string literal; we only ever have runtime strings. */
-type TextBuilder = (content: string) => ContentBuilder;
+// The provider stream is typed as [space, message], so pulling the pair apart
+// here gives the iMessage-specific fields (space.type, sender.id) for free.
+type IMessageStream = IMessageInstance["messages"];
+type IMessageSpace = IMessageStream extends AsyncIterable<[infer S, unknown]> ? S : never;
+type IMessageMessage = IMessageStream extends AsyncIterable<[unknown, infer M]> ? M : never;
 
 let app: SpectrumInstance | null = null;
 let im: IMessageInstance | null = null;
-let platform: IMessagePlatform | null = null;
-let asText: TextBuilder | null = null;
 
 const seen = new Map<string, number>(); // message.id → seenAt (dedupe, 48h)
 function alreadySeen(id: string): boolean {
@@ -57,7 +58,7 @@ export async function startPhotonChannel(): Promise<void> {
     return;
   }
 
-  const { Spectrum, text } = await import("spectrum-ts");
+  const { Spectrum } = await import("spectrum-ts");
   const { imessage } = await import("spectrum-ts/providers/imessage");
 
   const spectrum = await Spectrum({
@@ -67,13 +68,11 @@ export async function startPhotonChannel(): Promise<void> {
   });
   app = spectrum;
   im = imessage(spectrum);
-  platform = imessage;
-  asText = text as TextBuilder;
   console.log("[imessage] Photon stream connected");
 
   // Fire-and-forget consumer; reconnects are handled inside the SDK.
   void (async () => {
-    for await (const [space, message] of spectrum.messages) {
+    for await (const [space, message] of im!.messages) {
       try {
         await handleInbound(space, message);
       } catch (err) {
@@ -84,13 +83,11 @@ export async function startPhotonChannel(): Promise<void> {
   })();
 }
 
-async function handleInbound(space: Space, message: Message): Promise<void> {
+async function handleInbound(space: IMessageSpace, message: IMessageMessage): Promise<void> {
   if (alreadySeen(message.id)) return;
+  if (space.type === "group") return; // DMs only for a personal capture tool
 
-  // The generic Space carries no provider fields; narrow it to the iMessage one.
-  if (platform!(message.space).type === "group") return; // DMs only for a personal capture tool
-
-  const phone = message.sender.id;
+  const phone = message.sender?.id;
   if (!phone) return;
   const userId = resolveIMessageUser(phone);
   if (!userId) {
@@ -98,29 +95,38 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
     return; // allowlist: no reply, no trace of a brain
   }
 
-  void saveConversationRef(userId, { channel: "imessage", phone, spaceId: message.space.id });
+  void saveConversationRef(userId, { channel: "imessage", phone, spaceId: space.id });
 
-  // A message is a list of content parts: text, attachments (bytes inline),
-  // and provider-specific extras we ignore.
+  // Content is one part per message: text, a voice memo, or an attachment
+  // whose bytes are fetched lazily. Anything else (reactions, typing) is noise.
+  const content = message.content;
   let text: string | undefined;
   let audio: Buffer | undefined;
-  let hasOtherAttachment = false;
+  let unsupportedAttachment = false;
 
-  for (const part of message.content) {
-    if (part.type === "plain_text") {
-      text = text ? `${text} ${part.text}` : part.text;
-    } else if (part.type === "attachment") {
-      if (part.mimeType.startsWith("audio/")) audio ??= part.data;
-      else hasOtherAttachment = true;
-    }
+  switch (content.type) {
+    case "text":
+      text = content.text.trim() || undefined;
+      break;
+    case "markdown":
+      text = content.markdown.trim() || undefined;
+      break;
+    case "voice":
+      audio = await content.read();
+      break;
+    case "attachment":
+      if (content.mimeType.startsWith("audio/")) audio = await content.read();
+      else unsupportedAttachment = true;
+      break;
+    default:
+      return;
   }
-  text = text?.trim() || undefined;
 
   if (!text && !audio) {
-    if (hasOtherAttachment) {
-      await space.send(asText!("I can take text and voice memos here — other attachments aren't supported yet."));
+    if (unsupportedAttachment) {
+      await space.send("I can take text and voice memos here — other attachments aren't supported yet.");
     }
-    return; // reactions, richlinks, etc. — ignore quietly
+    return;
   }
 
   await space.responding(async () => {
@@ -132,19 +138,19 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
       allowActions: imessageAllowsActions(),
       conversationRef: { channel: "imessage", phone },
     });
-    await space.send(asText!(toPlainText(out.title, out.body, out.tags)));
+    await space.send(toPlainText(out.title, out.body, out.tags));
   });
 }
 
 /** Proactive delivery to a user's iMessage (job results, alerts). */
 export async function sendIMessage(userId: string, text: string): Promise<boolean> {
-  if (!app || !im || !asText) return false;
+  if (!app || !im) return false;
   const phone = phoneForUser(userId);
   if (!phone) return false;
   try {
     const user = await im.user(phone);
-    const space = await im.space([user]);
-    await space.send(asText(text));
+    const space = await im.space.create(user);
+    await space.send(text);
     return true;
   } catch (err) {
     console.error("[imessage] proactive send failed:", err);

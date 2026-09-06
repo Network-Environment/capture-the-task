@@ -22,7 +22,7 @@
     "cron-parser": "^5.0.0",
     "openai": "^4.67.0",
     "restify": "^11.1.0",
-    "spectrum-ts": "^0.1.0"
+    "spectrum-ts": "^12.8.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
