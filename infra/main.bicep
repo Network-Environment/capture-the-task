@@ -117,9 +117,16 @@ resource notesColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/container
           }
         ]
       }
+      // Cosmos rejects a custom policy that leaves the root path uncovered:
+      // "The special mandatory indexing path / is not provided in any of the
+      // path type sets." Index everything except the raw vector, which is
+      // served by the diskANN index rather than the normal inverted index.
       indexingPolicy: {
+        indexingMode: 'consistent'
+        automatic: true
+        includedPaths: [ { path: '/*' } ]
+        excludedPaths: [ { path: '/embedding/*' }, { path: '/"_etag"/?' } ]
         vectorIndexes: [ { path: '/embedding', type: 'diskANN' } ]
-        excludedPaths: [ { path: '/embedding/*' } ]
       }
     }
   }
