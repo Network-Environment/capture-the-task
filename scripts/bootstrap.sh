@@ -345,16 +345,9 @@ BOOTSTRAP COMPLETE — copy these where they belong
     here and stored in .env — treat this terminal output as sensitive.
 
 --> Portal follow-ups that can't be scripted:
-    1. Bot Service OAuth connection (after infra deploy):
-       Azure Portal > bot-taskbrain-* > Settings > Configuration >
-       Add OAuth Connection:
-         Name: graph-connection   (must match GRAPH_CONNECTION_NAME)
-         Provider: Azure Active Directory v2
-         Client id / secret: the bot app values above
-         Tenant: ${TENANT_ID}
-         Scopes: Tasks.ReadWrite
-    2. Teams app package: zip manifest.json + color.png + outline.png from
+    1. Teams app package: zip manifest.json + color.png + outline.png from
        teams-app/ and upload via Teams admin center > Manage apps.
-    3. If admin consent printed a WARNING above, grant it in Entra.
+    2. If admin consent printed a WARNING above, grant it in Entra.
+       (Graph OAuth connection graph-connection is created by Bicep.)
 =============================================================================
 SUMMARY
