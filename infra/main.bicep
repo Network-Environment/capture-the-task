@@ -373,6 +373,8 @@ resource appAuth 'Microsoft.Web/sites/config@2024-04-01' = {
     identityProviders: {
       azureActiveDirectory: {
         enabled: true
+        // /admin is browser-only; a Bearer challenge would just mislead clients.
+        login: { disableWWWAuthenticate: true }
         registration: {
           clientId: adminAppId
           clientSecretSettingName: 'ADMIN_APP_SECRET'
