@@ -282,6 +282,13 @@ az ad app permission add \
   --api-permissions e1fe6dd8-ba31-4d61-89e7-88639da4683d=Scope \
   --only-show-errors 2>/dev/null || true
 az ad sp update --id "$ADMIN_APP_ID" --set appRoleAssignmentRequired=true >/dev/null
+# Easy Auth uses response_type=code+id_token; without ID token issuance the
+# sign-in callback fails after the user authenticates.
+ADMIN_APP_OBJ=$(az ad app show --id "$ADMIN_APP_ID" --query id -o tsv)
+az rest --method PATCH \
+  --uri "https://graph.microsoft.com/v1.0/applications/${ADMIN_APP_OBJ}" \
+  --body '{"web":{"implicitGrantSettings":{"enableIdTokenIssuance":true}}}' \
+  --headers "Content-Type=application/json" >/dev/null
 if [[ -n "$ADMIN_OID" ]]; then
   existing=$(az rest --method GET \
     --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${ADMIN_SP_OID}/appRoleAssignedTo" \

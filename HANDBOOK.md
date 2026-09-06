@@ -446,3 +446,9 @@ logging already support it. Do not pay this tax early.
   token totals vs `DAILY_TOKEN_BUDGET`.
 - **Dashboard login AADSTS50105:** the user is not assigned to **TaskBrain
   Admin**. Entra → Enterprise applications → Users and groups → Add.
+- **Dashboard sign-in returns an HTTP error after authenticating:** the
+  registration must issue ID tokens — Easy Auth uses
+  `response_type=code+id_token`. Entra → App registrations → TaskBrain Admin →
+  Authentication → Implicit grant → check **ID tokens**.
+- **`/admin` returns 401 from curl:** expected. Easy Auth only redirects
+  requests that look like browsers; non-browser clients get a bare 401.

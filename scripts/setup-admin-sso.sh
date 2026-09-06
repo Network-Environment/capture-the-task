@@ -49,6 +49,15 @@ az ad app permission add \
 az ad sp update --id "$app_id" --set appRoleAssignmentRequired=true >/dev/null
 echo "user assignment required"
 
+# Easy Auth signs in with response_type=code+id_token, so the registration must
+# issue ID tokens. Without this the callback fails after the user authenticates.
+app_obj=$(az ad app show --id "$app_id" --query id -o tsv)
+az rest --method PATCH \
+  --uri "https://graph.microsoft.com/v1.0/applications/${app_obj}" \
+  --body '{"web":{"implicitGrantSettings":{"enableIdTokenIssuance":true}}}' \
+  --headers "Content-Type=application/json" >/dev/null
+echo "ID token issuance enabled"
+
 ADMIN_OID=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || echo "")
 if [[ -n "$ADMIN_OID" ]]; then
   existing=$(az rest --method GET \
