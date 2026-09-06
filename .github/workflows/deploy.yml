@@ -49,14 +49,15 @@ jobs:
           # Required (from scripts/bootstrap.sh output)
           BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
           BOT_APP_PASSWORD: ${{ secrets.BOT_APP_PASSWORD }}
-          ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+          ADMIN_APP_ID: ${{ secrets.ADMIN_APP_ID }}
+          ADMIN_APP_SECRET: ${{ secrets.ADMIN_APP_SECRET }}
           ADMIN_AAD_OBJECT_ID: ${{ secrets.ADMIN_AAD_OBJECT_ID }}
           # Optional integrations — leave unset to disable
           SMARTSHEET_API_TOKEN: ${{ secrets.SMARTSHEET_API_TOKEN }}
           SPECTRUM_PROJECT_ID: ${{ secrets.SPECTRUM_PROJECT_ID }}
           SPECTRUM_PROJECT_SECRET: ${{ secrets.SPECTRUM_PROJECT_SECRET }}
         run: |
-          test -n "$BOT_APP_ID" -a -n "$BOT_APP_PASSWORD" -a -n "$ADMIN_KEY" || { echo "missing required secrets (BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_KEY) — run scripts/bootstrap.sh"; exit 1; }
+          test -n "$BOT_APP_ID" -a -n "$BOT_APP_PASSWORD" -a -n "$ADMIN_APP_ID" -a -n "$ADMIN_APP_SECRET" || { echo "missing required secrets (BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_APP_ID, ADMIN_APP_SECRET) — run scripts/bootstrap.sh or scripts/setup-admin-sso.sh"; exit 1; }
           OUTPUTS=$(az deployment group create \
             -g $RESOURCE_GROUP \
             -f infra/main.bicep \
@@ -73,7 +74,8 @@ jobs:
                standardModelVersion=2025-08-07 \
                botAppId="$BOT_APP_ID" \
                botAppPassword="$BOT_APP_PASSWORD" \
-               adminKey="$ADMIN_KEY" \
+               adminAppId="$ADMIN_APP_ID" \
+               adminAppSecret="$ADMIN_APP_SECRET" \
                adminAadObjectId="$ADMIN_AAD_OBJECT_ID" \
                smartsheetApiToken="$SMARTSHEET_API_TOKEN" \
                spectrumProjectId="$SPECTRUM_PROJECT_ID" \
@@ -123,7 +125,8 @@ jobs:
 #    AcrPush on rg-taskbrain (bootstrap does this).
 # 3. Repo secrets (bootstrap.sh prints them, or sets them with `gh` if installed):
 #    required: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
-#              BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_KEY, ADMIN_AAD_OBJECT_ID
+#              BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_APP_ID, ADMIN_APP_SECRET,
+#              ADMIN_AAD_OBJECT_ID
 #    optional: SMARTSHEET_API_TOKEN, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET
 # 4. Bicep creates a Basic ACR. The App Service system identity has AcrPull;
 #    CI builds in ACR via OIDC and deploys immutable Git SHA image tags.

@@ -132,10 +132,10 @@ used. Runtime secrets live as App Service settings, never in the repo.
 
 Every component writes events to the `activity` container (30-day TTL):
 captures, triage decisions, tool calls, model calls **with token counts per
-deployment**, job runs, errors. `/admin?key=$ADMIN_KEY` renders a
-single-page dashboard: today's stats, token spend by model (your routing
-efficacy at a glance), scheduled jobs with last results, agent memory, and
-the live event stream. Auto-refreshes every 60s.
+deployment**, job runs, errors. `/admin` is gated by Entra Easy Auth: share
+the URL; only people assigned to the **TaskBrain Admin** enterprise app can
+sign in. The page shows today's stats, token spend by model, scheduled jobs,
+agent memory, and the live event stream (auto-refresh 60s).
 
 ## Two memories, on purpose
 

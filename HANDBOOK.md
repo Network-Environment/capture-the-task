@@ -64,11 +64,13 @@ scripts/bootstrap.sh (once, out of band)
 .github/workflows/deploy.yml (on push to main)
   ├─ build → test
   ├─ az login via OIDC (AZURE_CLIENT_ID / TENANT / SUBSCRIPTION)
-  ├─ Bicep deploy ← secrets: BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_KEY,
-  │                 ADMIN_AAD_OBJECT_ID, [SMARTSHEET_API_TOKEN,
+  ├─ Bicep deploy ← secrets: BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_APP_ID,
+  │                 ADMIN_APP_SECRET, ADMIN_AAD_OBJECT_ID, [SMARTSHEET_API_TOKEN,
   │                 SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET]
   │     infra/main.bicep
   │       ├─ creates every resource + 3 Foundry models + Basic ACR
+  │       ├─ Easy Auth on the web app (TaskBrain Admin Entra app;
+  │       │  /api/messages and /healthz excluded)
   │       ├─ gives the App Service system identity AcrPull on ACR
   │       └─ WRITES ALL APP SETTINGS: keys via listKeys() (Cosmos, Storage,
   │          Speech, Foundry), endpoints, deployment names, and the secrets
@@ -242,7 +244,7 @@ patched by bootstrap.sh) supplies the same names.
 | `GRAPH_CONNECTION_NAME` | Bot Service OAuth connection name | Bicep constant `graph-connection` |
 | `SMARTSHEET_API_TOKEN` | bearer for mcp.smartsheet.com | GitHub secret (optional) |
 | `SPECTRUM_PROJECT_ID` / `SPECTRUM_PROJECT_SECRET` | Photon iMessage; blank disables channel | GitHub secrets (optional) |
-| `ADMIN_KEY` | `/admin` dashboard key | GitHub secret (bootstrap generates) |
+| `ADMIN_APP_ID` / `ADMIN_APP_SECRET` | App Service Easy Auth (TaskBrain Admin Entra app) | GitHub secrets (bootstrap / `scripts/setup-admin-sso.sh`) |
 | `ADMIN_AAD_OBJECT_ID` | admin alert recipient | GitHub secret (bootstrap = signed-in user) |
 | `DAILY_TOKEN_BUDGET` / `JOBS_TIMEZONE` | ops knobs | Bicep params (defaults 5,000,000 / America/Chicago) |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | telemetry | Bicep |
@@ -266,11 +268,14 @@ repo, org permission to upload Teams apps.
    Creates the bot app registration (+2-year secret, Graph Tasks.ReadWrite,
    admin consent, OAuth redirect), the CI app with GitHub OIDC federation and
    Contributor + RBAC Administrator on the RG, required resource providers,
-   the resource group, and an admin key. Patches
+   the resource group, and the TaskBrain Admin Entra app (assignment-required
+   Easy Auth for `/admin`). Patches
    `teams-app/manifest.json` and `.env`. If `gh` is authenticated it sets all
    required GitHub secrets and creates the `production` environment; otherwise
    it prints them for you to paste. Idempotent; re-runs mint a new bot secret
-   (update `BOT_APP_PASSWORD` if so).
+   (update `BOT_APP_PASSWORD` if so). Already-deployed environments: run
+   `./scripts/setup-admin-sso.sh <org>/<repo> rg-taskbrain` instead — that
+   creates only the Admin app and does not rotate the bot secret.
 2. **Local sanity:** `npm ci && npx tsc --noEmit && npm test`. (Also
    review Bicep model params against your region's Foundry catalog.)
 3. **Push to `main`.** Pipeline: build → tests → OIDC login → Bicep (all
@@ -290,7 +295,7 @@ repo, org permission to upload Teams apps.
 7. **Verify:** "hello" → welcome; a text task → To Do (or brain fallback); a
    voice memo → transcribed capture; "what did I capture today?" → recall;
    "every Friday at 4 summarize open Smartsheet risks" → job scheduled;
-   `/admin?key=$ADMIN_KEY` shows all of it.
+   `/admin` (Entra sign-in) shows all of it.
 
 Ordering constraint: bootstrap must run before the first pipeline
 (federated credential, RBAC, RG, providers, secrets). Everything else is
@@ -298,9 +303,12 @@ order-independent and re-runnable.
 
 ## 5. Operations
 
-- **Dashboard:** `/admin?key=$ADMIN_KEY` — today's counts, token spend **per
-  model** (routing efficacy), jobs with last results, agent lessons, event
-  stream. Auto-refreshes 60s.
+- **Dashboard:** `https://<app>.azurewebsites.net/admin` — Entra login; only
+  users assigned to the **TaskBrain Admin** enterprise app. Today's counts,
+  token spend **per model** (routing efficacy), jobs with last results, agent
+  lessons, event stream. Auto-refreshes 60s. Add viewers in Entra → Enterprise
+  applications → TaskBrain Admin → Users and groups. `/api/messages` and
+  `/healthz` stay anonymous so the bot and CI smoke test keep working.
 - **Alerts (push):** job failures after final retry → owner + admin; budget
   trip → admin, once per day. Delivery requires the recipient to have
   messaged the bot at least once (conversation reference).
@@ -436,3 +444,5 @@ logging already support it. Do not pay this tax early.
   verify SDK method names against the installed `spectrum-ts` version.
 - **Budget seems stuck cheap:** it resets at midnight UTC; check `/admin`
   token totals vs `DAILY_TOKEN_BUDGET`.
+- **Dashboard login AADSTS50105:** the user is not assigned to **TaskBrain
+  Admin**. Entra → Enterprise applications → Users and groups → Add.

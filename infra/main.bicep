@@ -16,9 +16,12 @@ param location string = resourceGroup().location
 @description('Bot app registration client secret (from bootstrap.sh)')
 param botAppPassword string
 
+@description('Entra app (client) ID for the admin dashboard Easy Auth app. Separate from the bot so assignment-required sign-in does not block Teams/Graph users.')
+param adminAppId string
+
 @secure()
-@description('Key protecting the /admin dashboard')
-param adminKey string
+@description('Client secret for the admin dashboard Entra app')
+param adminAppSecret string
 
 @description('Entra object id that receives admin alerts')
 param adminAadObjectId string = ''
@@ -324,7 +327,8 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'SPECTRUM_PROJECT_ID', value: spectrumProjectId }
         { name: 'SPECTRUM_PROJECT_SECRET', value: spectrumProjectSecret }
         // --- Ops ---
-        { name: 'ADMIN_KEY', value: adminKey }
+        { name: 'ADMIN_APP_ID', value: adminAppId }
+        { name: 'ADMIN_APP_SECRET', value: adminAppSecret }
         { name: 'ADMIN_AAD_OBJECT_ID', value: adminAadObjectId }
         { name: 'DAILY_TOKEN_BUDGET', value: dailyTokenBudget }
         { name: 'JOBS_TIMEZONE', value: jobsTimezone }
@@ -348,6 +352,43 @@ resource appAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     roleDefinitionId: acrPullRoleId
     principalId: app.identity.principalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// Entra Easy Auth on /admin. Bot traffic and the CI smoke test stay anonymous.
+resource appAuth 'Microsoft.Web/sites/config@2024-04-01' = {
+  parent: app
+  name: 'authsettingsV2'
+  properties: {
+    platform: { enabled: true }
+    globalValidation: {
+      requireAuthentication: true
+      unauthenticatedClientAction: 'RedirectToLoginPage'
+      redirectToProvider: 'azureactivedirectory'
+      excludedPaths: [
+        '/api/messages'
+        '/healthz'
+      ]
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: adminAppId
+          clientSecretSettingName: 'ADMIN_APP_SECRET'
+          openIdIssuer: '${environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'
+        }
+        validation: {
+          allowedAudiences: [ adminAppId ]
+        }
+      }
+    }
+    login: {
+      tokenStore: { enabled: true }
+    }
+    httpSettings: {
+      requireHttps: true
+    }
   }
 }
 
@@ -397,6 +438,7 @@ resource graphConnection 'Microsoft.BotService/botServices/connections@2023-09-1
 
 output appHostname string = app.properties.defaultHostName
 output appName string = app.name
+output adminUrl string = 'https://${app.properties.defaultHostName}/admin'
 output registryName string = registry.name
 output registryLoginServer string = registry.properties.loginServer
 output storageAccount string = storage.name

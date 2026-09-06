@@ -1,11 +1,12 @@
 /**
  * Admin dashboard — one server-rendered HTML page, zero frontend build.
  * Shows: today's stats + token spend by model, scheduled jobs, agent memory,
- * and the recent event stream. Guarded by ADMIN_KEY (?key= or x-admin-key).
+ * and the recent event stream.
  *
- * Deliberately boring: it reads the activity/jobs/agent-memory containers and
- * renders. If you outgrow it, the same queries feed a React artifact or a
- * Workbook — the data layer doesn't change.
+ * In Azure, App Service Easy Auth (Entra) gates /admin. Only users assigned
+ * to the TaskBrain Admin enterprise app can sign in. /api/messages and
+ * /healthz stay anonymous. Locally there is no Easy Auth, so the page is
+ * open on loopback.
  */
 import { Request, Response } from "restify";
 import { dayStats, recentEvents } from "../services/activityLog";
@@ -18,9 +19,9 @@ const cosmos = new CosmosClient({
 const db = cosmos.database(process.env.COSMOS_DB ?? "taskbrain");
 
 export async function adminPage(req: Request, res: Response): Promise<void> {
-  const key = (req.query?.key as string) ?? req.header("x-admin-key");
-  if (!process.env.ADMIN_KEY || key !== process.env.ADMIN_KEY) {
-    res.send(401, "unauthorized");
+  const principal = easyAuthPrincipal(req);
+  if (process.env.WEBSITE_INSTANCE_ID && !principal) {
+    res.send(401, "sign in required");
     return;
   }
 
@@ -62,9 +63,34 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
     )
     .join("");
 
-  res.sendRaw(200, html(stats, modelRows, jobRows, lessonRows, eventRows), {
+  const signedIn = principal?.name ?? "local";
+  res.sendRaw(200, html(stats, modelRows, jobRows, lessonRows, eventRows, signedIn), {
     "Content-Type": "text/html",
   });
+}
+
+function easyAuthPrincipal(req: Request): { id: string; name: string } | undefined {
+  const id = req.header("x-ms-client-principal-id");
+  if (!id) return undefined;
+  const name =
+    req.header("x-ms-client-principal-name") ??
+    claim(req, "preferred_username") ??
+    claim(req, "name") ??
+    id;
+  return { id, name };
+}
+
+function claim(req: Request, typ: string): string | undefined {
+  const raw = req.header("x-ms-client-principal");
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, "base64").toString("utf8")) as {
+      claims?: { typ: string; val: string }[];
+    };
+    return parsed.claims?.find((c) => c.typ === typ || c.typ.endsWith(`/${typ}`))?.val;
+  } catch {
+    return undefined;
+  }
 }
 
 function esc(s: string): string {
@@ -76,7 +102,8 @@ function html(
   modelRows: string,
   jobRows: string,
   lessonRows: string,
-  eventRows: string
+  eventRows: string,
+  signedIn: string
 ): string {
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="60">
@@ -84,6 +111,7 @@ function html(
 <style>
   body{font:14px/1.5 -apple-system,Segoe UI,sans-serif;margin:2rem;max-width:1100px;color:#1a1a1a}
   h1{font-size:1.3rem} h2{font-size:1rem;margin-top:2rem;border-bottom:1px solid #ddd;padding-bottom:.3rem}
+  .who{color:#888;font-size:13px;margin-top:-.6rem}
   .cards{display:flex;gap:1rem;flex-wrap:wrap}
   .card{border:1px solid #ddd;border-radius:8px;padding:.8rem 1.2rem;min-width:110px}
   .card b{display:block;font-size:1.4rem}
@@ -92,6 +120,7 @@ function html(
   .dim{color:#888} th{color:#555}
 </style></head><body>
 <h1>TaskBrain — today</h1>
+<p class="who">${esc(signedIn)}${signedIn !== "local" ? ' · <a href="/.auth/logout">sign out</a>' : ""}</p>
 <div class="cards">
   <div class="card"><b>${stats.captures}</b>captures</div>
   <div class="card"><b>${stats.toolCalls}</b>tool calls</div>

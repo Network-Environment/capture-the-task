@@ -11,7 +11,8 @@
 #      (no secret) for BOTH subject formats GitHub may present
 #      (name-based and org@id/repo@id) + Contributor on the resource group
 #   3. Resource group (so the role assignment has a target)
-#   4. Patched copies of teams-app/manifest.json and .env with real IDs
+#   4. TaskBrain Admin app (Easy Auth for /admin, assignment required)
+#   5. Patched copies of teams-app/manifest.json and .env with real IDs
 #
 # What it prints at the end: every value you need, grouped by destination
 # (.env, GitHub secrets, portal follow-ups).
@@ -268,14 +269,42 @@ ensure_role_assignment "Container Registry Tasks Contributor"
 ensure_role_assignment "AcrPush"
 
 # -----------------------------------------------------------------------------
-# 4. Admin identity (for alerts) — your own object id
+# 4. Admin identity (alerts) + TaskBrain Admin app (Easy Auth dashboard)
 # -----------------------------------------------------------------------------
 ADMIN_OID=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || echo "")
-
-# -----------------------------------------------------------------------------
-# 4b. Admin dashboard key
-# -----------------------------------------------------------------------------
-ADMIN_KEY=$(openssl rand -hex 24 2>/dev/null || head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 48)
+ADMIN_APP_NAME="TaskBrain Admin"
+ADMIN_APP_ID=$(get_or_create_app "$ADMIN_APP_NAME")
+az ad sp show --id "$ADMIN_APP_ID" >/dev/null 2>&1 || az ad sp create --id "$ADMIN_APP_ID" >/dev/null
+ADMIN_SP_OID=$(az ad sp show --id "$ADMIN_APP_ID" --query id -o tsv)
+az ad app permission add \
+  --id "$ADMIN_APP_ID" \
+  --api 00000003-0000-0000-c000-000000000000 \
+  --api-permissions e1fe6dd8-ba31-4d61-89e7-88639da4683d=Scope \
+  --only-show-errors 2>/dev/null || true
+az ad sp update --id "$ADMIN_APP_ID" --set appRoleAssignmentRequired=true >/dev/null
+if [[ -n "$ADMIN_OID" ]]; then
+  existing=$(az rest --method GET \
+    --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${ADMIN_SP_OID}/appRoleAssignedTo" \
+    --query "value[?principalId=='${ADMIN_OID}'].id | [0]" -o tsv 2>/dev/null || echo "")
+  if [[ -z "$existing" ]]; then
+    az rest --method POST \
+      --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${ADMIN_SP_OID}/appRoleAssignedTo" \
+      --body "{\"principalId\":\"${ADMIN_OID}\",\"resourceId\":\"${ADMIN_SP_OID}\",\"appRoleId\":\"00000000-0000-0000-0000-000000000000\"}" \
+      --headers "Content-Type=application/json" >/dev/null || true
+  fi
+fi
+HOST=$(az webapp list -g "$RG" --query "[?starts_with(name, 'app-taskbrain')].defaultHostName | [0]" -o tsv 2>/dev/null || echo "")
+if [[ -n "$HOST" ]]; then
+  az ad app update --id "$ADMIN_APP_ID" \
+    --web-redirect-uris "https://${HOST}/.auth/login/aad/callback" \
+    --only-show-errors
+fi
+ADMIN_APP_SECRET=$(az ad app credential reset \
+  --id "$ADMIN_APP_ID" \
+  --display-name "taskbrain-admin-$(date +%Y%m%d)" \
+  --years 2 \
+  --query password -o tsv)
+echo "admin Easy Auth app ok ($ADMIN_APP_ID)"
 
 # -----------------------------------------------------------------------------
 # 5. Patch local files with real values
@@ -300,7 +329,6 @@ if [[ -f "$ROOT/.env" ]]; then
     -e "s|^MicrosoftAppPassword=.*|MicrosoftAppPassword=${BOT_APP_SECRET}|" \
     -e "s|^MicrosoftAppTenantId=.*|MicrosoftAppTenantId=${TENANT_ID}|" \
     -e "s|^ADMIN_AAD_OBJECT_ID=.*|ADMIN_AAD_OBJECT_ID=${ADMIN_OID}|" \
-    -e "s|^ADMIN_KEY=.*|ADMIN_KEY=${ADMIN_KEY}|" \
     "$ROOT/.env" && rm -f "$ROOT/.env.bak"
   echo ".env patched (bot id, secret, tenant, admin oid) — .env is gitignored"
 fi
@@ -316,7 +344,8 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   gh secret set AZURE_SUBSCRIPTION_ID  -R "$GITHUB_REPO" -b "$SUB_ID"
   gh secret set BOT_APP_ID             -R "$GITHUB_REPO" -b "$BOT_APP_ID"
   gh secret set BOT_APP_PASSWORD       -R "$GITHUB_REPO" -b "$BOT_APP_SECRET"
-  gh secret set ADMIN_KEY              -R "$GITHUB_REPO" -b "$ADMIN_KEY"
+  gh secret set ADMIN_APP_ID           -R "$GITHUB_REPO" -b "$ADMIN_APP_ID"
+  gh secret set ADMIN_APP_SECRET       -R "$GITHUB_REPO" -b "$ADMIN_APP_SECRET"
   [[ -n "$ADMIN_OID" ]] && gh secret set ADMIN_AAD_OBJECT_ID -R "$GITHUB_REPO" -b "$ADMIN_OID"
   # Environment the federated credential is bound to
   gh api -X PUT "repos/${GITHUB_REPO}/environments/${GITHUB_ENV_NAME}" >/dev/null && echo "environment '${GITHUB_ENV_NAME}' ensured"
@@ -342,7 +371,8 @@ BOOTSTRAP COMPLETE — copy these where they belong
     AZURE_SUBSCRIPTION_ID  = ${SUB_ID}
     BOT_APP_ID             = ${BOT_APP_ID}
     BOT_APP_PASSWORD       = ${BOT_APP_SECRET}
-    ADMIN_KEY              = ${ADMIN_KEY}
+    ADMIN_APP_ID           = ${ADMIN_APP_ID}
+    ADMIN_APP_SECRET       = ${ADMIN_APP_SECRET}
     ADMIN_AAD_OBJECT_ID    = ${ADMIN_OID:-<your object id>}
     OPTIONAL — add when you have them (empty = feature disabled):
     SMARTSHEET_API_TOKEN, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET
@@ -362,5 +392,7 @@ BOOTSTRAP COMPLETE — copy these where they belong
        teams-app/ and upload via Teams admin center > Manage apps.
     2. If admin consent printed a WARNING above, grant it in Entra.
        (Graph OAuth connection graph-connection is created by Bicep.)
+    3. Share https://<app>.azurewebsites.net/admin. Add dashboard viewers under
+       Entra → Enterprise applications → TaskBrain Admin → Users and groups.
 =============================================================================
 SUMMARY
