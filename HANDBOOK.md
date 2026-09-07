@@ -524,6 +524,9 @@ logging already support it. Do not pay this tax early.
 - **Meeting ingest Graph 403:** run `scripts/setup-meeting-ingest.sh` and
   the printed Teams PowerShell. `EnableGraphTranscriptAccess` is independent
   of in-meeting transcription. Policy can take ~30 minutes.
+- **Meeting ingest 400 `max_tokens`:** gpt-5-class Foundry deployments need
+  `max_completion_tokens` (the router maps this automatically). Redeploy the
+  Function if `/admin` Meetings still shows that error.
 - **Function has no functions after deploy:** Flex Consumption needs the zip
   at the `fn-packages` container; CI `config-zip` step must succeed after
   infra created `functionAppName`.

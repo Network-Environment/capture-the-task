@@ -80,6 +80,23 @@ export interface RouteOptions {
   tools?: ChatCompletionTool[];
 }
 
+/**
+ * gpt-5 / o-series Foundry deployments reject `max_tokens` (want
+ * `max_completion_tokens`) and often reject a non-default `temperature`.
+ * gpt-4.1-mini (cheap triage) still uses the older pair.
+ */
+export function chatSamplingParams(
+  model: string,
+  maxTokens: number,
+  temperature: number
+): { max_tokens?: number; max_completion_tokens?: number; temperature?: number } {
+  const m = model.toLowerCase();
+  const reasoningStyle =
+    m.includes("gpt-5") || /(^|[-_])o[1-9]/.test(m) || m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4");
+  if (reasoningStyle) return { max_completion_tokens: maxTokens };
+  return { max_tokens: maxTokens, temperature };
+}
+
 export async function route(
   task: TaskClass,
   messages: ChatCompletionMessageParam[],
@@ -89,8 +106,7 @@ export async function route(
   const res = await client.chat.completions.create({
     model: s.model,
     messages,
-    max_tokens: s.maxTokens,
-    temperature: s.temperature,
+    ...chatSamplingParams(s.model, s.maxTokens, s.temperature),
     ...(opts.json ? { response_format: { type: "json_object" as const } } : {}),
     ...(opts.tools?.length ? { tools: opts.tools } : {}),
   });
