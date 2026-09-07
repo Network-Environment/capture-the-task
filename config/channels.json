@@ -1,7 +1,7 @@
 {
   "imessage": {
     "enabled": true,
-    "allowActions": false,
+    "allowActions": true,
     "identities": {
       "+16152393232": "bceb24c5-ef85-4301-9ab2-073805d535aa",
       "+17815719387": "4f323599-0df8-47f7-aa01-46dbb211894c"
@@ -11,10 +11,8 @@
     "identities is BOTH the allowlist and the identity map: a phone number not",
     "listed here is ignored entirely (no reply, no brain). Map each number to",
     "the sender's Entra object id so Teams and iMessage share one brain.",
-    "allowActions=false makes iMessage capture-only: tasks/ideas/questions work,",
-    "but tool actions (Smartsheet writes, scheduling) are saved and deferred to",
-    "Teams. Flip to true once you've made the governance call about work data",
-    "flowing through the iMessage bridge.",
+    "allowActions=true gives recognized iMessage identities the same agent/tool",
+    "behavior as Teams. Existing approval gates still apply to write tools.",
     "Runtime credentials come from SPECTRUM_PROJECT_ID / SPECTRUM_PROJECT_SECRET."
   ]
 }

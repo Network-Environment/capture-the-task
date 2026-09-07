@@ -11,6 +11,7 @@ import { loadConfig } from "../config";
 const channelsConfig = loadConfig("channels");
 
 export type Channel = "teams" | "imessage";
+export const THINKING_RESPONSE = "thinking about response";
 
 interface ChannelsConfig {
   imessage: {

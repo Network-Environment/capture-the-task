@@ -105,8 +105,9 @@ PIPELINE — processCapture()  (channel-agnostic)
         ├── audio bytes ──► Azure AI Speech fast transcription
         ▼
 TRIAGE  (cheap model tier)  — agent.ts::triage
-   one capture → {task | idea | reference | question | action | followup}
+   one message → {conversation | task | idea | reference | question | action | followup}
         │
+        ├── conversation → natural response; nothing persisted or executed
         ├── task       → Graph → Microsoft To Do (fallback: brain) + note
         ├── idea/ref   → brain.ts: markdown → Blob, metadata+vector → Cosmos
         ├── question   → brain.ts::recall (vector) → synthesis tier answer
@@ -195,7 +196,7 @@ The five-minute Flex Consumption Function (`src/meetings/timer.ts`) enumerates t
 
 Chat tools `recall_meetings`, `list_commitments`, and `complete_commitment` are org-wide but **viewer-gated** to Adam (`bceb24c5-ef85-4301-9ab2-073805d535aa`) and Valerie (`4f323599-0df8-47f7-aa01-46dbb211894c`) unless `MEETING_VIEWERS` is overridden. Other TaskBrain users get a deny string. Personal notes stay user-scoped.
 
-Tenant setup that Bicep cannot do: `./scripts/setup-meeting-ingest.sh` assigns Graph application roles on the Function managed identity. A Teams admin must then grant a tenant-wide application access policy and set `EnableGraphTranscriptAccess` / `EnableAttributedTranscripts`. Existing meeting transcription does **not** enable Graph export.
+Tenant setup that Bicep cannot do: `./scripts/setup-meeting-ingest.sh` assigns Graph application roles on the Function managed identity. A Teams admin must then grant a tenant-wide application access policy and set `EnableGraphTranscriptAccess` / `EnableAttributedTranscripts` (MicrosoftTeams PowerShell **7.9.0+**, or Teams admin center → Meetings → Meeting settings → Transcript API access). Existing meeting transcription does **not** enable Graph export.
 
 First successful poll is a controlled backfill: each organizer's delta link starts from "all current transcripts" then only changes. Repeats are deduped by transcript ID.
 
@@ -222,11 +223,17 @@ Entra object id. `config/channels.json` `identities` maps phone → userId and
 doubles as the allowlist — unknown numbers are ignored silently (no reply, no
 brain). DMs only; group chats are ignored. Inbound is deduped on `message.id`.
 
-Governance: `allowActions` (default `false`) makes iMessage capture-only —
-tasks, ideas, questions work; tool actions are saved as `pending-action`
-references and deferred to Teams. Flip it deliberately after deciding what
-work data may flow through the iMessage bridge. Approvals (`approve pa-x`)
-work on either channel as plain text.
+Recognized iMessage identities currently have `allowActions=true`, so Teams
+and iMessage call the same agent and tools. Existing approval gates still
+park write operations until an explicit `approve pa-x`; channel parity does
+not bypass write approval. Unknown numbers remain silently rejected.
+
+Both interactive adapters immediately send `thinking about response` before
+processing. Triage explicitly separates conversation from capture: greetings,
+thanks, casual chat, and general questions receive a natural response and do
+not create markdown. Only clear tasks, ideas, and references persist. Invalid
+or unknown triage output fails safe to conversation rather than creating a
+note.
 
 ### Context-rot policy (why the bot stays fast forever)
 
@@ -430,8 +437,9 @@ logging already support it. Do not pay this tax early.
 11. Non-Teams senders must resolve to a canonical userId through
     `config/channels.json` before anything runs. Never auto-provision a brain
     for an unknown identity.
-12. Channel capabilities are policy (`allowActions`), not accident: a new
-    channel defaults to capture-only.
+12. Channel capabilities are policy (`allowActions`), not accident. Teams and
+    recognized iMessage identities currently allow actions; write-tool
+    approval remains mandatory.
 13. Config is read only through `src/config.ts::loadConfig` (never imported
     as a module — it lives outside `rootDir`). Every `process.env` read in
     `src/` has a matching app setting written by `infra/main.bicep`.

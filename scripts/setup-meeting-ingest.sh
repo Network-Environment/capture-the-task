@@ -62,15 +62,25 @@ assign_role "$ROLE_TRANSCRIPT_READ_ALL" "OnlineMeetingTranscript.Read.All"
 
 cat <<EOF
 
-Graph application roles are assigned. A Teams admin still needs to run:
+Graph application roles are assigned. A Teams admin still needs to run
+(MicrosoftTeams PowerShell 7.9.0+; EnableGraphTranscriptAccess is not on
+older modules):
 
+  Update-Module MicrosoftTeams -Force
+  Import-Module MicrosoftTeams -Force
   Connect-MicrosoftTeams
+  Get-Module MicrosoftTeams | Select-Object Version
   \$policy = Get-CsApplicationAccessPolicy -Identity TaskBrain-MeetingIngest -ErrorAction SilentlyContinue
   if (-not \$policy) {
     New-CsApplicationAccessPolicy -Identity TaskBrain-MeetingIngest -AppIds "$APP_ID" -Description "TaskBrain meeting ingest"
   }
   Grant-CsApplicationAccessPolicy -PolicyName TaskBrain-MeetingIngest -Global
-  Set-CsTeamsMeetingConfiguration -EnableGraphTranscriptAccess \$true -EnableAttributedTranscripts \$true
+  Set-CsTeamsMeetingConfiguration -Identity Global -EnableGraphTranscriptAccess \$true -EnableAttributedTranscripts \$true
+  Get-CsTeamsMeetingConfiguration | Select-Object EnableGraphTranscriptAccess, EnableAttributedTranscripts
+
+If the Set-Cs parameters are still missing after the update, use Teams
+admin center instead: Meetings → Meeting settings → Transcript API access
+→ Microsoft Graph access On, then Configure → Include speaker attribution On.
 
 Transcription being enabled in a meeting is not enough: Graph transcript
 export is off until EnableGraphTranscriptAccess is true. Policy can take ~30m.

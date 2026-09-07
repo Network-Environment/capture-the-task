@@ -28,6 +28,7 @@ export type TriageResult =
   | { kind: "idea"; title: string; detail: string; tags: string[]; links: string[] }
   | { kind: "reference"; title: string; detail: string; tags: string[]; links: string[] }
   | { kind: "question" }
+  | { kind: "conversation" }
   | { kind: "action" }
   | { kind: "followup"; resolvedText: string };
 
@@ -42,6 +43,9 @@ Kinds:
   names worth wikilinking, lowercase-hyphenated).
 - "reference": a fact, decision, or info to store. Same fields as idea.
 - "question": the user asks to RECALL something from stored notes.
+- "conversation": nothing should be saved or executed. Use for greetings,
+  thanks, casual conversation, general knowledge/advice, and questions that
+  do not ask to recall the user's stored notes or org meeting data.
 - "action": the user asks the SYSTEM to do something now or on a schedule —
   operate on external tools (Smartsheet/PMO data), create or manage scheduled
   jobs, correct the agent's behavior ("stop doing X", "X means Y"), or any
@@ -50,8 +54,47 @@ Kinds:
   as resolvedText — a complete standalone instruction. If no recent turns
   match, return followup with resolvedText equal to the raw message.
 
-Rules: never invent deadlines. Voice transcripts ramble — extract, don't copy.
+Rules: do not treat greetings or casual chat as ideas/references. If there is
+no clear reason to persist or act, choose conversation. Questions about org
+meetings, decisions, and commitments are actions because they require meeting
+tools. Never invent deadlines. Voice transcripts ramble — extract, don't copy.
 Tags: 1-4, lowercase, no spaces. JSON only, no markdown fences.`;
+
+const TRIAGE_KINDS = new Set([
+  "task",
+  "idea",
+  "reference",
+  "question",
+  "conversation",
+  "action",
+  "followup",
+]);
+
+export function normalizeTriageResult(raw: string): TriageResult {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!TRIAGE_KINDS.has(String(parsed.kind))) return { kind: "conversation" };
+    if (
+      ["task", "idea", "reference"].includes(String(parsed.kind)) &&
+      (typeof parsed.title !== "string" || !parsed.title.trim())
+    ) {
+      return { kind: "conversation" };
+    }
+    if (
+      parsed.kind === "followup" &&
+      (typeof parsed.resolvedText !== "string" || !parsed.resolvedText.trim())
+    ) {
+      return { kind: "conversation" };
+    }
+    parsed.tags ??= [];
+    parsed.links ??= [];
+    parsed.detail ??= "";
+    return parsed as unknown as TriageResult;
+  } catch {
+    // An uncertain classifier must never create a durable artifact by default.
+    return { kind: "conversation" };
+  }
+}
 
 export async function triage(text: string, recent: SessionTurn[]): Promise<TriageResult> {
   const messages: ChatCompletionMessageParam[] = [
@@ -76,18 +119,28 @@ export async function triage(text: string, recent: SessionTurn[]): Promise<Triag
   });
 
   const raw = res.choices[0]?.message?.content ?? "{}";
-  let result: TriageResult;
-  try {
-    const parsed = JSON.parse(raw);
-    parsed.tags ??= [];
-    parsed.links ??= [];
-    parsed.detail ??= "";
-    result = parsed as TriageResult;
-  } catch {
-    result = { kind: "idea", title: text.slice(0, 60), detail: text, tags: [], links: [] };
-  }
+  const result = normalizeTriageResult(raw);
   void logActivity({ type: "triage", detail: { kind: result.kind } });
   return result;
+}
+
+export async function respondConversationally(
+  userMessage: string,
+  recent: SessionTurn[]
+): Promise<string> {
+  const messages: ChatCompletionMessageParam[] = [
+    {
+      role: "system",
+      content:
+        "You are TaskBrain. Respond naturally and helpfully. This message was " +
+        "classified as conversation, so do not claim that anything was saved, " +
+        "logged, scheduled, or changed. Keep greetings and acknowledgements brief.",
+    },
+    ...recent.map((t) => ({ role: t.role, content: t.text }) as ChatCompletionMessageParam),
+    { role: "user", content: userMessage },
+  ];
+  const res = await route("agent", messages);
+  return res.choices[0]?.message?.content ?? "Hey — what can I help with?";
 }
 
 interface AgentProfile {

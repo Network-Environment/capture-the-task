@@ -8,6 +8,7 @@ import { processCapture } from "./pipeline";
 import { downloadAudio } from "./services/transcription";
 import { createTodoTask } from "./services/graphTasks";
 import { saveConversationRef } from "./services/conversations";
+import { THINKING_RESPONSE } from "./channels/types";
 
 const AUDIO_TYPES = [
   "audio/mp4", "audio/mpeg", "audio/wav", "audio/aac", "audio/ogg",
@@ -22,6 +23,7 @@ export class TaskBrainBot extends ActivityHandler {
       const userId = context.activity.from.aadObjectId ?? context.activity.from.id;
       const convRef = TurnContext.getConversationReference(context.activity);
       void saveConversationRef(userId, convRef);
+      await context.sendActivity(THINKING_RESPONSE);
 
       // Voice clip → bytes (Teams-served URLs need the connector token)
       let audio: Buffer | undefined;

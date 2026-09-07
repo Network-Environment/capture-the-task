@@ -10,7 +10,13 @@
  * or an explicit message to the user (invariant #9).
  */
 import { transcribeBuffer } from "./services/transcription";
-import { triage, answerQuestion, runAgent, TriageResult } from "./services/agent";
+import {
+  triage,
+  answerQuestion,
+  respondConversationally,
+  runAgent,
+  TriageResult,
+} from "./services/agent";
 import { saveNote, recall } from "./services/brain";
 import { getRecentTurns, appendTurn } from "./services/session";
 import { logActivity } from "./services/activityLog";
@@ -85,7 +91,7 @@ export async function processCapture(input: CaptureInput): Promise<Outbound> {
   await appendTurn(userId, "user", text);
 
   // 4. Execute.
-  const out = await execute(input, text, source, result);
+  const out = await execute(input, text, source, result, recent);
   await appendTurn(userId, "assistant", out.summaryLine);
   return out;
 }
@@ -94,7 +100,8 @@ async function execute(
   input: CaptureInput,
   text: string,
   source: "text" | "voice",
-  r: TriageResult
+  r: TriageResult,
+  recent: Awaited<ReturnType<typeof getRecentTurns>>
 ): Promise<Outbound> {
   const { userId } = input;
 
@@ -140,6 +147,16 @@ async function execute(
       return { title: "From your brain", body: answer, tags: [], summaryLine: answer.slice(0, 200) };
     }
 
+    case "conversation": {
+      const response = await respondConversationally(text, recent);
+      return {
+        title: "TaskBrain",
+        body: response,
+        tags: [],
+        summaryLine: response.slice(0, 200),
+      };
+    }
+
     case "action": {
       if (!input.allowActions) {
         // Governance lever: some channels are capture-only.
@@ -167,7 +184,7 @@ async function execute(
           summaryLine: "Follow-up unresolved",
         };
       }
-      return execute(input, r.resolvedText, source, resolved);
+      return execute(input, r.resolvedText, source, resolved, recent);
     }
   }
 }

@@ -26,6 +26,7 @@ import {
   imessageAllowsActions,
   resolveIMessageUser,
   phoneForUser,
+  THINKING_RESPONSE,
   toPlainText,
 } from "./types";
 
@@ -129,6 +130,7 @@ async function handleInbound(space: IMessageSpace, message: IMessageMessage): Pr
     return;
   }
 
+  await space.send(THINKING_RESPONSE);
   await space.responding(async () => {
     const out = await processCapture({
       userId,
