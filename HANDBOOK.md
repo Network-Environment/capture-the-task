@@ -51,6 +51,11 @@ flowchart TD
   R[router · budget · token log] -.every LLM call.-> AG
   R -.-> TR
   ACT[(activity log)] --> ADM[/admin dashboard]
+  FN[Timer Function · meeting ingest] --> G[Graph transcripts]
+  G --> SUM[Foundry structured summary]
+  SUM --> MTG[(meetings + commitments)]
+  MTG --> ADM
+  MTG --> AG
 ```
 
 ### How everything is linked on deploy (the wiring map)
@@ -77,6 +82,7 @@ scripts/bootstrap.sh (once, out of band)
   │          above → the code's process.env is fully populated
   ├─ az acr build → taskbrain:<git-sha> (build happens inside Azure)
   ├─ App Service pulls the immutable image through managed identity
+  ├─ zip-deploy Flex Consumption Function (meeting ingest timer)
   └─ smoke test /healthz (retries)
                                                                 ▼
 runtime: src/config.ts loads /config/*.json from the container image;
@@ -114,7 +120,8 @@ AGENT LOOP — agent.ts::runAgent
    profile (config/agents.json): persona + tool allowlist + model route
    + lessons from agent self-memory injected into system prompt
    tools = native (save_note, recall_notes, schedule_job, list_jobs,
-           cancel_job, remember_lesson) + MCP tools (config-driven discovery)
+           cancel_job, remember_lesson, recall_meetings, list_commitments,
+           complete_commitment) + MCP tools (config-driven discovery)
    ≤8 tool rounds; write-listed MCP tools PARK for human approval instead
    of executing.
 
@@ -149,9 +156,10 @@ SCHEDULER — jobs-as-data
 | `src/services/conversations.ts` | per-user, per-channel references (`{user}:teams`, `{user}:imessage`, `{user}:latest`) |
 | `src/services/alerts.ts` | proactive alerts to users and admin |
 | `src/services/activityLog.ts` | event spine: captures, triage, tool/model calls (+tokens), job runs, errors |
-| `src/admin/dashboard.ts` | server-rendered `/admin` page |
+| `src/admin/dashboard.ts` | server-rendered `/admin` page (ops + meeting ingest + follow-through) |
 | `src/tools/registry.ts` | unified tool definitions + dispatch (native + MCP + approval gate) |
 | `src/tools/mcpClient.ts` | MCP Streamable HTTP client, config-driven discovery, namespacing |
+| `src/meetings/` | Teams meeting ingest worker: Graph delta, VTT parse, Foundry summary, Cosmos/Blob, Adam/Val recall |
 | `config/channels.json` | iMessage policy: enabled, allowActions, phone→userId identity map (= allowlist) |
 | `config/mcp.servers.json` | external integrations: url, token env, allowTools, confirmTools |
 | `config/agents.json` | agent profiles (persona, tools glob, route) |
@@ -173,6 +181,23 @@ SCHEDULER — jobs-as-data
 | `agent-memory` | `/userId` | — | agent lessons (≤40/user, auto-consolidated) |
 | `conversations` | `/userId` | — | per-channel references: Teams conversationRef or iMessage phone/space; `:latest` pointer |
 | `pending` | `/userId` | 3600s | parked write actions awaiting approve/deny |
+| `meetings` | `/organizerId` | 90d | one compact summary + one 1536-dim embedding per meeting. No raw VTT. |
+| `commitments` | `/ownerKey` | 180d (14d after done) | tiny follow-through records (no embeddings) |
+| `meeting-checkpoints` | `/organizerId` | — | Graph deltaLink per organizer + ingest health (`latest` / `_system`) |
+
+Blob `meetings/{yyyy-mm}/{id}.md` holds the same structured summary (Cool tier after 1 day, delete after 90). Teams/Graph remains the system of record for transcripts; the agent does not keep VTT. Open commitments can outlive the meeting TTL because they are small JSON, not vectors.
+
+Org-level lessons are written into `agent-memory` with `userId: "org"`, still capped and consolidated. They are injected into agent prompts only for Adam and Val (`MEETING_VIEWERS`).
+
+### Meeting intelligence (org awareness, not a transcript archive)
+
+The five-minute Flex Consumption Function (`src/meetings/timer.ts`) enumerates tenant members, polls each organizer's `getAllTranscripts` delta feed, downloads `text/vtt` in memory, skips near-silent meetings, and asks the existing `gpt-5-mini` / `standard` Foundry deployment for structured JSON (title, categories, summary, decisions, actions, risks, open questions). That JSON becomes one Cosmos meeting document, one embedding of title+summary+decisions+actions, markdown in Blob, and new/updated commitment rows. Later meetings that restate the same owner + work mark the prior commitment done.
+
+Chat tools `recall_meetings`, `list_commitments`, and `complete_commitment` are org-wide but **viewer-gated** to Adam (`bceb24c5-ef85-4301-9ab2-073805d535aa`) and Valerie (`4f323599-0df8-47f7-aa01-46dbb211894c`) unless `MEETING_VIEWERS` is overridden. Other TaskBrain users get a deny string. Personal notes stay user-scoped.
+
+Tenant setup that Bicep cannot do: `./scripts/setup-meeting-ingest.sh` assigns Graph application roles on the Function managed identity. A Teams admin must then grant a tenant-wide application access policy and set `EnableGraphTranscriptAccess` / `EnableAttributedTranscripts`. Existing meeting transcription does **not** enable Graph export.
+
+First successful poll is a controlled backfill: each organizer's delta link starts from "all current transcripts" then only changes. Repeats are deduped by transcript ID.
 
 ### The two memories (do not merge them)
 
@@ -239,8 +264,11 @@ patched by bootstrap.sh) supplies the same names.
 | `FOUNDRY_ENDPOINT` / `FOUNDRY_API_KEY` | Azure AI Foundry (OpenAI-compatible) | Bicep resource + `listKeys()` |
 | `CHEAP_DEPLOYMENT` / `STANDARD_DEPLOYMENT` / `PREMIUM_DEPLOYMENT` / `EMBED_DEPLOYMENT` | model tiers | Bicep deployments `cheap`/`standard`/`embed` (PREMIUM = standard until you add a larger deployment) |
 | `SPEECH_REGION` / `SPEECH_KEY` | Azure AI Speech | Bicep + `listKeys()` |
-| `STORAGE_CONNECTION_STRING` / `NOTES_CONTAINER` | Blob notes | Bicep + `listKeys()` |
+| `STORAGE_CONNECTION_STRING` / `NOTES_CONTAINER` / `MEETINGS_CONTAINER` | Blob notes + meeting summaries | Bicep + `listKeys()` |
 | `COSMOS_ENDPOINT` / `COSMOS_KEY` / `COSMOS_DB` | Cosmos DB | Bicep + `listKeys()` |
+| `MEETING_VIEWERS` | Entra object ids allowed to query meetings/commitments | Bicep default Adam+Val |
+| `MEETING_TTL_DAYS` / `COMMITMENT_TTL_DAYS` | Cosmos TTL for meeting docs / commitments | Bicep 90 / 180 |
+| `MEETING_ORGANIZERS_PER_RUN` | Function round-robin batch size | Function app setting (25) |
 | `GRAPH_CONNECTION_NAME` | Bot Service OAuth connection name | Bicep constant `graph-connection` |
 | `SMARTSHEET_API_TOKEN` | bearer for mcp.smartsheet.com | GitHub secret (optional) |
 | `SPECTRUM_PROJECT_ID` / `SPECTRUM_PROJECT_SECRET` | Photon iMessage; blank disables channel | GitHub secrets (optional) |
@@ -279,23 +307,30 @@ repo, org permission to upload Teams apps.
 2. **Local sanity:** `npm ci && npx tsc --noEmit && npm test`. (Also
    review Bicep model params against your region's Foundry catalog.)
 3. **Push to `main`.** Pipeline: build → tests → OIDC login → Bicep (all
-   resources, ACR, three model deployments, every app setting, Bot OAuth) →
-   build an immutable image in ACR → App Service restart → health check.
-   No zip artifact or Kudu/OneDeploy extraction is involved.
-4. **Teams package:** add `color.png` (192×192) and `outline.png` (32×32)
+   resources including Flex Consumption Function + meeting Cosmos containers,
+   ACR, three model deployments, every app setting, Bot OAuth) →
+   build an immutable image in ACR → App Service restart → health check →
+   zip-deploy the meeting ingest Function.
+4. **Meeting ingest tenant grant (once, after the Function exists):**
+   `./scripts/setup-meeting-ingest.sh rg-taskbrain` then the printed Teams
+   PowerShell (application access policy + Graph transcript access). Wait
+   ~30 minutes, then confirm `/admin` ingest health after a poll.
+5. **Teams package:** add `color.png` (192×192) and `outline.png` (32×32)
    beside the patched manifest; zip the three at the root; Teams admin center →
    Manage apps → Upload new app; scope via app permission policy if desired.
-5. **iMessage via Photon (optional):** create a project at app.photon.codes,
+6. **iMessage via Photon (optional):** create a project at app.photon.codes,
    provision a line, add `SPECTRUM_PROJECT_ID` / `SPECTRUM_PROJECT_SECRET` as
    GitHub secrets (`gh secret set …`), fill `config/channels.json` identities
    (E.164 phone → Entra object id: `az ad user show --id user@domain --query
    id`), push. Logs show `[imessage] Photon stream connected`.
-6. **Smartsheet (optional):** add `SMARTSHEET_API_TOKEN` as a GitHub secret
+7. **Smartsheet (optional):** add `SMARTSHEET_API_TOKEN` as a GitHub secret
    and push. Tools appear as `smartsheet__*`.
-7. **Verify:** "hello" → welcome; a text task → To Do (or brain fallback); a
+8. **Verify:** "hello" → welcome; a text task → To Do (or brain fallback); a
    voice memo → transcribed capture; "what did I capture today?" → recall;
    "every Friday at 4 summarize open Smartsheet risks" → job scheduled;
-   `/admin` (Entra sign-in) shows all of it.
+   Adam/Val: "what did we decide last week?" / "what's overdue?" uses meeting
+   tools; another user is denied; `/admin` shows ingest health, recent
+   meetings, and open/overdue commitments.
 
 Ordering constraint: bootstrap must run before the first pipeline
 (federated credential, RBAC, RG, providers, secrets). Everything else is
@@ -305,8 +340,9 @@ order-independent and re-runnable.
 
 - **Dashboard:** `https://<app>.azurewebsites.net/admin` — Entra login; only
   users assigned to the **TaskBrain Admin** enterprise app. Today's counts,
-  token spend **per model** (routing efficacy), jobs with last results, agent
-  lessons, event stream. Auto-refreshes 60s. Add viewers in Entra → Enterprise
+  token spend **per model**, **meeting ingest health**, open/overdue
+  commitments, recent meeting summaries (not VTT), org lessons, jobs, event
+  stream. Auto-refreshes 60s. Add viewers in Entra → Enterprise
   applications → TaskBrain Admin → Users and groups. `/api/messages` and
   `/healthz` stay anonymous so the bot and CI smoke test keep working.
 - **Alerts (push):** job failures after final retry → owner + admin; budget
@@ -381,8 +417,9 @@ logging already support it. Do not pay this tax early.
 4. Notes remain plain markdown in Blob with frontmatter + wikilinks.
 5. User knowledge → `notes`; agent operational knowledge → `agent-memory`;
    never cross-filed. Lessons stay capped.
-6. The orchestrator is the only scheduler; jobs are data; claims are
-   etag-conditioned.
+6. The App Service orchestrator is the only scheduler for chat jobs; jobs
+   are data; claims are etag-conditioned. Meeting ingest is a separate
+   Functions timer (Graph polling), not a chat job.
 7. Logging and alerting are non-fatal: their failures never break the
    capture pipeline.
 8. No secrets in the repo. CI authenticates via OIDC only.
@@ -412,7 +449,8 @@ logging already support it. Do not pay this tax early.
 - iMessage identity map is static config; a Teams-issued link code flow
   would let users self-enroll phone numbers.
 - Weekly digest job: create via chat once deployed ("every Friday at 4pm
-  summarize this week's captures and open Smartsheet risks").
+  summarize this week's captures, overdue meeting commitments, and open
+  Smartsheet risks") as Adam or Val so `list_commitments` is allowed.
 
 ## 9. Troubleshooting quick hits
 
@@ -452,3 +490,9 @@ logging already support it. Do not pay this tax early.
   Authentication → Implicit grant → check **ID tokens**.
 - **`/admin` returns 401 from curl:** expected. Easy Auth only redirects
   requests that look like browsers; non-browser clients get a bare 401.
+- **Meeting ingest Graph 403:** run `scripts/setup-meeting-ingest.sh` and
+  the printed Teams PowerShell. `EnableGraphTranscriptAccess` is independent
+  of in-meeting transcription. Policy can take ~30 minutes.
+- **Function has no functions after deploy:** Flex Consumption needs the zip
+  at the `fn-packages` container; CI `config-zip` step must succeed after
+  infra created `functionAppName`.

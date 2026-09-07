@@ -17,6 +17,7 @@
 import { CosmosClient } from "@azure/cosmos";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { route } from "./router";
+import { canViewMeetings } from "../meetings/access";
 
 const cosmos = new CosmosClient({
   endpoint: process.env.COSMOS_ENDPOINT!,
@@ -60,10 +61,13 @@ export async function rememberLesson(
 }
 
 export async function getLessons(userId: string): Promise<Lesson[]> {
+  const includeOrg = userId === "org" || canViewMeetings(userId);
+  const query = includeOrg
+    ? "SELECT * FROM c WHERE c.userId = @u OR c.userId = 'global' OR c.userId = 'org' ORDER BY c.createdAt DESC"
+    : "SELECT * FROM c WHERE c.userId = @u OR c.userId = 'global' ORDER BY c.createdAt DESC";
   const { resources } = await mem.items
     .query({
-      query:
-        "SELECT * FROM c WHERE c.userId = @u OR c.userId = 'global' ORDER BY c.createdAt DESC",
+      query,
       parameters: [{ name: "@u", value: userId }],
     })
     .fetchAll();

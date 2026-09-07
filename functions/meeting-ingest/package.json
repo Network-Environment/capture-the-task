@@ -1,0 +1,7 @@
+{
+  "name": "taskbrain-meeting-ingest",
+  "version": "0.1.0",
+  "description": "Timer-triggered Teams transcript ingest worker. Built from the repo dist/ tree.",
+  "main": "dist/meetings/timer.js",
+  "engines": { "node": ">=22" }
+}

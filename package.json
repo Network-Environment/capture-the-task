@@ -10,10 +10,11 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test --test-force-exit test/*.test.ts"
   },
   "dependencies": {
     "@azure/cosmos": "^4.1.1",
+    "@azure/functions": "^4.16.2",
     "@azure/identity": "^4.4.1",
     "@azure/storage-blob": "^12.24.0",
     "@modelcontextprotocol/sdk": "^1.12.0",

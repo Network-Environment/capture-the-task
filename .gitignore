@@ -4,3 +4,4 @@ dist/
 *.zip
 infra/*.json
 .DS_Store
+functions/meeting-ingest/local.settings.json

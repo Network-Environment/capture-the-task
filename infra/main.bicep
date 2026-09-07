@@ -96,6 +96,44 @@ resource notesContainer 'Microsoft.Storage/storageAccounts/blobServices/containe
   properties: { publicAccess: 'None' }
 }
 
+resource meetingsBlobContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${storage.name}/default/meetings'
+  properties: { publicAccess: 'None' }
+}
+
+resource fnPackagesContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  name: '${storage.name}/default/fn-packages'
+  properties: { publicAccess: 'None' }
+}
+
+resource storageLifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
+  parent: storage
+  name: 'default'
+  properties: {
+    policy: {
+      rules: [
+        {
+          enabled: true
+          name: 'meetings-cool-and-delete'
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              blobTypes: [ 'blockBlob' ]
+              prefixMatch: [ 'meetings/' ]
+            }
+            actions: {
+              baseBlob: {
+                tierToCool: { daysAfterModificationGreaterThan: 1 }
+                delete: { daysAfterModificationGreaterThan: 90 }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+
 // ---------- Cosmos DB serverless: metadata, embeddings, session ----------
 resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
   name: 'cos-${appName}-${suffix}'
@@ -220,6 +258,58 @@ resource pendingColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/contain
   }
 }
 
+resource meetingsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'meetings'
+  properties: {
+    resource: {
+      id: 'meetings'
+      partitionKey: { paths: ['/organizerId'], kind: 'Hash' }
+      defaultTtl: 7776000 // 90 days; MEETING_TTL_DAYS on the document can shorten
+      vectorEmbeddingPolicy: {
+        vectorEmbeddings: [
+          {
+            path: '/embedding'
+            dataType: 'float32'
+            distanceFunction: 'cosine'
+            dimensions: 1536
+          }
+        ]
+      }
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        automatic: true
+        includedPaths: [ { path: '/*' } ]
+        excludedPaths: [ { path: '/embedding/*' }, { path: '/"_etag"/?' } ]
+        vectorIndexes: [ { path: '/embedding', type: 'diskANN' } ]
+      }
+    }
+  }
+}
+
+resource commitmentsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'commitments'
+  properties: {
+    resource: {
+      id: 'commitments'
+      partitionKey: { paths: ['/ownerKey'], kind: 'Hash' }
+      defaultTtl: 15552000 // 180 days; delete earlier when status is done
+    }
+  }
+}
+
+resource meetingCheckpointsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'meeting-checkpoints'
+  properties: {
+    resource: {
+      id: 'meeting-checkpoints'
+      partitionKey: { paths: ['/organizerId'], kind: 'Hash' }
+    }
+  }
+}
+
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: 'appi-${appName}-${suffix}'
   location: location
@@ -334,6 +424,10 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'JOBS_TIMEZONE', value: jobsTimezone }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
         { name: 'WEBSITES_PORT', value: '3978' }
+        { name: 'MEETING_VIEWERS', value: 'bceb24c5-ef85-4301-9ab2-073805d535aa,4f323599-0df8-47f7-aa01-46dbb211894c' }
+        { name: 'MEETINGS_CONTAINER', value: 'meetings' }
+        { name: 'MEETING_TTL_DAYS', value: '90' }
+        { name: 'COMMITMENT_TTL_DAYS', value: '180' }
       ]
     }
   }
@@ -394,6 +488,97 @@ resource appAuth 'Microsoft.Web/sites/config@2024-04-01' = {
   }
 }
 
+var storageConn = 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
+
+// ---------- Meeting ingest Function (Flex Consumption, Node 22) ----------
+resource fnPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
+  name: 'plan-${appName}-fn'
+  location: appLocation
+  kind: 'functionapp'
+  sku: {
+    name: 'FC1'
+    tier: 'FlexConsumption'
+  }
+  properties: { reserved: true }
+}
+
+resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
+  name: 'func-${appName}-${suffix}'
+  location: appLocation
+  kind: 'functionapp,linux'
+  identity: { type: 'SystemAssigned' }
+  properties: {
+    serverFarmId: fnPlan.id
+    httpsOnly: true
+    reserved: true
+    siteConfig: {
+      minTlsVersion: '1.2'
+      appSettings: [
+        { name: 'AzureWebJobsStorage', value: storageConn }
+        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
+        { name: 'FOUNDRY_ENDPOINT', value: 'https://${foundry.properties.customSubDomainName}.openai.azure.com' }
+        { name: 'FOUNDRY_API_KEY', value: foundry.listKeys().key1 }
+        { name: 'CHEAP_DEPLOYMENT', value: depCheap.name }
+        { name: 'STANDARD_DEPLOYMENT', value: depStandard.name }
+        { name: 'PREMIUM_DEPLOYMENT', value: depStandard.name }
+        { name: 'EMBED_DEPLOYMENT', value: depEmbed.name }
+        { name: 'STORAGE_CONNECTION_STRING', value: storageConn }
+        { name: 'MEETINGS_CONTAINER', value: 'meetings' }
+        { name: 'COSMOS_ENDPOINT', value: cosmos.properties.documentEndpoint }
+        { name: 'COSMOS_KEY', value: cosmos.listKeys().primaryMasterKey }
+        { name: 'COSMOS_DB', value: cosmosDb.name }
+        { name: 'MEETING_TTL_DAYS', value: '90' }
+        { name: 'COMMITMENT_TTL_DAYS', value: '180' }
+        { name: 'MEETING_ORGANIZERS_PER_RUN', value: '25' }
+        { name: 'MEETING_VIEWERS', value: 'bceb24c5-ef85-4301-9ab2-073805d535aa,4f323599-0df8-47f7-aa01-46dbb211894c' }
+        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'node' }
+      ]
+    }
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storage.properties.primaryEndpoints.blob}fn-packages'
+          authentication: {
+            type: 'StorageAccountConnectionString'
+            storageAccountConnectionStringName: 'AzureWebJobsStorage'
+          }
+        }
+      }
+      runtime: {
+        name: 'node'
+        version: '22'
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 40
+        instanceMemoryMB: 2048
+      }
+    }
+  }
+  dependsOn: [
+    fnPackagesContainer
+    meetingsBlobContainer
+    meetingsColl
+    commitmentsColl
+    meetingCheckpointsColl
+  ]
+}
+
+var storageBlobDataOwnerRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
+)
+
+resource functionBlobOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionApp.id, storageBlobDataOwnerRoleId)
+  scope: storage
+  properties: {
+    roleDefinitionId: storageBlobDataOwnerRoleId
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // ---------- Bot Service ----------
 resource bot 'Microsoft.BotService/botServices@2023-09-15-preview' = {
   name: 'bot-${appName}-${suffix}'
@@ -447,3 +632,5 @@ output storageAccount string = storage.name
 output cosmosAccount string = cosmos.name
 output speechEndpoint string = speech.properties.endpoint
 output foundryEndpoint string = foundry.properties.endpoint
+output functionAppName string = functionApp.name
+output functionPrincipalId string = functionApp.identity.principalId

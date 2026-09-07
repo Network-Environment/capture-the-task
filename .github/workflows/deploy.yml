@@ -36,6 +36,7 @@ jobs:
     outputs:
       app-name: ${{ steps.deploy.outputs.app-name }}
       registry-name: ${{ steps.deploy.outputs.registry-name }}
+      function-app-name: ${{ steps.deploy.outputs.function-app-name }}
     steps:
       - uses: actions/checkout@v4
       - uses: azure/login@v2
@@ -82,6 +83,7 @@ jobs:
                spectrumProjectSecret="$SPECTRUM_PROJECT_SECRET")
           echo "app-name=$(jq -r '.appName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "registry-name=$(jq -r '.registryName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
+          echo "function-app-name=$(jq -r '.functionAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: [validate, infra]
@@ -117,6 +119,30 @@ jobs:
             sleep 10
           done
           echo "app did not become healthy"; exit 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Package and deploy meeting ingest Function
+        run: |
+          npm ci
+          npm run build
+          cp functions/meeting-ingest/host.json host.json
+          python - <<'PY'
+          import json
+          json.dump({
+            "name": "taskbrain-meeting-ingest",
+            "version": "0.1.0",
+            "main": "dist/meetings/timer.js",
+            "engines": {"node": ">=22"}
+          }, open("fn-package.json", "w"))
+          PY
+          mv fn-package.json package.json
+          zip -r meeting-ingest.zip host.json package.json dist node_modules -x "node_modules/.cache/*"
+          az functionapp deployment source config-zip \
+            -g "$RESOURCE_GROUP" \
+            -n "${{ needs.infra.outputs.function-app-name }}" \
+            --src meeting-ingest.zip
 
 # Setup (one-time):
 # 1. Entra app registration for CI with federated credential:

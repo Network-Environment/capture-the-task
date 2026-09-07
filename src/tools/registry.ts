@@ -10,6 +10,7 @@ import { scheduleJob, listJobs, cancelJob } from "../services/scheduler";
 import { rememberLesson, LessonKind } from "../services/agentMemory";
 import { mcpToolDefinitions, isMcpTool, callMcpTool } from "./mcpClient";
 import { requiresApproval, parkAction } from "../services/approvals";
+import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
 
 export interface ToolContext {
   userId: string;
@@ -115,6 +116,47 @@ const nativeDefs: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "recall_meetings",
+      description:
+        "Search org meeting summaries (last 90 days) for what was decided, discussed, or assigned. " +
+        "Use for questions about meetings, decisions, and who said they would do what.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          k: { type: "number" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_commitments",
+      description:
+        "List open org commitments extracted from meetings. Overdue items first. Optional owner filter.",
+      parameters: {
+        type: "object",
+        properties: { owner: { type: "string", description: "Name or id fragment" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "complete_commitment",
+      description: "Mark an open meeting commitment done after the user confirms follow-through.",
+      parameters: {
+        type: "object",
+        properties: { idOrText: { type: "string" } },
+        required: ["idOrText"],
+      },
+    },
+  },
 ];
 
 export async function allToolDefinitions(): Promise<ChatCompletionTool[]> {
@@ -182,6 +224,12 @@ export async function dispatch(
           (args.kind as LessonKind) ?? "preference",
           String(args.text)
         );
+      case "recall_meetings":
+        return await recallMeetings(ctx.userId, String(args.query), Number(args.k ?? 6));
+      case "list_commitments":
+        return await listFollowThrough(ctx.userId, args.owner ? String(args.owner) : undefined);
+      case "complete_commitment":
+        return await markCommitmentDone(ctx.userId, String(args.idOrText));
       default:
         return `Unknown tool: ${name}`;
     }

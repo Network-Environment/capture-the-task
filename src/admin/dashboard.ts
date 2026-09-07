@@ -1,7 +1,7 @@
 /**
  * Admin dashboard — one server-rendered HTML page, zero frontend build.
- * Shows: today's stats + token spend by model, scheduled jobs, agent memory,
- * and the recent event stream.
+ * Shows: today's stats + token spend by model, meeting ingest health,
+ * open/overdue commitments, recent meetings, org lessons, jobs, and events.
  *
  * In Azure, App Service Easy Auth (Entra) gates /admin. Only users assigned
  * to the TaskBrain Admin enterprise app can sign in. /api/messages and
@@ -11,6 +11,8 @@
 import { Request, Response } from "restify";
 import { dayStats, recentEvents } from "../services/activityLog";
 import { CosmosClient } from "@azure/cosmos";
+import { listCommitmentsForDash, readHealth, recentMeetings } from "../meetings/store";
+import type { CommitmentDoc, IngestHealthDoc, MeetingDoc } from "../meetings/types";
 
 const cosmos = new CosmosClient({
   endpoint: process.env.COSMOS_ENDPOINT!,
@@ -25,11 +27,14 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const [stats, events, jobs, lessons] = await Promise.all([
+  const [stats, events, jobs, lessons, health, meetings, commitments] = await Promise.all([
     dayStats(),
     recentEvents(60),
     db.container("jobs").items.query("SELECT * FROM c ORDER BY c.nextRun").fetchAll(),
     db.container("agent-memory").items.query("SELECT * FROM c ORDER BY c.createdAt DESC").fetchAll(),
+    readHealth().catch(() => undefined),
+    recentMeetings(20).catch(() => [] as MeetingDoc[]),
+    listCommitmentsForDash(40).catch(() => [] as CommitmentDoc[]),
   ]);
 
   const totalTokens = stats.inputTokens + stats.outputTokens;
@@ -64,7 +69,18 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
     })
     .join("");
 
+  const orgLessonRows = lessons.resources
+    .filter((l: Record<string, unknown>) => l.userId === "org")
+    .map(
+      (l: Record<string, unknown>) =>
+        `<tr><td>${pill(String(l.kind), "info")}</td>` +
+        `<td>${esc(String(l.text))}</td>` +
+        `<td class="mono muted">${String(l.createdAt).slice(0, 10)}</td></tr>`
+    )
+    .join("");
+
   const lessonRows = lessons.resources
+    .filter((l: Record<string, unknown>) => l.userId !== "org")
     .map(
       (l: Record<string, unknown>) =>
         `<tr><td>${pill(String(l.kind), "info")}</td>` +
@@ -85,10 +101,52 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
     })
     .join("");
 
+  const commitmentRows = [...commitments]
+    .sort((a, b) => {
+      const ao = a.status === "open" && a.due && Date.parse(a.due) < Date.now() ? 0 : 1;
+      const bo = b.status === "open" && b.due && Date.parse(b.due) < Date.now() ? 0 : 1;
+      return ao - bo;
+    })
+    .map((c) => {
+      const overdue = c.status === "open" && c.due && Date.parse(c.due) < Date.now();
+      const tone = c.status === "done" ? "ok" : overdue ? "err" : c.status === "open" ? "warn" : "idle";
+      return (
+        `<tr><td class="strong">${esc(c.ownerName)}</td>` +
+        `<td>${esc(c.text)}</td>` +
+        `<td class="mono muted">${esc(c.due ?? "—")}</td>` +
+        `<td>${pill(overdue ? "overdue" : c.status, tone)}</td>` +
+        `<td class="muted clip">${esc(c.sourceTitle)}</td></tr>`
+      );
+    })
+    .join("");
+
+  const meetingRows = meetings
+    .map(
+      (m) =>
+        `<tr><td class="mono muted">${esc((m.startAt ?? m.createdAt).slice(0, 10))}</td>` +
+        `<td class="strong">${esc(m.title)}</td>` +
+        `<td class="muted">${esc(m.organizerName ?? m.organizerId)}</td>` +
+        `<td>${(m.categories ?? []).slice(0, 3).map((t) => pill(t, "accent")).join(" ")}</td>` +
+        `<td class="muted clip">${esc(m.summary)}</td></tr>`
+    )
+    .join("");
+
   const signedIn = principal?.name ?? "local";
   res.sendRaw(
     200,
-    renderDashboard({ stats, totalTokens, modelRows, jobRows, lessonRows, eventRows, signedIn }),
+    renderDashboard({
+      stats,
+      totalTokens,
+      modelRows,
+      jobRows,
+      lessonRows,
+      orgLessonRows,
+      eventRows,
+      commitmentRows,
+      meetingRows,
+      health,
+      signedIn,
+    }),
     { "Content-Type": "text/html" }
   );
 }
@@ -157,13 +215,37 @@ function table(cols: string[], rows: string, empty: string): string {
   );
 }
 
+function ingestHealthPanel(h?: IngestHealthDoc): string {
+  if (!h) {
+    return `<section class="panel"><h2>Meeting ingest</h2><p class="muted" style="padding:1rem 1.15rem">No ingest run yet. After Graph/Teams policy is granted, the Function polls every 5 minutes.</p></section>`;
+  }
+  const err = h.errors?.length
+    ? h.errors.slice(0, 4).map((e) => `<div class="muted" style="padding:.2rem 1.15rem">${esc(e)}</div>`).join("")
+    : `<p class="muted" style="padding:0 1.15rem 1rem">No Graph errors on the last run.</p>`;
+  return `<section class="panel">
+    <h2>Meeting ingest</h2>
+    <div class="grid" style="margin:1rem 1.15rem">
+      <div class="stat"><div class="label">Last run</div><div class="value" style="font-size:1rem">${esc(h.lastRunAt.slice(0, 19).replace("T", " "))}Z</div></div>
+      <div class="stat"><div class="label">Organizers</div><div class="value">${h.scanned}</div></div>
+      <div class="stat"><div class="label">Ingested</div><div class="value">${h.ingested}</div></div>
+      <div class="stat"><div class="label">Skipped</div><div class="value">${h.skipped}</div></div>
+      <div class="stat${h.errors.length ? " alert" : ""}"><div class="label">Errors</div><div class="value">${h.errors.length}</div></div>
+    </div>
+    ${err}
+  </section>`;
+}
+
 export function renderDashboard(d: {
   stats: Awaited<ReturnType<typeof dayStats>>;
   totalTokens: number;
   modelRows: string;
   jobRows: string;
   lessonRows: string;
+  orgLessonRows?: string;
   eventRows: string;
+  commitmentRows?: string;
+  meetingRows?: string;
+  health?: IngestHealthDoc;
   signedIn: string;
 }): string {
   const { stats, totalTokens, signedIn } = d;
@@ -383,6 +465,31 @@ td.share{min-width:150px}
   </div>
 
   ${budgetBlock}
+
+  ${ingestHealthPanel(d.health)}
+
+  <section class="panel">
+    <h2>Open / overdue commitments</h2>
+    ${table(
+      ["Owner", "Commitment", "Due", "Status", "From"],
+      d.commitmentRows ?? "",
+      "No commitments ingested yet."
+    )}
+  </section>
+
+  <section class="panel">
+    <h2>Recent meetings</h2>
+    ${table(
+      ["Date", "Title", "Organizer", "Tags", "Summary"],
+      d.meetingRows ?? "",
+      "No meetings in the 90-day index yet."
+    )}
+  </section>
+
+  <section class="panel">
+    <h2>Org lessons</h2>
+    ${table(["Kind", "Lesson", "Added"], d.orgLessonRows ?? "", "No org lessons yet.")}
+  </section>
 
   <section class="panel">
     <h2>Model usage</h2>
