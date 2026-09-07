@@ -81,20 +81,49 @@ export interface RouteOptions {
 }
 
 /**
- * gpt-5 / o-series Foundry deployments reject `max_tokens` (want
- * `max_completion_tokens`) and often reject a non-default `temperature`.
- * gpt-4.1-mini (cheap triage) still uses the older pair.
+ * Deployment names (`cheap`, `standard`) say nothing about the model behind
+ * them, so capability is learned from the API instead of guessed: gpt-5 /
+ * o-series reject `max_tokens` (want `max_completion_tokens`) and reject a
+ * non-default `temperature`. The first rejection per deployment is retried
+ * and remembered for the life of the process.
  */
+export interface ChatCapabilities {
+  completionParam: "max_tokens" | "max_completion_tokens";
+  allowTemperature: boolean;
+}
+
+const capabilities = new Map<string, ChatCapabilities>();
+
+function capabilitiesFor(model: string): ChatCapabilities {
+  return capabilities.get(model) ?? { completionParam: "max_tokens", allowTemperature: true };
+}
+
 export function chatSamplingParams(
-  model: string,
+  caps: ChatCapabilities,
   maxTokens: number,
   temperature: number
 ): { max_tokens?: number; max_completion_tokens?: number; temperature?: number } {
-  const m = model.toLowerCase();
-  const reasoningStyle =
-    m.includes("gpt-5") || /(^|[-_])o[1-9]/.test(m) || m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4");
-  if (reasoningStyle) return { max_completion_tokens: maxTokens };
-  return { max_tokens: maxTokens, temperature };
+  return {
+    ...(caps.completionParam === "max_tokens"
+      ? { max_tokens: maxTokens }
+      : { max_completion_tokens: maxTokens }),
+    ...(caps.allowTemperature ? { temperature } : {}),
+  };
+}
+
+/** Returns adjusted capabilities when the error is an unsupported-parameter 400. */
+export function capabilitiesFromError(
+  caps: ChatCapabilities,
+  message: string
+): ChatCapabilities | undefined {
+  const m = message.toLowerCase();
+  if (m.includes("max_completion_tokens") && caps.completionParam === "max_tokens") {
+    return { ...caps, completionParam: "max_completion_tokens" };
+  }
+  if (m.includes("'temperature'") && m.includes("unsupported") && caps.allowTemperature) {
+    return { ...caps, allowTemperature: false };
+  }
+  return undefined;
 }
 
 export async function route(
@@ -103,13 +132,32 @@ export async function route(
   opts: RouteOptions = {}
 ) {
   const s = budgetGuard(task, spec(task));
-  const res = await client.chat.completions.create({
+  const body = {
     model: s.model,
     messages,
-    ...chatSamplingParams(s.model, s.maxTokens, s.temperature),
     ...(opts.json ? { response_format: { type: "json_object" as const } } : {}),
     ...(opts.tools?.length ? { tools: opts.tools } : {}),
-  });
+  };
+
+  let caps = capabilitiesFor(s.model);
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await client.chat.completions.create({
+        ...body,
+        ...chatSamplingParams(caps, s.maxTokens, s.temperature),
+      });
+      break;
+    } catch (err) {
+      const next = attempt < 2 ? capabilitiesFromError(caps, (err as Error).message ?? "") : undefined;
+      if (!next) throw err;
+      caps = next;
+      capabilities.set(s.model, caps);
+      console.log(`[router] ${s.model} needs ${caps.completionParam}, temperature=${caps.allowTemperature}`);
+    }
+  }
+  capabilities.set(s.model, caps);
+
   todayTokens += (res.usage?.prompt_tokens ?? 0) + (res.usage?.completion_tokens ?? 0);
   void logActivity({
     type: "model_call",
