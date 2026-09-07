@@ -531,7 +531,6 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'COMMITMENT_TTL_DAYS', value: '180' }
         { name: 'MEETING_ORGANIZERS_PER_RUN', value: '25' }
         { name: 'MEETING_VIEWERS', value: 'bceb24c5-ef85-4301-9ab2-073805d535aa,4f323599-0df8-47f7-aa01-46dbb211894c' }
-        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'node' }
       ]
     }
     functionAppConfig: {
