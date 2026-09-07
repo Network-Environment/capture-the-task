@@ -96,3 +96,70 @@ export async function dayStats(day = new Date().toISOString().slice(0, 10)): Pro
   }
   return stats;
 }
+
+export interface UsageBreakdown {
+  stats: DayStats;
+  byChannel: Record<string, number>;
+  bySource: Record<string, number>;
+  byTool: Record<string, number>;
+  byUser: Record<string, number>;
+}
+
+function bump(map: Record<string, number>, key: string): void {
+  map[key] = (map[key] ?? 0) + 1;
+}
+
+/** Today's activity sliced for the Usage section (channel, source, tool, user). */
+export async function usageBreakdown(
+  day = new Date().toISOString().slice(0, 10)
+): Promise<UsageBreakdown> {
+  const { resources } = await activity.items
+    .query({
+      query: "SELECT * FROM c WHERE c.day = @day",
+      parameters: [{ name: "@day", value: day }],
+    })
+    .fetchAll();
+
+  const stats: DayStats = {
+    captures: 0,
+    toolCalls: 0,
+    jobRuns: 0,
+    errors: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    byModel: {},
+  };
+  const byChannel: Record<string, number> = {};
+  const bySource: Record<string, number> = {};
+  const byTool: Record<string, number> = {};
+  const byUser: Record<string, number> = {};
+
+  for (const e of resources) {
+    const d = (e.detail ?? {}) as Record<string, unknown>;
+    if (e.type === "capture") {
+      stats.captures++;
+      bump(byChannel, String(d.channel ?? "unknown"));
+      bump(bySource, String(d.source ?? "unknown"));
+    }
+    if (e.type === "tool_call") {
+      stats.toolCalls++;
+      bump(byTool, String(d.tool ?? "unknown"));
+    }
+    if (e.type === "job_run") stats.jobRuns++;
+    if (e.type === "error") stats.errors++;
+    if (e.userId) bump(byUser, String(e.userId));
+    if (e.type === "model_call") {
+      const model = String(d.model ?? "unknown");
+      const inTok = Number(d.inputTokens ?? 0);
+      const outTok = Number(d.outputTokens ?? 0);
+      stats.inputTokens += inTok;
+      stats.outputTokens += outTok;
+      stats.byModel[model] ??= { calls: 0, inputTokens: 0, outputTokens: 0 };
+      stats.byModel[model].calls++;
+      stats.byModel[model].inputTokens += inTok;
+      stats.byModel[model].outputTokens += outTok;
+    }
+  }
+
+  return { stats, byChannel, bySource, byTool, byUser };
+}

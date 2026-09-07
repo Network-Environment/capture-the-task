@@ -12,13 +12,15 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { loadConfig } from "../config";
 const serversConfig = loadConfig<{ servers: unknown[] }>("mcp.servers");
 
-interface ServerConfig {
+export interface ServerConfig {
   name: string;
   transport: "http";
   url: string;
   authEnv?: string;
   enabled: boolean;
   allowTools?: string[];
+  confirmTools?: string[];
+  description?: string;
 }
 
 interface McpToolRef {
@@ -87,6 +89,69 @@ export async function mcpToolDefinitions(): Promise<ChatCompletionTool[]> {
       parameters: r.inputSchema,
     },
   }));
+}
+
+export function mcpServerCatalog(): ServerConfig[] {
+  return (serversConfig.servers as ServerConfig[]) ?? [];
+}
+
+export interface McpServerHealth {
+  name: string;
+  enabled: boolean;
+  url: string;
+  authEnv?: string;
+  tokenPresent: boolean;
+  connected: boolean;
+  toolCount: number;
+  error?: string;
+}
+
+/** Live connect check for the admin Integrations page. Does not log tokens. */
+export async function mcpServerHealth(): Promise<McpServerHealth[]> {
+  const out: McpServerHealth[] = [];
+  for (const cfg of mcpServerCatalog()) {
+    const tokenPresent = !!(cfg.authEnv && process.env[cfg.authEnv]);
+    if (!cfg.enabled) {
+      out.push({
+        name: cfg.name,
+        enabled: false,
+        url: cfg.url,
+        authEnv: cfg.authEnv,
+        tokenPresent,
+        connected: false,
+        toolCount: 0,
+      });
+      continue;
+    }
+    try {
+      const client = await connect(cfg);
+      const { tools } = await client.listTools();
+      const n = cfg.allowTools
+        ? tools.filter((t) => cfg.allowTools!.includes(t.name)).length
+        : tools.length;
+      out.push({
+        name: cfg.name,
+        enabled: true,
+        url: cfg.url,
+        authEnv: cfg.authEnv,
+        tokenPresent,
+        connected: true,
+        toolCount: n,
+      });
+    } catch (err) {
+      out.push({
+        name: cfg.name,
+        enabled: true,
+        url: cfg.url,
+        authEnv: cfg.authEnv,
+        tokenPresent,
+        connected: false,
+        toolCount: 0,
+        error: (err as Error).message.slice(0, 180),
+      });
+    }
+  }
+  return out;
 }
 
 export function isMcpTool(name: string): boolean {

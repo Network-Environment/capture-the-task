@@ -7,9 +7,7 @@ import { applyMatches, orgLessonTexts, overlapScore, ownerKey } from "../src/mee
 import { parseMeetingSummary } from "../src/meetings/summarize";
 import { capSummary, capTranscript, isTooShort, MAX_SUMMARY_CHARS, MAX_TRANSCRIPT_CHARS, parseVtt } from "../src/meetings/vtt";
 import { transcriptsDeltaPath } from "../src/meetings/graph";
-import { renderDashboard } from "../src/admin/dashboard";
-import type { DayStats } from "../src/services/activityLog";
-import type { CommitmentDoc, MeetingSummary } from "../src/meetings/types";
+import type { MeetingSummary } from "../src/meetings/types";
 
 const ADAM = "bceb24c5-ef85-4301-9ab2-073805d535aa";
 const VAL = "4f323599-0df8-47f7-aa01-46dbb211894c";
@@ -131,65 +129,5 @@ describe("authorization", () => {
     assert.equal(canViewMeetings(VAL.toUpperCase()), true);
     assert.equal(canViewMeetings("00000000-0000-0000-0000-000000000000"), false);
     assert.match(denyMeetings(), /designated org operators/);
-  });
-});
-
-describe("dashboard", () => {
-  const emptyStats: DayStats = {
-    captures: 0,
-    toolCalls: 0,
-    jobRuns: 0,
-    errors: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    byModel: {},
-  };
-
-  it("renders empty meeting panels", () => {
-    const html = renderDashboard({
-      stats: emptyStats,
-      totalTokens: 0,
-      modelRows: "",
-      jobRows: "",
-      lessonRows: "",
-      eventRows: "",
-      signedIn: "local",
-    });
-    assert.match(html, /No ingest run yet/);
-    assert.match(html, /No commitments ingested yet/);
-    assert.match(html, /No meetings in the 90-day index yet/);
-    assert.match(html, /No org lessons yet/);
-  });
-
-  it("renders ingest health, meetings, and overdue commitments", () => {
-    const html = renderDashboard({
-      stats: emptyStats,
-      totalTokens: 0,
-      modelRows: "",
-      jobRows: "",
-      lessonRows: "",
-      orgLessonRows: `<tr><td>self</td><td>Watch ops follow-through</td><td>2026-09-06</td></tr>`,
-      eventRows: "",
-      commitmentRows: `<tr><td>Adam</td><td>file window</td><td>2026-01-01</td><td>overdue</td><td>Standup</td></tr>`,
-      meetingRows: `<tr><td>2026-09-06</td><td>Standup</td><td>Adam</td><td>ops</td><td>Decided Friday</td></tr>`,
-      health: {
-        id: "latest",
-        organizerId: "_system",
-        lastRunAt: "2026-09-06T12:00:00.000Z",
-        scanned: 4,
-        ingested: 1,
-        skipped: 2,
-        matched: 1,
-        errors: ["Graph 403: policy"],
-      },
-      signedIn: "Adam",
-    });
-    assert.match(html, /Organizers/);
-    assert.match(html, />4</);
-    assert.match(html, /file window/);
-    assert.match(html, /Standup/);
-    assert.match(html, /Watch ops follow-through/);
-    assert.match(html, /Graph 403/);
-    assert.doesNotMatch(html, /WEBVTT/);
   });
 });

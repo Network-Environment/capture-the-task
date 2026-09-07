@@ -21,6 +21,7 @@ import { saveNote, recall } from "./services/brain";
 import { getRecentTurns, appendTurn } from "./services/session";
 import { logActivity } from "./services/activityLog";
 import { handleApprovalCommand } from "./services/approvals";
+import { agentProfileFor, isPmoRequest, maybeProposeSheetUpdate } from "./services/smartsheet";
 import { Channel } from "./channels/types";
 
 export interface CaptureInput {
@@ -88,10 +89,14 @@ export async function processCapture(input: CaptureInput): Promise<Outbound> {
 
   // 3. Triage on the cheap tier.
   const result = await triage(text, recent);
+  const kind =
+    (result.kind === "question" || result.kind === "conversation") && isPmoRequest(text)
+      ? ({ kind: "action" } as TriageResult)
+      : result;
   await appendTurn(userId, "user", text);
 
   // 4. Execute.
-  const out = await execute(input, text, source, result, recent);
+  const out = await execute(input, text, source, kind, recent);
   await appendTurn(userId, "assistant", out.summaryLine);
   return out;
 }
@@ -119,6 +124,14 @@ async function execute(
         line += "\n✓ Saved to the brain (To Do available from Teams)";
       }
       await saveNote(userId, { kind: "task", title: r.title, body: r.detail || text, tags: r.tags, source });
+      if (input.allowActions) {
+        const proposed = await maybeProposeSheetUpdate(userId, {
+          title: r.title,
+          detail: r.detail,
+          due: r.due,
+        });
+        if (proposed) line += proposed;
+      }
       return { title: "Task captured", body: line, tags: r.tags, summaryLine: `Filed task: ${r.title}` };
     }
 
@@ -170,7 +183,11 @@ async function execute(
           summaryLine: "Action deferred (channel policy)",
         };
       }
-      const result = await runAgent({ userId, conversationRef: input.conversationRef }, text);
+      const result = await runAgent(
+        { userId, conversationRef: input.conversationRef },
+        text,
+        agentProfileFor("action", text)
+      );
       return { title: "Done", body: result, tags: [], summaryLine: result.slice(0, 200) };
     }
 

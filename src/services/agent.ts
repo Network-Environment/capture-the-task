@@ -21,6 +21,7 @@ import { logActivity } from "./activityLog";
 import { RecallHit } from "./brain";
 import { SessionTurn } from "./session";
 import { loadConfig } from "../config";
+import { catalogPromptBlock } from "./smartsheet";
 const agentsConfig = loadConfig<{ default: string; profiles: Record<string, unknown> }>("agents");
 
 export type TriageResult =
@@ -42,22 +43,26 @@ Kinds:
 - "idea": a thought/concept to keep. title, detail, tags, links (existing-topic
   names worth wikilinking, lowercase-hyphenated).
 - "reference": a fact, decision, or info to store. Same fields as idea.
-- "question": the user asks to RECALL something from stored notes.
+- "question": the user asks to RECALL something from THEIR stored notes /
+  second brain (what they captured earlier). Not Smartsheet, not live PMO.
 - "conversation": nothing should be saved or executed. Use for greetings,
   thanks, casual conversation, general knowledge/advice, and questions that
-  do not ask to recall the user's stored notes or org meeting data.
+  do not ask to recall the user's stored notes or org meeting/PMO data.
 - "action": the user asks the SYSTEM to do something now or on a schedule —
-  operate on external tools (Smartsheet/PMO data), create or manage scheduled
-  jobs, correct the agent's behavior ("stop doing X", "X means Y"), or any
-  multi-step request. No extraction needed.
+  operate on Smartsheet/PMO (status, risks, rows, workspaces), look up live
+  sheet data, update or add sheet rows, create or manage scheduled jobs,
+  org meeting/commitment questions, correct the agent's behavior
+  ("stop doing X", "X means Y"), or any multi-step request. No extraction needed.
 - "followup": only makes sense relative to the recent turns provided. Rewrite
   as resolvedText — a complete standalone instruction. If no recent turns
   match, return followup with resolvedText equal to the raw message.
 
 Rules: do not treat greetings or casual chat as ideas/references. If there is
 no clear reason to persist or act, choose conversation. Questions about org
-meetings, decisions, and commitments are actions because they require meeting
-tools. Never invent deadlines. Voice transcripts ramble — extract, don't copy.
+meetings, decisions, commitments, Smartsheet, risk registers, project trackers,
+or PMO status are actions (live tools), not question. "What did I capture
+about X" is question. Never invent deadlines. Voice transcripts ramble —
+extract, don't copy.
 Tags: 1-4, lowercase, no spaces. JSON only, no markdown fences.`;
 
 const TRIAGE_KINDS = new Set([
@@ -177,9 +182,12 @@ export async function runAgent(
   const { name, profile } = getProfile(profileName);
   const tools = filterTools(await allToolDefinitions(), profile.tools);
   const lessons = await lessonsPromptBlock(ctx.userId);
+  const catalog = name === "pmo" || profile.tools === "*" || (Array.isArray(profile.tools) && profile.tools.some((t) => t.startsWith("smartsheet")))
+    ? catalogPromptBlock()
+    : "";
 
   const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: profile.persona + lessons },
+    { role: "system", content: profile.persona + lessons + catalog },
     { role: "user", content: userMessage },
   ];
 

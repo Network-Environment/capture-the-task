@@ -111,8 +111,8 @@ TRIAGE  (cheap model tier)  — agent.ts::triage
         ├── task       → Graph → Microsoft To Do (fallback: brain) + note
         ├── idea/ref   → brain.ts: markdown → Blob, metadata+vector → Cosmos
         ├── question   → brain.ts::recall (vector) → synthesis tier answer
-        ├── action     → AGENT LOOP (see below) — or, on capture-only
-        │                channels (iMessage default), saved + deferred to Teams
+        ├── action     → AGENT LOOP; PMO/Smartsheet wording uses the pmo profile
+        │                (live MCP reads). Writes park for approve pa-x.
         └── followup   → resolvedText re-triaged once (5-turn/15-min window)
         ▼
 Outbound {title, body, tags} → adapter renders (Adaptive Card / plain text)
@@ -138,7 +138,7 @@ SCHEDULER — jobs-as-data
 
 | Path | Responsibility |
 |---|---|
-| `src/index.ts` | restify server, adapter, alert init, orchestrator start, `/admin`, `/healthz` |
+| `src/index.ts` | restify server, adapter, alert init, orchestrator start, `/admin` + `/admin/:section`, `/healthz` |
 | `src/pipeline.ts` | **channel-agnostic capture pipeline**: approvals, transcription, triage, execute → Outbound |
 | `src/bot.ts` | Teams adapter: activity → CaptureInput, Adaptive Card rendering, Graph task hook |
 | `src/channels/photon.ts` | iMessage adapter via Photon spectrum-ts: stream consumer, allowlist, voice memo fetch, proactive send |
@@ -157,9 +157,10 @@ SCHEDULER — jobs-as-data
 | `src/services/conversations.ts` | per-user, per-channel references (`{user}:teams`, `{user}:imessage`, `{user}:latest`) |
 | `src/services/alerts.ts` | proactive alerts to users and admin |
 | `src/services/activityLog.ts` | event spine: captures, triage, tool/model calls (+tokens), job runs, errors |
-| `src/admin/dashboard.ts` | server-rendered `/admin` page (ops + meeting ingest + follow-through) |
+| `src/admin/dashboard.ts` | sectioned `/admin` portal (overview, capabilities, integrations, usage, meetings, jobs, memory) |
+| `src/admin/markup.ts` | admin HTML shell, sidebar, shared CSS |
 | `src/tools/registry.ts` | unified tool definitions + dispatch (native + MCP + approval gate) |
-| `src/tools/mcpClient.ts` | MCP Streamable HTTP client, config-driven discovery, namespacing |
+| `src/services/smartsheet.ts` | PMO catalog prompt, PMO routing, inferred sheet match, write-approval copy |
 | `src/meetings/` | Teams meeting ingest worker: Graph delta, VTT parse, Foundry summary, Cosmos/Blob, Adam/Val recall |
 | `config/channels.json` | iMessage policy: enabled, allowActions, phone→userId identity map (= allowlist) |
 | `config/mcp.servers.json` | external integrations: url, token env, allowTools, confirmTools |
@@ -199,6 +200,22 @@ Chat tools `recall_meetings`, `list_commitments`, and `complete_commitment` are 
 Tenant setup that Bicep cannot do: `./scripts/setup-meeting-ingest.sh` assigns Graph application roles on the Function managed identity. A Teams admin must then grant a tenant-wide application access policy and set `EnableGraphTranscriptAccess` / `EnableAttributedTranscripts` (MicrosoftTeams PowerShell **7.9.0+**, or Teams admin center → Meetings → Meeting settings → Transcript API access). Existing meeting transcription does **not** enable Graph export.
 
 First successful poll is a controlled backfill: each organizer's delta link starts from "all current transcripts" then only changes. Repeats are deduped by transcript ID.
+
+### Smartsheet (live PMO, not a second archive)
+
+Smartsheet is the PMO system of record. TaskBrain does **not** copy sheet rows
+into Cosmos or Blob. Awareness is on-demand MCP (`smartsheet__search`,
+`get_sheet`, `get_sheet_summary`) plus optional aliases in
+`config/smartsheet.json` (names/ids in the prompt, never cell data).
+
+PMO / risk-register / sheet questions are `action` and run the **pmo**
+profile. "What did I capture about X" stays `question` (personal notes).
+Explicit "update/add this row" parks `update_rows` / `add_rows` until
+`approve pa-x`. After a captured **task**, a high-confidence match to an
+existing row may park `update_rows` only (never inferred `add_rows`). Ambiguous
+matches are mentioned, not written. Token: GitHub repo secret
+`SMARTSHEET_API_TOKEN` → App Service; if tools are missing, check the app
+setting, do not mint a new token or re-run bootstrap.
 
 ### The two memories (do not merge them)
 
@@ -255,7 +272,9 @@ Three config files change behavior without code:
   class). `default` names the fallback profile.
 - **`config/channels.json`** — iMessage `enabled`, `allowActions`, and the
   `identities` phone→userId map (which is also the allowlist).
-- **`config/model.routes.json`** — task classes → env-var-named deployments
+- **`config/smartsheet.json`** — PMO catalog: alias → optional `sheetId` /
+  `workspaceId` + one-line purpose. Injected into agent prompts as names/ids
+  only. Empty `sheets` is valid (search by name). Never put the API token here.
   (`CHEAP_DEPLOYMENT`, `STANDARD_DEPLOYMENT`, `PREMIUM_DEPLOYMENT`) with max
   tokens/temperature, plus the triage→agent escalation rule.
 
@@ -277,7 +296,7 @@ patched by bootstrap.sh) supplies the same names.
 | `MEETING_TTL_DAYS` / `COMMITMENT_TTL_DAYS` | Cosmos TTL for meeting docs / commitments | Bicep 90 / 180 |
 | `MEETING_ORGANIZERS_PER_RUN` | Function round-robin batch size | Function app setting (25) |
 | `GRAPH_CONNECTION_NAME` | Bot Service OAuth connection name | Bicep constant `graph-connection` |
-| `SMARTSHEET_API_TOKEN` | bearer for mcp.smartsheet.com | GitHub secret (optional) |
+| `SMARTSHEET_API_TOKEN` | bearer for mcp.smartsheet.com | GitHub **repo** secret (already set); Bicep copies it to App Service. Do not re-run bootstrap. |
 | `SPECTRUM_PROJECT_ID` / `SPECTRUM_PROJECT_SECRET` | Photon iMessage; blank disables channel | GitHub secrets (optional) |
 | `ADMIN_APP_ID` / `ADMIN_APP_SECRET` | App Service Easy Auth (TaskBrain Admin Entra app) | GitHub secrets (bootstrap / `scripts/setup-admin-sso.sh`) |
 | `ADMIN_AAD_OBJECT_ID` | admin alert recipient | GitHub secret (bootstrap = signed-in user) |
@@ -330,8 +349,10 @@ repo, org permission to upload Teams apps.
    GitHub secrets (`gh secret set …`), fill `config/channels.json` identities
    (E.164 phone → Entra object id: `az ad user show --id user@domain --query
    id`), push. Logs show `[imessage] Photon stream connected`.
-7. **Smartsheet (optional):** add `SMARTSHEET_API_TOKEN` as a GitHub secret
-   and push. Tools appear as `smartsheet__*`.
+7. **Smartsheet:** repo secret `SMARTSHEET_API_TOKEN` is already set; a
+   normal deploy copies it to App Service. Fill `config/smartsheet.json`
+   aliases when you know sheet ids. Ask a PMO question in chat; writes require
+   `approve pa-x`.
 8. **Verify:** "hello" → welcome; a text task → To Do (or brain fallback); a
    voice memo → transcribed capture; "what did I capture today?" → recall;
    "every Friday at 4 summarize open Smartsheet risks" → job scheduled;
@@ -346,12 +367,14 @@ order-independent and re-runnable.
 ## 5. Operations
 
 - **Dashboard:** `https://<app>.azurewebsites.net/admin` — Entra login; only
-  users assigned to the **TaskBrain Admin** enterprise app. Today's counts,
-  token spend **per model**, **meeting ingest health**, open/overdue
-  commitments, recent meeting summaries (not VTT), org lessons, jobs, event
-  stream. Auto-refreshes 60s. Add viewers in Entra → Enterprise
-  applications → TaskBrain Admin → Users and groups. `/api/messages` and
-  `/healthz` stay anonymous so the bot and CI smoke test keep working.
+  users assigned to the **TaskBrain Admin** enterprise app. Sidebar sections:
+  **Overview** (today’s KPIs, budget, ingest snapshot), **Capabilities**
+  (agent skills + native/MCP tools), **Integrations** (status vs catalog;
+  tokens never displayed), **Usage** (models, channels, tools, people,
+  events), **Meetings**, **Jobs**, **Memory**. Auto-refreshes 60s. Add
+  viewers in Entra → Enterprise applications → TaskBrain Admin → Users and
+  groups. `/api/messages` and `/healthz` stay anonymous so the bot and CI
+  smoke test keep working.
 - **Alerts (push):** job failures after final retry → owner + admin; budget
   trip → admin, once per day. Delivery requires the recipient to have
   messaged the bot at least once (conversation reference).

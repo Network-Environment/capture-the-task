@@ -48,6 +48,7 @@ server.get("/", (_req, res, next) => {
 });
 
 server.get("/admin", adminPage);
+server.get("/admin/:section", adminPage);
 
 server.get("/healthz", (_req, res, next) => {
   res.send(200, { ok: true });

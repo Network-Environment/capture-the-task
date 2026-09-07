@@ -88,11 +88,3 @@ export async function handleApprovalCommand(
   void logActivity({ type: "tool_call", userId, detail: { tool: action.tool, approved: true } });
   return `Approved and executed ${action.tool}:\n${result.slice(0, 1500)}`;
 }
-
-export function approvalMessage(id: string, tool: string, args: Record<string, unknown>): string {
-  return (
-    `⚠️ Write action held for approval:\n**${tool}**\n` +
-    "```\n" + JSON.stringify(args, null, 2).slice(0, 800) + "\n```\n" +
-    `Reply **approve ${id}** or **deny ${id}** (expires in 1 hour).`
-  );
-}

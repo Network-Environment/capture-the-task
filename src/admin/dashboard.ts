@@ -1,24 +1,45 @@
 /**
- * Admin dashboard — one server-rendered HTML page, zero frontend build.
- * Shows: today's stats + token spend by model, meeting ingest health,
- * open/overdue commitments, recent meetings, org lessons, jobs, and events.
+ * Admin portal — server-rendered HTML, zero frontend build.
+ * Sidebar sections: overview, capabilities, integrations, usage, meetings, jobs, memory.
  *
- * In Azure, App Service Easy Auth (Entra) gates /admin. Only users assigned
- * to the TaskBrain Admin enterprise app can sign in. /api/messages and
- * /healthz stay anonymous. Locally there is no Easy Auth, so the page is
- * open on loopback.
+ * In Azure, App Service Easy Auth (Entra) gates /admin*. Locally the page is open.
  */
 import { Request, Response } from "restify";
-import { dayStats, recentEvents } from "../services/activityLog";
+import { dayStats, recentEvents, usageBreakdown, type DayStats, type UsageBreakdown } from "../services/activityLog";
 import { CosmosClient } from "@azure/cosmos";
 import { listCommitmentsForDash, readHealth, recentMeetings } from "../meetings/store";
 import type { CommitmentDoc, IngestHealthDoc, MeetingDoc } from "../meetings/types";
+import { loadConfig } from "../config";
+import { nativeToolCatalog } from "../tools/registry";
+import { mcpServerCatalog, mcpServerHealth, mcpToolDefinitions, type McpServerHealth } from "../tools/mcpClient";
+import { catalogSheets } from "../services/smartsheet";
+import { requiresApproval } from "../services/approvals";
+import { imessageEnabled } from "../channels/types";
+import {
+  countTable,
+  esc,
+  isSection,
+  pill,
+  renderShell,
+  table,
+  tabs,
+  type SectionId,
+  type Tone,
+} from "./markup";
 
 const cosmos = new CosmosClient({
   endpoint: process.env.COSMOS_ENDPOINT!,
   key: process.env.COSMOS_KEY!,
 });
 const db = cosmos.database(process.env.COSMOS_DB ?? "taskbrain");
+
+const agentsConfig = loadConfig<{
+  default: string;
+  profiles: Record<string, { description?: string; route?: string; tools?: string | string[]; persona?: string }>;
+}>("agents");
+const channelsConfig = loadConfig<{
+  imessage: { enabled: boolean; allowActions: boolean; identities?: Record<string, string> };
+}>("channels");
 
 export async function adminPage(req: Request, res: Response): Promise<void> {
   const principal = easyAuthPrincipal(req);
@@ -27,18 +48,309 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const [stats, events, jobs, lessons, health, meetings, commitments] = await Promise.all([
-    dayStats(),
-    recentEvents(60),
-    db.container("jobs").items.query("SELECT * FROM c ORDER BY c.nextRun").fetchAll(),
-    db.container("agent-memory").items.query("SELECT * FROM c ORDER BY c.createdAt DESC").fetchAll(),
-    readHealth().catch(() => undefined),
-    recentMeetings(20).catch(() => [] as MeetingDoc[]),
-    listCommitmentsForDash(40).catch(() => [] as CommitmentDoc[]),
-  ]);
+  const raw = String(req.params.section ?? "overview").toLowerCase();
+  const signedIn = principal?.name ?? "local";
+  const tab = String((req.query as { tab?: string }).tab ?? "");
 
+  if (raw !== "overview" && !isSection(raw)) {
+    res.sendRaw(404, renderShell({
+      section: "overview",
+      signedIn,
+      title: "Not found",
+      subtitle: "unknown section",
+      body: "",
+      notFound: true,
+    }), { "Content-Type": "text/html" });
+    return;
+  }
+
+  const section: SectionId = isSection(raw) ? raw : "overview";
+  const html = await renderSection(section, signedIn, tab);
+  res.sendRaw(200, html, { "Content-Type": "text/html" });
+}
+
+async function renderSection(section: SectionId, signedIn: string, tab: string): Promise<string> {
+  const today = new Date().toISOString().slice(0, 10);
+  switch (section) {
+    case "overview": {
+      const [stats, events, health] = await Promise.all([
+        dayStats(),
+        recentEvents(12),
+        readHealth().catch(() => undefined),
+      ]);
+      return renderOverview({ stats, events, health, signedIn, today });
+    }
+    case "capabilities": {
+      let mcp: { name: string; description: string }[] = [];
+      if (tab === "tools") {
+        try {
+          const defs = await mcpToolDefinitions();
+          mcp = defs.map((t) => ({ name: t.function.name, description: t.function.description ?? "" }));
+        } catch {
+          mcp = [];
+        }
+      }
+      return renderCapabilities(signedIn, tab === "tools" ? "tools" : "skills", mcp);
+    }
+    case "integrations": {
+      const [health, mcp] = await Promise.all([
+        readHealth().catch(() => undefined),
+        mcpServerHealth().catch(() => [] as McpServerHealth[]),
+      ]);
+      return renderIntegrations(signedIn, tab === "catalog" ? "catalog" : "status", health, mcp);
+    }
+    case "usage": {
+      const [usage, events] = await Promise.all([usageBreakdown(), recentEvents(80)]);
+      return renderUsage(signedIn, usage, events);
+    }
+    case "meetings": {
+      const [health, meetings, commitments] = await Promise.all([
+        readHealth().catch(() => undefined),
+        recentMeetings(20).catch(() => [] as MeetingDoc[]),
+        listCommitmentsForDash(40).catch(() => [] as CommitmentDoc[]),
+      ]);
+      return renderMeetings(signedIn, health, meetings, commitments);
+    }
+    case "jobs": {
+      const jobs = await db.container("jobs").items.query("SELECT * FROM c ORDER BY c.nextRun").fetchAll();
+      return renderJobs(signedIn, jobs.resources as Record<string, unknown>[]);
+    }
+    case "memory": {
+      const lessons = await db
+        .container("agent-memory")
+        .items.query("SELECT * FROM c ORDER BY c.createdAt DESC")
+        .fetchAll();
+      return renderMemory(signedIn, lessons.resources as Record<string, unknown>[]);
+    }
+  }
+}
+
+function kpiGrid(stats: DayStats): string {
+  return `<div class="grid">
+    <div class="stat"><div class="label">Captures</div><div class="value">${stats.captures.toLocaleString()}</div></div>
+    <div class="stat"><div class="label">Tool calls</div><div class="value">${stats.toolCalls.toLocaleString()}</div></div>
+    <div class="stat"><div class="label">Job runs</div><div class="value">${stats.jobRuns.toLocaleString()}</div></div>
+    <div class="stat${stats.errors > 0 ? " alert" : ""}"><div class="label">Errors</div><div class="value">${stats.errors.toLocaleString()}</div></div>
+    <div class="stat"><div class="label">Tokens in</div><div class="value">${stats.inputTokens.toLocaleString()}</div></div>
+    <div class="stat"><div class="label">Tokens out</div><div class="value">${stats.outputTokens.toLocaleString()}</div></div>
+  </div>`;
+}
+
+function budgetBlock(totalTokens: number): string {
+  const budget = Number(process.env.DAILY_TOKEN_BUDGET ?? 0);
+  if (!(budget > 0)) return "";
+  const pct = Math.min(100, (totalTokens / budget) * 100);
+  const budgetTone = pct >= 100 ? "err" : pct >= 75 ? "warn" : "ok";
+  return `<section class="panel budget">
+      <div class="budget-head">
+        <div>
+          <h2>Daily token budget</h2>
+          <p class="muted">Past the cap, non-triage calls drop to the cheap tier until midnight UTC.</p>
+        </div>
+        <div class="budget-num">
+          <span class="mono strong">${totalTokens.toLocaleString()}</span>
+          <span class="muted mono">/ ${budget.toLocaleString()}</span>
+        </div>
+      </div>
+      <div class="bar lg ${budgetTone}"><i style="width:${pct.toFixed(2)}%"></i></div>
+    </section>`;
+}
+
+function eventRowsHtml(events: Record<string, unknown>[]): string {
+  return events
+    .map((e) => {
+      const type = String(e.type);
+      return (
+        `<tr><td class="mono muted">${String(e.at).slice(11, 19)}</td>` +
+        `<td>${pill(type, eventTone(type))}</td>` +
+        `<td class="muted">${esc(String(e.agent ?? "—"))}</td>` +
+        `<td class="mono muted clip">${esc(JSON.stringify(e.detail ?? {}).slice(0, 160))}</td></tr>`
+      );
+    })
+    .join("");
+}
+
+export function renderOverview(d: {
+  stats: DayStats;
+  events: Record<string, unknown>[];
+  health?: IngestHealthDoc;
+  signedIn: string;
+  today: string;
+}): string {
+  const totalTokens = d.stats.inputTokens + d.stats.outputTokens;
+  const h = d.health;
+  const ingest = h
+    ? `<section class="panel">
+        <h2>Meeting ingest</h2>
+        <div class="grid" style="margin:1rem 1.15rem">
+          <div class="stat"><div class="label">Last run</div><div class="value" style="font-size:1rem">${esc(h.lastRunAt.slice(0, 19).replace("T", " "))}Z</div></div>
+          <div class="stat${h.errors.length ? " alert" : ""}"><div class="label">Errors</div><div class="value">${h.errors.length}</div></div>
+          <div class="stat"><div class="label">Ingested</div><div class="value">${h.ingested}</div></div>
+        </div>
+        <p class="pad muted">Full transcript index and commitments live under <a href="/admin/meetings">Meetings</a>.</p>
+      </section>`
+    : `<section class="panel"><h2>Meeting ingest</h2><p class="muted pad">No ingest run yet. After Graph/Teams policy is granted, the Function polls every 5 minutes.</p></section>`;
+
+  const body = `
+  <p class="lede">TaskBrain ops — capabilities, health, usage. What the agent can do, how it is performing today, which tools are live, and how people are using it.</p>
+  ${kpiGrid(d.stats)}
+  ${budgetBlock(totalTokens)}
+  ${ingest}
+  <section class="panel">
+    <h2>Latest events</h2>
+    ${table(["Time", "Type", "Agent", "Detail"], eventRowsHtml(d.events), "No events yet.")}
+  </section>`;
+
+  return renderShell({
+    section: "overview",
+    signedIn: d.signedIn,
+    title: "Overview",
+    subtitle: `${d.today} · today's activity`,
+    body,
+  });
+}
+
+export function renderCapabilities(
+  signedIn: string,
+  tab: "skills" | "tools",
+  mcpTools: { name: string; description: string }[] = []
+): string {
+  const tabBar = tabs("/admin/capabilities", [
+    { id: "skills", label: "Skills" },
+    { id: "tools", label: "Tools" },
+  ], tab);
+
+  let inner: string;
+  if (tab === "skills") {
+    const cards = Object.entries(agentsConfig.profiles)
+      .map(([name, p]) => {
+        const allow = p.tools === "*" ? ["*"] : Array.isArray(p.tools) ? p.tools : [];
+        return `<article class="card">
+          <h3>${esc(name)}${agentsConfig.default === name ? ` ${pill("default", "accent")}` : ""}</h3>
+          <p>${esc(p.description ?? "")}</p>
+          <div class="meta">${pill(`route ${p.route ?? "—"}`, "info")} ${allow.map((t) => pill(t, "idle")).join(" ")}</div>
+        </article>`;
+      })
+      .join("");
+    inner = `<p class="lede">Capture, recall, PMO/Smartsheet, meeting follow-through, Microsoft To Do, and scheduled jobs. Personas below are the agent skills; the Tools tab is the callable surface.</p>
+      <div class="cards">${cards}</div>`;
+  } else {
+    const native = nativeToolCatalog()
+      .map(
+        (t) =>
+          `<tr><td class="mono strong">${esc(t.name)}</td><td>${pill("native", "info")}</td><td>${pill("open", "ok")}</td><td class="muted">${esc(t.description)}</td></tr>`
+      )
+      .join("");
+    const mcpRows = mcpTools
+      .map((t) => {
+        const gate = requiresApproval(t.name) ? pill("approval required", "warn") : pill("read", "ok");
+        return `<tr><td class="mono strong">${esc(t.name)}</td><td>${pill("mcp", "accent")}</td><td>${gate}</td><td class="muted">${esc(t.description)}</td></tr>`;
+      })
+      .join("");
+    inner = `<p class="lede">Native tools always ship with the bot. MCP tools appear when the server connects. Writes listed in confirmTools park until approve pa-x.</p>
+      <section class="panel"><h2>Tool catalog</h2>${table(
+        ["Name", "Kind", "Gate", "Description"],
+        native + mcpRows,
+        "No tools registered."
+      )}</section>`;
+  }
+
+  return renderShell({
+    section: "capabilities",
+    signedIn,
+    title: "Capabilities",
+    subtitle: "what the agent can do",
+    body: tabBar + inner,
+  });
+}
+
+export function renderIntegrations(
+  signedIn: string,
+  tab: "status" | "catalog",
+  health?: IngestHealthDoc,
+  mcp: McpServerHealth[] = []
+): string {
+  const tabBar = tabs("/admin/integrations", [
+    { id: "status", label: "Status" },
+    { id: "catalog", label: "Catalog" },
+  ], tab);
+
+  const foundry = !!process.env.FOUNDRY_ENDPOINT && !!process.env.FOUNDRY_API_KEY;
+  const speech = !!process.env.SPEECH_KEY && !!process.env.SPEECH_REGION;
+  const graph = !!process.env.GRAPH_CONNECTION_NAME;
+  const photon = imessageEnabled();
+  const sheetAliases = catalogSheets().length;
+
+  let inner: string;
+  if (tab === "status") {
+    const mcpRows = mcp
+      .map((s) => {
+        const tone: Tone = !s.enabled ? "idle" : s.connected ? "ok" : "err";
+        const label = !s.enabled ? "disabled" : s.connected ? "connected" : "down";
+        const token = s.authEnv ? (s.tokenPresent ? pill("token set", "ok") : pill("token empty", "err")) : pill("no auth", "idle");
+        return `<tr><td class="strong">${esc(s.name)}</td><td>${pill(label, tone)}</td><td>${token}</td><td class="num">${s.toolCount}</td><td class="muted clip">${esc(s.error ?? "—")}</td></tr>`;
+      })
+      .join("");
+    const ingestTone: Tone = !health ? "warn" : health.errors.length ? "err" : "ok";
+    const ingestLabel = !health ? "not ready" : health.errors.length ? "errors" : "ready";
+    const ingestNote = !health
+      ? "no run yet"
+      : health.errors.length
+        ? `${health.errors.length} error(s) on last run`
+        : `last ${health.lastRunAt.slice(0, 16)}Z`;
+    const platform: { name: string; label: string; tone: Tone; note: string }[] = [
+      { name: "Microsoft Foundry", label: foundry ? "ready" : "not ready", tone: foundry ? "ok" : "warn", note: "Chat + embeddings" },
+      { name: "Azure Speech", label: speech ? "ready" : "not ready", tone: speech ? "ok" : "warn", note: "Voice memos" },
+      { name: "Graph To Do", label: graph ? "ready" : "not ready", tone: graph ? "ok" : "warn", note: "Task create from Teams" },
+      { name: "iMessage (Photon)", label: photon ? "ready" : "not ready", tone: photon ? "ok" : "warn", note: "Spectrum stream" },
+      { name: "Meeting ingest", label: ingestLabel, tone: ingestTone, note: ingestNote },
+      { name: "Smartsheet catalog", label: sheetAliases > 0 ? "ready" : "not ready", tone: sheetAliases > 0 ? "ok" : "warn", note: `${sheetAliases} alias(es)` },
+    ];
+    const statusRows = platform
+      .map(
+        (r) =>
+          `<tr><td class="strong">${esc(r.name)}</td><td>${pill(r.label, r.tone)}</td><td class="muted">${esc(r.note)}</td></tr>`
+      )
+      .join("");
+    inner = `<p class="lede">Live wiring. Secrets are never shown — only whether they are present and whether MCP answered.</p>
+      <section class="panel"><h2>Platform</h2>${table(["Integration", "Status", "Note"], statusRows, "—")}</section>
+      <section class="panel"><h2>MCP servers</h2>${table(
+        ["Server", "Link", "Auth", "<span class='num'>Tools</span>", "Error"],
+        mcpRows,
+        "No MCP servers in config."
+      )}</section>`;
+  } else {
+    const servers = mcpServerCatalog()
+      .map((s) => {
+        const allow = (s.allowTools ?? []).map((t) => pill(t, "info")).join(" ") || pill("all", "idle");
+        const confirm = (s.confirmTools ?? []).map((t) => pill(t, "warn")).join(" ") || '<span class="muted">none</span>';
+        return `<tr><td class="strong">${esc(s.name)}</td><td class="mono muted clip">${esc(s.url)}</td><td class="mono">${esc(s.authEnv ?? "—")}</td><td>${allow}</td><td>${confirm}</td></tr>`;
+      })
+      .join("");
+    const idCount = Object.keys(channelsConfig.imessage.identities ?? {}).length;
+    const ch = `<tr><td class="strong">iMessage</td><td>${pill(channelsConfig.imessage.enabled ? "enabled" : "off", channelsConfig.imessage.enabled ? "ok" : "idle")}</td><td>${pill(channelsConfig.imessage.allowActions ? "actions on" : "capture only", "accent")}</td><td>${idCount} mapped identities</td></tr>
+      <tr><td class="strong">Teams</td><td>${pill("enabled", "ok")}</td><td>${pill("actions on", "accent")}</td><td>Bot Framework</td></tr>`;
+    inner = `<p class="lede">Declared integrations from config. Phone numbers are not listed.</p>
+      <section class="panel"><h2>MCP catalog</h2>${table(["Name", "URL", "authEnv", "Allow", "Confirm writes"], servers, "None.")}</section>
+      <section class="panel"><h2>Channels</h2>${table(["Channel", "State", "Policy", "Notes"], ch, "—")}</section>`;
+  }
+
+  return renderShell({
+    section: "integrations",
+    signedIn,
+    title: "Integrations",
+    subtitle: "tools and connections",
+    body: tabBar + inner,
+  });
+}
+
+export function renderUsage(
+  signedIn: string,
+  usage: UsageBreakdown,
+  events: Record<string, unknown>[]
+): string {
+  const { stats } = usage;
   const totalTokens = stats.inputTokens + stats.outputTokens;
-
   const modelRows = Object.entries(stats.byModel)
     .sort((a, b) => b[1].inputTokens + b[1].outputTokens - (a[1].inputTokens + a[1].outputTokens))
     .map(([m, s]) => {
@@ -55,52 +367,50 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
     })
     .join("");
 
-  const jobRows = jobs.resources
-    .map((j: Record<string, unknown>) => {
-      const status = String(j.lastStatus ?? "");
-      return (
-        `<tr><td class="strong">${esc(String(j.name))}</td>` +
-        `<td><span class="mono muted">${esc(String(j.cron ?? "one-off"))}</span></td>` +
-        `<td><span class="mono muted">${esc(String(j.nextRun ?? "—"))}</span></td>` +
-        `<td>${j.enabled ? pill("on", "ok") : pill("paused", "idle")}</td>` +
-        `<td>${status ? pill(status, statusTone(status)) : '<span class="muted">—</span>'}</td>` +
-        `<td class="muted clip">${esc(String(j.lastResultPreview ?? ""))}</td></tr>`
-      );
+  const peopleRows = Object.entries(usage.byUser)
+    .sort((a, b) => b[1] - a[1])
+    .map(([id, n]) => {
+      const short = id.length > 12 ? `${id.slice(0, 8)}…` : id;
+      return `<tr><td class="mono">${esc(short)}</td><td class="num">${n.toLocaleString()}</td></tr>`;
     })
     .join("");
 
-  const orgLessonRows = lessons.resources
-    .filter((l: Record<string, unknown>) => l.userId === "org")
-    .map(
-      (l: Record<string, unknown>) =>
-        `<tr><td>${pill(String(l.kind), "info")}</td>` +
-        `<td>${esc(String(l.text))}</td>` +
-        `<td class="mono muted">${String(l.createdAt).slice(0, 10)}</td></tr>`
-    )
-    .join("");
+  const body = `
+  <p class="lede">How people used the bot today — channels, tools, models, and unique users (ids truncated).</p>
+  ${kpiGrid(stats)}
+  ${budgetBlock(totalTokens)}
+  <section class="panel">
+    <h2>Model usage</h2>
+    ${table(
+      ["Model", "<span class='num'>Calls</span>", "<span class='num'>Input</span>", "<span class='num'>Output</span>", "Share"],
+      modelRows,
+      "No model calls yet today."
+    )}
+  </section>
+  ${countTable("Captures by channel", usage.byChannel, "No captures today.")}
+  ${countTable("Captures by source", usage.bySource, "No captures today.")}
+  ${countTable("Tool calls", usage.byTool, "No tool calls today.")}
+  <section class="panel"><h2>People (truncated id)</h2>${table(["User", "<span class='num'>Events</span>"], peopleRows, "No user-tagged events today.")}</section>
+  <section class="panel">
+    <h2>Recent events</h2>
+    ${table(["Time", "Type", "Agent", "Detail"], eventRowsHtml(events), "No events yet.")}
+  </section>`;
 
-  const lessonRows = lessons.resources
-    .filter((l: Record<string, unknown>) => l.userId !== "org")
-    .map(
-      (l: Record<string, unknown>) =>
-        `<tr><td>${pill(String(l.kind), "info")}</td>` +
-        `<td>${esc(String(l.text))}</td>` +
-        `<td class="mono muted">${String(l.createdAt).slice(0, 10)}</td></tr>`
-    )
-    .join("");
+  return renderShell({
+    section: "usage",
+    signedIn,
+    title: "Usage",
+    subtitle: "how people are using it",
+    body,
+  });
+}
 
-  const eventRows = events
-    .map((e) => {
-      const type = String(e.type);
-      return (
-        `<tr><td class="mono muted">${String(e.at).slice(11, 19)}</td>` +
-        `<td>${pill(type, eventTone(type))}</td>` +
-        `<td class="muted">${esc(String(e.agent ?? "—"))}</td>` +
-        `<td class="mono muted clip">${esc(JSON.stringify(e.detail ?? {}).slice(0, 160))}</td></tr>`
-      );
-    })
-    .join("");
-
+export function renderMeetings(
+  signedIn: string,
+  health?: IngestHealthDoc,
+  meetings: MeetingDoc[] = [],
+  commitments: CommitmentDoc[] = []
+): string {
   const commitmentRows = [...commitments]
     .sort((a, b) => {
       const ao = a.status === "open" && a.due && Date.parse(a.due) < Date.now() ? 0 : 1;
@@ -109,7 +419,7 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
     })
     .map((c) => {
       const overdue = c.status === "open" && c.due && Date.parse(c.due) < Date.now();
-      const tone = c.status === "done" ? "ok" : overdue ? "err" : c.status === "open" ? "warn" : "idle";
+      const tone: Tone = c.status === "done" ? "ok" : overdue ? "err" : c.status === "open" ? "warn" : "idle";
       return (
         `<tr><td class="strong">${esc(c.ownerName)}</td>` +
         `<td>${esc(c.text)}</td>` +
@@ -131,24 +441,94 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
     )
     .join("");
 
-  const signedIn = principal?.name ?? "local";
-  res.sendRaw(
-    200,
-    renderDashboard({
-      stats,
-      totalTokens,
-      modelRows,
-      jobRows,
-      lessonRows,
-      orgLessonRows,
-      eventRows,
-      commitmentRows,
-      meetingRows,
-      health,
-      signedIn,
-    }),
-    { "Content-Type": "text/html" }
-  );
+  const body = `${ingestHealthPanel(health)}
+  <section class="panel">
+    <h2>Open / overdue commitments</h2>
+    ${table(["Owner", "Commitment", "Due", "Status", "From"], commitmentRows, "No commitments ingested yet.")}
+  </section>
+  <section class="panel">
+    <h2>Recent meetings</h2>
+    ${table(["Date", "Title", "Organizer", "Tags", "Summary"], meetingRows, "No meetings in the 90-day index yet.")}
+  </section>`;
+
+  return renderShell({
+    section: "meetings",
+    signedIn,
+    title: "Meetings",
+    subtitle: "ingest and follow-through",
+    body,
+  });
+}
+
+export function renderJobs(signedIn: string, jobs: Record<string, unknown>[]): string {
+  const jobRows = jobs
+    .map((j) => {
+      const status = String(j.lastStatus ?? "");
+      return (
+        `<tr><td class="strong">${esc(String(j.name))}</td>` +
+        `<td><span class="mono muted">${esc(String(j.cron ?? "one-off"))}</span></td>` +
+        `<td><span class="mono muted">${esc(String(j.nextRun ?? "—"))}</span></td>` +
+        `<td>${j.enabled ? pill("on", "ok") : pill("paused", "idle")}</td>` +
+        `<td>${status ? pill(status, statusTone(status)) : '<span class="muted">—</span>'}</td>` +
+        `<td class="muted clip">${esc(String(j.lastResultPreview ?? ""))}</td></tr>`
+      );
+    })
+    .join("");
+  const body = `<section class="panel">
+    <h2>Scheduled jobs</h2>
+    ${table(["Name", "Cron", "Next run", "State", "Last", "Last result"], jobRows, "No jobs scheduled.")}
+  </section>`;
+  return renderShell({ section: "jobs", signedIn, title: "Jobs", subtitle: "scheduled agent work", body });
+}
+
+export function renderMemory(signedIn: string, lessons: Record<string, unknown>[]): string {
+  const orgLessonRows = lessons
+    .filter((l) => l.userId === "org")
+    .map(
+      (l) =>
+        `<tr><td>${pill(String(l.kind), "info")}</td>` +
+        `<td>${esc(String(l.text))}</td>` +
+        `<td class="mono muted">${String(l.createdAt).slice(0, 10)}</td></tr>`
+    )
+    .join("");
+  const lessonRows = lessons
+    .filter((l) => l.userId !== "org")
+    .map(
+      (l) =>
+        `<tr><td>${pill(String(l.kind), "info")}</td>` +
+        `<td>${esc(String(l.text))}</td>` +
+        `<td class="mono muted">${String(l.createdAt).slice(0, 10)}</td></tr>`
+    )
+    .join("");
+  const body = `<section class="panel">
+    <h2>Org lessons</h2>
+    ${table(["Kind", "Lesson", "Added"], orgLessonRows, "No org lessons yet.")}
+  </section>
+  <section class="panel">
+    <h2>Agent memory</h2>
+    ${table(["Kind", "Lesson", "Added"], lessonRows, "No lessons learned yet.")}
+  </section>`;
+  return renderShell({ section: "memory", signedIn, title: "Memory", subtitle: "agent and org lessons", body });
+}
+
+function ingestHealthPanel(h?: IngestHealthDoc): string {
+  if (!h) {
+    return `<section class="panel"><h2>Meeting ingest</h2><p class="muted pad">No ingest run yet. After Graph/Teams policy is granted, the Function polls every 5 minutes.</p></section>`;
+  }
+  const err = h.errors?.length
+    ? h.errors.slice(0, 4).map((e) => `<div class="muted" style="padding:.2rem 1.15rem">${esc(e)}</div>`).join("")
+    : `<p class="muted pad">No Graph errors on the last run.</p>`;
+  return `<section class="panel">
+    <h2>Meeting ingest</h2>
+    <div class="grid" style="margin:1rem 1.15rem">
+      <div class="stat"><div class="label">Last run</div><div class="value" style="font-size:1rem">${esc(h.lastRunAt.slice(0, 19).replace("T", " "))}Z</div></div>
+      <div class="stat"><div class="label">Organizers</div><div class="value">${h.scanned}</div></div>
+      <div class="stat"><div class="label">Ingested</div><div class="value">${h.ingested}</div></div>
+      <div class="stat"><div class="label">Skipped</div><div class="value">${h.skipped}</div></div>
+      <div class="stat${h.errors.length ? " alert" : ""}"><div class="label">Errors</div><div class="value">${h.errors.length}</div></div>
+    </div>
+    ${err}
+  </section>`;
 }
 
 function easyAuthPrincipal(req: Request): { id: string; name: string } | undefined {
@@ -175,16 +555,6 @@ function claim(req: Request, typ: string): string | undefined {
   }
 }
 
-function esc(s: string): string {
-  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
-}
-
-type Tone = "ok" | "warn" | "err" | "info" | "idle" | "accent";
-
-function pill(label: string, tone: Tone): string {
-  return `<span class="pill ${tone}">${esc(label)}</span>`;
-}
-
 function statusTone(status: string): Tone {
   const s = status.toLowerCase();
   if (s.includes("ok") || s.includes("success")) return "ok";
@@ -199,332 +569,4 @@ function eventTone(type: string): Tone {
   if (type === "job_run") return "warn";
   if (type === "tool_call") return "ok";
   return "info";
-}
-
-function initials(name: string): string {
-  const parts = name.replace(/@.*$/, "").split(/[.\s_-]+/).filter(Boolean);
-  return ((parts[0]?.[0] ?? "?") + (parts[1]?.[0] ?? "")).toUpperCase();
-}
-
-function table(cols: string[], rows: string, empty: string): string {
-  const head = cols.map((c) => `<th>${c}</th>`).join("");
-  return (
-    `<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${
-      rows || `<tr><td class="empty" colspan="${cols.length}">${empty}</td></tr>`
-    }</tbody></table></div>`
-  );
-}
-
-function ingestHealthPanel(h?: IngestHealthDoc): string {
-  if (!h) {
-    return `<section class="panel"><h2>Meeting ingest</h2><p class="muted" style="padding:1rem 1.15rem">No ingest run yet. After Graph/Teams policy is granted, the Function polls every 5 minutes.</p></section>`;
-  }
-  const err = h.errors?.length
-    ? h.errors.slice(0, 4).map((e) => `<div class="muted" style="padding:.2rem 1.15rem">${esc(e)}</div>`).join("")
-    : `<p class="muted" style="padding:0 1.15rem 1rem">No Graph errors on the last run.</p>`;
-  return `<section class="panel">
-    <h2>Meeting ingest</h2>
-    <div class="grid" style="margin:1rem 1.15rem">
-      <div class="stat"><div class="label">Last run</div><div class="value" style="font-size:1rem">${esc(h.lastRunAt.slice(0, 19).replace("T", " "))}Z</div></div>
-      <div class="stat"><div class="label">Organizers</div><div class="value">${h.scanned}</div></div>
-      <div class="stat"><div class="label">Ingested</div><div class="value">${h.ingested}</div></div>
-      <div class="stat"><div class="label">Skipped</div><div class="value">${h.skipped}</div></div>
-      <div class="stat${h.errors.length ? " alert" : ""}"><div class="label">Errors</div><div class="value">${h.errors.length}</div></div>
-    </div>
-    ${err}
-  </section>`;
-}
-
-export function renderDashboard(d: {
-  stats: Awaited<ReturnType<typeof dayStats>>;
-  totalTokens: number;
-  modelRows: string;
-  jobRows: string;
-  lessonRows: string;
-  orgLessonRows?: string;
-  eventRows: string;
-  commitmentRows?: string;
-  meetingRows?: string;
-  health?: IngestHealthDoc;
-  signedIn: string;
-}): string {
-  const { stats, totalTokens, signedIn } = d;
-  const budget = Number(process.env.DAILY_TOKEN_BUDGET ?? 0);
-  const pct = budget > 0 ? Math.min(100, (totalTokens / budget) * 100) : 0;
-  const budgetTone = pct >= 100 ? "err" : pct >= 75 ? "warn" : "ok";
-  const today = new Date().toISOString().slice(0, 10);
-
-  const budgetBlock =
-    budget > 0
-      ? `<section class="panel budget">
-      <div class="budget-head">
-        <div>
-          <h2>Daily token budget</h2>
-          <p class="muted">Past the cap, non-triage calls drop to the cheap tier until midnight UTC.</p>
-        </div>
-        <div class="budget-num">
-          <span class="mono strong">${totalTokens.toLocaleString()}</span>
-          <span class="muted mono">/ ${budget.toLocaleString()}</span>
-        </div>
-      </div>
-      <div class="bar lg ${budgetTone}"><i style="width:${pct.toFixed(2)}%"></i></div>
-    </section>`
-      : "";
-
-  return `<!doctype html><html lang="en"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="60">
-<title>TaskBrain admin</title>
-<script>(function(){try{var t=localStorage.getItem("tb-theme");if(t){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();</script>
-<style>
-:root{
-  color-scheme:light dark;
-  --bg:#f5f7fa; --surface:#fff; --surface-2:#fafbfc; --border:#e4e8ee;
-  --text:#0f141a; --muted:#5f6b7a; --accent:#2f6df6; --accent-soft:rgba(47,109,246,.1);
-  --ok:#0f9d58; --ok-soft:rgba(15,157,88,.12);
-  --warn:#b7791f; --warn-soft:rgba(183,121,31,.13);
-  --err:#d93838; --err-soft:rgba(217,56,56,.11);
-  --info:#6b46c1; --info-soft:rgba(107,70,193,.11);
-  --idle-soft:rgba(95,107,122,.12);
-  --shadow:0 1px 2px rgba(15,20,26,.05),0 6px 18px rgba(15,20,26,.05);
-  --radius:14px;
-}
-@media (prefers-color-scheme:dark){
-  :root:not([data-theme="light"]){
-    --bg:#0a0c10; --surface:#12161c; --surface-2:#161b22; --border:#242b35;
-    --text:#e7ecf3; --muted:#8b95a5; --accent:#7aa2ff; --accent-soft:rgba(122,162,255,.14);
-    --ok:#43c98b; --ok-soft:rgba(67,201,139,.14);
-    --warn:#e0a94a; --warn-soft:rgba(224,169,74,.14);
-    --err:#ff6b6b; --err-soft:rgba(255,107,107,.14);
-    --info:#a78bfa; --info-soft:rgba(167,139,250,.14);
-    --idle-soft:rgba(139,149,165,.15);
-    --shadow:0 1px 2px rgba(0,0,0,.5),0 8px 26px rgba(0,0,0,.35);
-  }
-}
-:root[data-theme="dark"]{
-  --bg:#0a0c10; --surface:#12161c; --surface-2:#161b22; --border:#242b35;
-  --text:#e7ecf3; --muted:#8b95a5; --accent:#7aa2ff; --accent-soft:rgba(122,162,255,.14);
-  --ok:#43c98b; --ok-soft:rgba(67,201,139,.14);
-  --warn:#e0a94a; --warn-soft:rgba(224,169,74,.14);
-  --err:#ff6b6b; --err-soft:rgba(255,107,107,.14);
-  --info:#a78bfa; --info-soft:rgba(167,139,250,.14);
-  --idle-soft:rgba(139,149,165,.15);
-  --shadow:0 1px 2px rgba(0,0,0,.5),0 8px 26px rgba(0,0,0,.35);
-}
-*{box-sizing:border-box}
-body{
-  margin:0;background:var(--bg);color:var(--text);
-  font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Inter,Roboto,sans-serif;
-  -webkit-font-smoothing:antialiased;
-}
-.mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-size:.86em}
-.muted{color:var(--muted)}
-.strong{font-weight:600}
-.num{font-variant-numeric:tabular-nums}
-
-header{
-  position:sticky;top:0;z-index:10;
-  background:color-mix(in srgb,var(--bg) 82%,transparent);
-  backdrop-filter:saturate(180%) blur(12px);
-  border-bottom:1px solid var(--border);
-}
-.head-in{max-width:1180px;margin:0 auto;padding:.85rem 1.5rem;display:flex;align-items:center;gap:1rem}
-.brand{display:flex;align-items:center;gap:.7rem;min-width:0}
-.logo{
-  width:34px;height:34px;border-radius:10px;flex:none;
-  background:linear-gradient(135deg,var(--accent),#9b5cff);
-  color:#fff;display:grid;place-items:center;font-weight:700;font-size:13px;letter-spacing:.02em;
-}
-.brand h1{font-size:1rem;margin:0;font-weight:650;letter-spacing:-.01em}
-.brand p{margin:0;font-size:12px;color:var(--muted)}
-.spacer{flex:1}
-.live{display:flex;align-items:center;gap:.4rem;font-size:12px;color:var(--muted)}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft);animation:pulse 2.4s ease-in-out infinite}
-@keyframes pulse{50%{opacity:.35}}
-@media (prefers-reduced-motion:reduce){.dot{animation:none}}
-.who{display:flex;align-items:center;gap:.55rem;font-size:13px}
-.avatar{
-  width:28px;height:28px;border-radius:50%;flex:none;display:grid;place-items:center;
-  background:var(--accent-soft);color:var(--accent);font-size:11px;font-weight:700;
-}
-.who a{color:var(--muted);text-decoration:none}
-.who a:hover{color:var(--text)}
-.iconbtn{
-  width:34px;height:34px;border-radius:10px;flex:none;cursor:pointer;
-  background:var(--surface);border:1px solid var(--border);color:var(--muted);
-  display:grid;place-items:center;transition:color .15s,border-color .15s;
-}
-.iconbtn:hover{color:var(--text);border-color:var(--muted)}
-.iconbtn svg{width:16px;height:16px}
-.icon-sun{display:none}
-@media (prefers-color-scheme:dark){
-  :root:not([data-theme="light"]) .icon-sun{display:block}
-  :root:not([data-theme="light"]) .icon-moon{display:none}
-}
-:root[data-theme="dark"] .icon-sun{display:block}
-:root[data-theme="dark"] .icon-moon{display:none}
-:root[data-theme="light"] .icon-sun{display:none}
-:root[data-theme="light"] .icon-moon{display:block}
-
-main{max-width:1180px;margin:0 auto;padding:1.6rem 1.5rem 4rem}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.85rem;margin-bottom:1.4rem}
-.stat{
-  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
-  padding:.95rem 1.1rem;box-shadow:var(--shadow);transition:transform .15s,border-color .15s;
-}
-.stat:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--accent) 40%,var(--border))}
-.stat .label{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
-.stat .value{font-size:1.75rem;font-weight:660;letter-spacing:-.02em;line-height:1.15;margin-top:.2rem;font-variant-numeric:tabular-nums}
-.stat.alert .value{color:var(--err)}
-
-.panel{
-  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
-  box-shadow:var(--shadow);margin-bottom:1.2rem;overflow:hidden;
-}
-.panel>h2{
-  margin:0;padding:.9rem 1.15rem;font-size:.82rem;font-weight:650;
-  text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
-  border-bottom:1px solid var(--border);background:var(--surface-2);
-}
-.budget{padding:1.15rem}
-.budget>h2{padding:0;border:0;background:none;text-transform:none;font-size:.95rem;color:var(--text);letter-spacing:-.01em}
-.budget p{margin:.15rem 0 0;font-size:12.5px}
-.budget-head{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:.8rem;flex-wrap:wrap}
-.budget-num{font-size:1.05rem;white-space:nowrap}
-
-.bar{height:6px;border-radius:99px;background:var(--idle-soft);overflow:hidden;min-width:60px;flex:1}
-.bar i{display:block;height:100%;border-radius:99px;background:var(--accent)}
-.bar.lg{height:9px}
-.bar.ok i{background:var(--ok)}
-.bar.warn i{background:var(--warn)}
-.bar.err i{background:var(--err)}
-
-.scroll{overflow-x:auto}
-table{border-collapse:collapse;width:100%;font-size:13.5px}
-th{
-  text-align:left;font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;
-  color:var(--muted);padding:.6rem 1.15rem;border-bottom:1px solid var(--border);white-space:nowrap;
-}
-td{padding:.6rem 1.15rem;border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent);vertical-align:top}
-tbody tr:last-child td{border-bottom:0}
-tbody tr{transition:background .12s}
-tbody tr:hover{background:var(--surface-2)}
-td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
-td.clip{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-td.empty{text-align:center;color:var(--muted);padding:2rem 1rem;font-size:13px}
-td.share{min-width:150px}
-.share{display:flex;align-items:center;gap:.6rem}
-
-.pill{
-  display:inline-block;padding:.16rem .55rem;border-radius:99px;font-size:11.5px;font-weight:600;
-  letter-spacing:.01em;white-space:nowrap;background:var(--idle-soft);color:var(--muted);
-}
-.pill.ok{background:var(--ok-soft);color:var(--ok)}
-.pill.warn{background:var(--warn-soft);color:var(--warn)}
-.pill.err{background:var(--err-soft);color:var(--err)}
-.pill.info{background:var(--info-soft);color:var(--info)}
-.pill.accent{background:var(--accent-soft);color:var(--accent)}
-
-@media (max-width:640px){
-  .head-in{padding:.7rem 1rem;gap:.6rem}
-  main{padding:1.1rem 1rem 3rem}
-  .brand p,.live{display:none}
-  td,th{padding:.55rem .8rem}
-  td.clip{max-width:200px}
-}
-</style></head><body>
-<header><div class="head-in">
-  <div class="brand">
-    <div class="logo">TB</div>
-    <div>
-      <h1>TaskBrain</h1>
-      <p>${today} · today's activity</p>
-    </div>
-  </div>
-  <div class="spacer"></div>
-  <div class="live"><span class="dot"></span>auto-refresh 60s</div>
-  <button class="iconbtn" id="theme" type="button" title="Toggle theme" aria-label="Toggle theme">
-    <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-    <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-  </button>
-  <div class="who">
-    <span class="avatar">${esc(initials(signedIn))}</span>
-    ${signedIn !== "local" ? `<a href="/.auth/logout">Sign out</a>` : `<span class="muted">local</span>`}
-  </div>
-</div></header>
-
-<main>
-  <div class="grid">
-    <div class="stat"><div class="label">Captures</div><div class="value">${stats.captures.toLocaleString()}</div></div>
-    <div class="stat"><div class="label">Tool calls</div><div class="value">${stats.toolCalls.toLocaleString()}</div></div>
-    <div class="stat"><div class="label">Job runs</div><div class="value">${stats.jobRuns.toLocaleString()}</div></div>
-    <div class="stat${stats.errors > 0 ? " alert" : ""}"><div class="label">Errors</div><div class="value">${stats.errors.toLocaleString()}</div></div>
-    <div class="stat"><div class="label">Tokens in</div><div class="value">${stats.inputTokens.toLocaleString()}</div></div>
-    <div class="stat"><div class="label">Tokens out</div><div class="value">${stats.outputTokens.toLocaleString()}</div></div>
-  </div>
-
-  ${budgetBlock}
-
-  ${ingestHealthPanel(d.health)}
-
-  <section class="panel">
-    <h2>Open / overdue commitments</h2>
-    ${table(
-      ["Owner", "Commitment", "Due", "Status", "From"],
-      d.commitmentRows ?? "",
-      "No commitments ingested yet."
-    )}
-  </section>
-
-  <section class="panel">
-    <h2>Recent meetings</h2>
-    ${table(
-      ["Date", "Title", "Organizer", "Tags", "Summary"],
-      d.meetingRows ?? "",
-      "No meetings in the 90-day index yet."
-    )}
-  </section>
-
-  <section class="panel">
-    <h2>Org lessons</h2>
-    ${table(["Kind", "Lesson", "Added"], d.orgLessonRows ?? "", "No org lessons yet.")}
-  </section>
-
-  <section class="panel">
-    <h2>Model usage</h2>
-    ${table(
-      ["Model", "<span class='num'>Calls</span>", "<span class='num'>Input</span>", "<span class='num'>Output</span>", "Share"],
-      d.modelRows,
-      "No model calls yet today."
-    )}
-  </section>
-
-  <section class="panel">
-    <h2>Scheduled jobs</h2>
-    ${table(["Name", "Cron", "Next run", "State", "Last", "Last result"], d.jobRows, "No jobs scheduled.")}
-  </section>
-
-  <section class="panel">
-    <h2>Agent memory</h2>
-    ${table(["Kind", "Lesson", "Added"], d.lessonRows, "No lessons learned yet.")}
-  </section>
-
-  <section class="panel">
-    <h2>Recent events</h2>
-    ${table(["Time", "Type", "Agent", "Detail"], d.eventRows, "No events yet.")}
-  </section>
-</main>
-
-<script>
-document.getElementById("theme").addEventListener("click", function(){
-  var el = document.documentElement;
-  var set = el.getAttribute("data-theme");
-  var now = set || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-  var next = now === "dark" ? "light" : "dark";
-  el.setAttribute("data-theme", next);
-  try { localStorage.setItem("tb-theme", next); } catch (e) {}
-});
-</script>
-</body></html>`;
 }

@@ -1,0 +1,9 @@
+{
+  "sheets": [],
+  "_notes": [
+    "Bounded PMO catalog injected into the pmo agent prompt (names/ids only, never row data).",
+    "Add entries as: { \"alias\": \"risk register\", \"sheetId\": \"123\", \"purpose\": \"open risks\" }.",
+    "sheetId is the Smartsheet numeric id from the sheet URL. workspaceId is optional.",
+    "Leave sheets empty to rely on smartsheet__search by name. Do not put API tokens here."
+  ]
+}

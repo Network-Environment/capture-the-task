@@ -10,6 +10,7 @@ import { scheduleJob, listJobs, cancelJob } from "../services/scheduler";
 import { rememberLesson, LessonKind } from "../services/agentMemory";
 import { mcpToolDefinitions, isMcpTool, callMcpTool } from "./mcpClient";
 import { requiresApproval, parkAction } from "../services/approvals";
+import { approvalMessage } from "../services/smartsheet";
 import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
 
 export interface ToolContext {
@@ -159,6 +160,13 @@ const nativeDefs: ChatCompletionTool[] = [
   },
 ];
 
+export function nativeToolCatalog(): { name: string; description: string }[] {
+  return nativeDefs.map((d) => ({
+    name: d.function.name,
+    description: d.function.description ?? "",
+  }));
+}
+
 export async function allToolDefinitions(): Promise<ChatCompletionTool[]> {
   return [...nativeDefs, ...(await mcpToolDefinitions())];
 }
@@ -172,10 +180,7 @@ export async function dispatch(
     if (isMcpTool(name)) {
       if (requiresApproval(name)) {
         const id = await parkAction(ctx.userId, name, args);
-        return (
-          `HELD FOR APPROVAL (id ${id}): ${name} is a write action and was not executed. ` +
-          `Tell the user it is queued and they must reply 'approve ${id}' or 'deny ${id}'.`
-        );
+        return approvalMessage(id, name, args) + " Tell the user the write is queued until they approve.";
       }
       return await callMcpTool(name, args);
     }
