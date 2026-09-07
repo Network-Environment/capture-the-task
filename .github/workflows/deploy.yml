@@ -138,7 +138,9 @@ jobs:
           }, open("fn-package.json", "w"))
           PY
           mv fn-package.json package.json
-          zip -r meeting-ingest.zip host.json package.json dist node_modules -x "node_modules/.cache/*"
+          # config/ ships with the zip: src/config.ts resolves it from cwd, and
+          # router.ts reads model.routes.json at import time.
+          zip -r meeting-ingest.zip host.json package.json dist config node_modules -x "node_modules/.cache/*"
           az functionapp deployment source config-zip \
             -g "$RESOURCE_GROUP" \
             -n "${{ needs.infra.outputs.function-app-name }}" \
