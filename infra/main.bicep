@@ -34,6 +34,10 @@ param smartsheetApiToken string = ''
 param spectrumProjectId string = ''
 
 @secure()
+@description('Photon project secret (optional)')
+param spectrumProjectSecret string = ''
+
+@secure()
 @description('Tavily (default), Brave, or Bing API key for native web_search (optional)')
 param webSearchApiKey string = ''
 
