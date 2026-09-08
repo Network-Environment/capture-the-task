@@ -74,6 +74,33 @@ describe("admin portal", () => {
     assert.match(tools, /approval required/);
   });
 
+  it("an unreachable server still lists its tools, and a timeout reads as such", () => {
+    const tools = renderCapabilities("local", "tools", [
+      { name: "browser__navigate", description: "Open URL", status: "timeout" },
+      { name: "browser__snapshot", description: "Read page", status: "timeout" },
+    ]);
+    assert.match(tools, /browser__navigate/);
+    assert.match(tools, /browser__snapshot/);
+    assert.match(tools, />timeout</);
+    assert.doesNotMatch(tools, />down</);
+
+    const html = renderIntegrations("local", "status", undefined, [
+      {
+        name: "browser",
+        enabled: true,
+        url: "https://browser.example/mcp",
+        authEnv: "BROWSER_MCP_TOKEN",
+        tokenPresent: true,
+        connected: false,
+        toolCount: 0,
+        error: "browser did not answer within 10000ms",
+        timedOut: true,
+      },
+    ]);
+    assert.match(html, />timeout</);
+    assert.doesNotMatch(html, />down</);
+  });
+
   it("integrations status shows Smartsheet token empty without printing a secret", () => {
     delete process.env.SMARTSHEET_API_TOKEN;
     const html = renderIntegrations(

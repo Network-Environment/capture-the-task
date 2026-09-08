@@ -184,15 +184,12 @@ resource browserApp 'Microsoft.App/containerApps@2024-03-01' = {
           // failing probe blocks revision provisioning on a first deploy.
         }
       ]
+      // Always warm. Scaling to zero costs less, but a cold Chromium start is
+      // ~45s: long enough to burn the agent's tool-call budget and to look
+      // broken on the admin dashboard. One replica stays resident instead.
       scale: {
-        minReplicas: 0
+        minReplicas: 1
         maxReplicas: 1
-        rules: [
-          {
-            name: 'http-scale'
-            http: { metadata: { concurrentRequests: '10' } }
-          }
-        ]
       }
     }
   }

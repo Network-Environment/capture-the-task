@@ -75,7 +75,7 @@ scripts/bootstrap.sh (once, out of band)
   │                 SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET, WEB_SEARCH_API_KEY]
   │     infra/main.bicep
   │       ├─ creates every resource + 3 Foundry models + Basic ACR
-  │       ├─ Container Apps env + scale-to-zero Playwright MCP (browser)
+  │       ├─ Container Apps env + always-warm Playwright MCP (browser)
   │       ├─ Easy Auth on the web app (TaskBrain Admin Entra app;
   │       │  /api/messages and /healthz excluded)
   │       ├─ gives the App Service system identity AcrPull on ACR
@@ -306,7 +306,8 @@ Three config files change behavior without code:
   (env var holding the bearer token), `allowTools` (allowlist; omit = all),
   `confirmTools` (writes that park for human approval), `enabled`.
   Vendor systems of record go here (Smartsheet). The `browser` server is our
-  own Playwright MCP on a scale-to-zero Container App (navigate + snapshot).
+  own Playwright MCP on a Container App (navigate + snapshot), held at one
+  warm replica so Chromium never cold-starts inside an agent turn.
 - **`config/agents.json`** — profiles. Per profile: `persona` (system
   prompt), `tools` (`"*"`, exact names, or `server__*` globs), `route` (task
   class). `default` names the fallback profile.
@@ -440,7 +441,11 @@ order-independent and re-runnable.
   TTL), App Service log stream for console output.
 - **Cost posture at personal scale:** ~$20–60/mo lean (Cosmos vector search)
   — dominated by model tokens; the cheap-tier triage and budget guard are the
-  levers.
+  levers. The browser Container App adds a flat ~$20–25/mo: it holds one
+  resident replica (1 vCPU / 2 GiB), billed at the East US idle rate of
+  $0.000003 per vCPU-second and per GiB-second. Scaling it to zero would save
+  that, at the price of a ~45s Chromium cold start inside the agent turn that
+  needs it — the trade we deliberately declined.
 
 ## 6. Iteration recipes
 
@@ -451,7 +456,7 @@ a specialist profile access via a `server__*` glob in `config/agents.json`.
 
 **Give the agent public-web research:** native `web_search` (query → titles/URLs/snippets;
 set GitHub secret `WEB_SEARCH_API_KEY`) plus `browser__navigate` / `browser__snapshot`
-on a scale-to-zero Container App. Search first; open a URL only when the user
+on an always-warm Container App. Search first; open a URL only when the user
 named it or a hit must be read as a rendered page. Caps: 1 search and 3 browser
 calls per turn. SSRF blocks `file:`, localhost, and private IPs. Snapshots are
 truncated; page HTML is never written to Cosmos/Blob unless the user asks to

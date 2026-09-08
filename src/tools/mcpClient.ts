@@ -36,6 +36,30 @@ interface McpToolRef {
 const clients = new Map<string, Client>();
 let toolCache: McpToolRef[] | null = null;
 
+/**
+ * Every MCP call is bounded. A remote server that is restarting, redeploying,
+ * or wedged must not hang the agent loop or the admin dashboard, which is what
+ * a plain connect() does — it has no timeout of its own.
+ */
+const DEFAULT_TIMEOUT_MS = 10_000;
+
+export class McpTimeout extends Error {
+  constructor(server: string, ms: number) {
+    super(`${server} did not answer within ${ms}ms`);
+    this.name = "McpTimeout";
+  }
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number, server: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new McpTimeout(server, ms)), ms);
+    work.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
+
 export function resolveServerUrl(cfg: ServerConfig): string | undefined {
   if (cfg.urlEnv) {
     const fromEnv = process.env[cfg.urlEnv]?.trim();
@@ -61,20 +85,32 @@ async function connect(cfg: ServerConfig): Promise<Client> {
     requestInit: { headers },
   });
   const client = new Client({ name: "taskbrain", version: "0.1.0" });
-  await client.connect(transport);
+  await withTimeout(client.connect(transport), cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS, cfg.name);
   clients.set(cfg.name, client);
   return client;
 }
 
-/** Discover tools from every enabled server. Cached per process. */
+async function listTools(cfg: ServerConfig, client: Client) {
+  return withTimeout(client.listTools(), cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS, cfg.name);
+}
+
+/**
+ * Discover tools from every enabled server. Cached per process, but only once
+ * every server answered: caching a partial result would strand a server that
+ * was merely asleep (or still deploying) until the next restart.
+ */
 export async function discoverMcpTools(): Promise<McpToolRef[]> {
   if (toolCache) return toolCache;
   const refs: McpToolRef[] = [];
+  let complete = true;
   for (const cfg of (serversConfig.servers as ServerConfig[]).filter((s) => s.enabled)) {
-    if (!resolveServerUrl(cfg)) continue;
+    if (!resolveServerUrl(cfg)) {
+      complete = false;
+      continue;
+    }
     try {
       const client = await connect(cfg);
-      const { tools } = await client.listTools();
+      const { tools } = await listTools(cfg, client);
       for (const t of tools) {
         if (cfg.allowTools && !cfg.allowTools.includes(t.name)) continue;
         refs.push({
@@ -88,9 +124,10 @@ export async function discoverMcpTools(): Promise<McpToolRef[]> {
     } catch (err) {
       console.error(`[mcp] failed to connect to ${cfg.name}:`, err);
       // Degrade gracefully: the agent runs without that server's tools.
+      complete = false;
     }
   }
-  toolCache = refs;
+  if (complete) toolCache = refs;
   return refs;
 }
 
@@ -120,6 +157,8 @@ export interface McpServerHealth {
   connected: boolean;
   toolCount: number;
   error?: string;
+  /** Timed out rather than refused — the server is slow, restarting, or wedged. */
+  timedOut?: boolean;
 }
 
 /** Live connect check for the admin Integrations page. Does not log tokens. */
@@ -155,7 +194,7 @@ export async function mcpServerHealth(): Promise<McpServerHealth[]> {
     }
     try {
       const client = await connect(cfg);
-      const { tools } = await client.listTools();
+      const { tools } = await listTools(cfg, client);
       const n = cfg.allowTools
         ? tools.filter((t) => cfg.allowTools!.includes(t.name)).length
         : tools.length;
@@ -178,6 +217,7 @@ export async function mcpServerHealth(): Promise<McpServerHealth[]> {
         connected: false,
         toolCount: 0,
         error: (err as Error).message.slice(0, 180),
+        timedOut: err instanceof McpTimeout,
       });
     }
   }

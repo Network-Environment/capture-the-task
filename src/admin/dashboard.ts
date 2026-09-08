@@ -118,46 +118,7 @@ async function renderSection(
       return renderOverview({ stats, events, health, signedIn, today, orgCounts: counts });
     }
     case "capabilities": {
-      let mcp: ToolCatalogRow[] = [];
-      if (tab === "tools") {
-        try {
-          const [defs, health] = await Promise.all([
-            mcpToolDefinitions(),
-            mcpServerHealth(),
-          ]);
-          const discovered = new Map(
-            defs.map((t) => [t.function.name, t.function.description ?? ""])
-          );
-          const healthByServer = new Map(health.map((h) => [h.name, h]));
-          mcp = mcpServerCatalog().flatMap((server) =>
-            (server.allowTools ?? []).map((tool) => {
-              const name = `${server.name}__${tool}`;
-              const serverHealth = healthByServer.get(server.name);
-              return {
-                name,
-                description:
-                  discovered.get(name) ??
-                  `[${server.name}] ${server.description ?? tool}`,
-                status: !server.enabled
-                  ? "disabled"
-                  : serverHealth?.connected && discovered.has(name)
-                    ? "connected"
-                    : serverHealth?.connected
-                      ? "unavailable"
-                      : "down",
-              };
-            })
-          );
-        } catch {
-          mcp = mcpServerCatalog().flatMap((server) =>
-            (server.allowTools ?? []).map((tool) => ({
-              name: `${server.name}__${tool}`,
-              description: `[${server.name}] ${server.description ?? tool}`,
-              status: server.enabled ? "down" : "disabled",
-            }))
-          );
-        }
-      }
+      const mcp = tab === "tools" ? await toolCatalogRows() : [];
       return renderCapabilities(signedIn, tab === "tools" ? "tools" : "skills", mcp);
     }
     case "integrations": {
@@ -305,7 +266,37 @@ export function renderOverview(d: {
 interface ToolCatalogRow {
   name: string;
   description: string;
-  status?: "ready" | "not configured" | "connected" | "down" | "disabled" | "unavailable";
+  status?: "connected" | "down" | "disabled" | "unavailable" | "timeout";
+}
+
+/**
+ * The tool list comes from config, so the tab renders even when a server is
+ * unreachable; live discovery only decorates it with status.
+ */
+async function toolCatalogRows(): Promise<ToolCatalogRow[]> {
+  const [defs, health] = await Promise.all([
+    mcpToolDefinitions().catch(() => []),
+    mcpServerHealth().catch(() => [] as McpServerHealth[]),
+  ]);
+  const discovered = new Map(defs.map((t) => [t.function.name, t.function.description ?? ""]));
+  const healthByServer = new Map(health.map((h) => [h.name, h]));
+
+  return mcpServerCatalog().flatMap((server) =>
+    (server.allowTools ?? []).map((tool) => {
+      const name = `${server.name}__${tool}`;
+      const live = healthByServer.get(server.name);
+      let status: ToolCatalogRow["status"];
+      if (!server.enabled) status = "disabled";
+      else if (live?.connected) status = discovered.has(name) ? "connected" : "unavailable";
+      else if (live?.timedOut) status = "timeout";
+      else status = "down";
+      return {
+        name,
+        description: discovered.get(name) ?? `[${server.name}] ${server.description ?? tool}`,
+        status,
+      };
+    })
+  );
 }
 
 export function renderCapabilities(
@@ -346,7 +337,7 @@ export function renderCapabilities(
         const tone: Tone =
           t.status === "connected" ? "ok" :
           t.status === "disabled" ? "idle" :
-          t.status === "unavailable" ? "warn" : "err";
+          t.status === "unavailable" || t.status === "timeout" ? "warn" : "err";
         return `<tr><td class="mono strong">${esc(t.name)}</td><td>${pill("mcp", "accent")}</td><td>${pill(t.status ?? "connected", tone)}</td><td>${gate}</td><td class="muted">${esc(t.description)}</td></tr>`;
       })
       .join("");
@@ -389,8 +380,14 @@ export function renderIntegrations(
     const serverConfig = new Map(mcpServerCatalog().map((s) => [s.name, s]));
     const mcpRows = mcp
       .map((s) => {
-        const tone: Tone = !s.enabled ? "idle" : s.connected ? "ok" : "err";
-        const label = !s.enabled ? "disabled" : s.connected ? "connected" : "down";
+        const tone: Tone = !s.enabled ? "idle" : s.connected ? "ok" : s.timedOut ? "warn" : "err";
+        const label = !s.enabled
+          ? "disabled"
+          : s.connected
+            ? "connected"
+            : s.timedOut
+              ? "timeout"
+              : "down";
         const token = s.authEnv ? (s.tokenPresent ? pill("token set", "ok") : pill("token empty", "err")) : pill("no auth", "idle");
         const tools = (serverConfig.get(s.name)?.allowTools ?? []).join(", ") || "all";
         return `<tr><td class="strong">${esc(s.name)}</td><td>${pill(label, tone)}</td><td>${token}</td><td><span class="num">${s.toolCount}</span><div class="muted">${esc(tools)}</div></td><td class="muted clip">${esc(s.error ?? "—")}</td></tr>`;
