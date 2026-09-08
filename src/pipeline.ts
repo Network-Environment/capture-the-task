@@ -82,13 +82,23 @@ export async function processCapture(input: CaptureInput): Promise<Outbound> {
     };
   }
 
-  void logActivity({ type: "capture", userId, detail: { source, channel, chars: text.length } });
+  const attribution = {
+    origin: "user_message" as const,
+    channel,
+    inputMode: source,
+  };
+  void logActivity({
+    type: "capture",
+    userId,
+    ...attribution,
+    detail: { source, channel, chars: text.length },
+  });
 
   // 2. Short follow-up window only (never the full thread).
   const recent = await getRecentTurns(userId);
 
   // 3. Triage on the cheap tier.
-  const result = await triage(text, recent);
+  const result = await triage(text, recent, attribution);
   const kind =
     (result.kind === "question" || result.kind === "conversation") && isPmoRequest(text)
       ? ({ kind: "action" } as TriageResult)
@@ -109,6 +119,11 @@ async function execute(
   recent: Awaited<ReturnType<typeof getRecentTurns>>
 ): Promise<Outbound> {
   const { userId } = input;
+  const attribution = {
+    origin: "user_message" as const,
+    channel: input.channel,
+    inputMode: source,
+  };
 
   switch (r.kind) {
     case "task": {
@@ -123,7 +138,11 @@ async function execute(
       } else {
         line += "\n✓ Saved to the brain (To Do available from Teams)";
       }
-      await saveNote(userId, { kind: "task", title: r.title, body: r.detail || text, tags: r.tags, source });
+      await saveNote(
+        userId,
+        { kind: "task", title: r.title, body: r.detail || text, tags: r.tags, source },
+        attribution
+      );
       if (input.allowActions) {
         const proposed = await maybeProposeSheetUpdate(userId, {
           title: r.title,
@@ -137,14 +156,18 @@ async function execute(
 
     case "idea":
     case "reference": {
-      const { path } = await saveNote(userId, {
-        kind: r.kind,
-        title: r.title,
-        body: r.detail || text,
-        tags: r.tags,
-        links: r.links,
-        source,
-      });
+      const { path } = await saveNote(
+        userId,
+        {
+          kind: r.kind,
+          title: r.title,
+          body: r.detail || text,
+          tags: r.tags,
+          links: r.links,
+          source,
+        },
+        attribution
+      );
       const links = r.links.length ? `\nLinked: ${r.links.map((l) => `[[${l}]]`).join(", ")}` : "";
       return {
         title: r.kind === "idea" ? "Idea filed" : "Reference filed",
@@ -155,13 +178,13 @@ async function execute(
     }
 
     case "question": {
-      const hits = await recall(userId, text, 8);
-      const answer = await answerQuestion(text, hits);
+      const hits = await recall(userId, text, 8, attribution);
+      const answer = await answerQuestion(text, hits, attribution);
       return { title: "From your brain", body: answer, tags: [], summaryLine: answer.slice(0, 200) };
     }
 
     case "conversation": {
-      const response = await respondConversationally(text, recent);
+      const response = await respondConversationally(text, recent, attribution);
       return {
         title: "TaskBrain",
         body: response,
@@ -173,7 +196,11 @@ async function execute(
     case "action": {
       if (!input.allowActions) {
         // Governance lever: some channels are capture-only.
-        await saveNote(userId, { kind: "reference", title: text.slice(0, 60), body: text, tags: ["pending-action"], source });
+        await saveNote(
+          userId,
+          { kind: "reference", title: text.slice(0, 60), body: text, tags: ["pending-action"], source },
+          attribution
+        );
         return {
           title: "Saved, not executed",
           body:
@@ -184,7 +211,11 @@ async function execute(
         };
       }
       const result = await runAgent(
-        { userId, conversationRef: input.conversationRef },
+        {
+          userId,
+          conversationRef: input.conversationRef,
+          ...attribution,
+        },
         text,
         agentProfileFor("action", text)
       );
@@ -192,7 +223,7 @@ async function execute(
     }
 
     case "followup": {
-      const resolved = await triage(r.resolvedText, []);
+      const resolved = await triage(r.resolvedText, [], attribution);
       if (resolved.kind === "followup") {
         return {
           title: "Need more context",

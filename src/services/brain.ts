@@ -8,6 +8,7 @@
 import { BlobServiceClient } from "@azure/storage-blob";
 import { CosmosClient } from "@azure/cosmos";
 import { embed } from "./router";
+import type { ActivityAttribution } from "./activityLog";
 
 const blobSvc = BlobServiceClient.fromConnectionString(
   process.env.STORAGE_CONNECTION_STRING!
@@ -40,7 +41,8 @@ export interface RecallHit {
 
 export async function saveNote(
   userId: string,
-  n: NoteInput
+  n: NoteInput,
+  attribution: Partial<ActivityAttribution> = {}
 ): Promise<{ id: string; path: string }> {
   const now = new Date();
   const id = `${now.getTime()}-${slug(n.title).slice(0, 40)}`;
@@ -53,7 +55,10 @@ export async function saveNote(
       blobHTTPHeaders: { blobContentType: "text/markdown" },
     });
 
-  const vector = await embed(`${n.title}\n${n.body}\n${n.tags.join(" ")}`);
+  const vector = await embed(`${n.title}\n${n.body}\n${n.tags.join(" ")}`, {
+    ...attribution,
+    trigger: "note_index",
+  });
   await notes.items.create({
     id,
     userId,
@@ -74,9 +79,10 @@ export async function saveNote(
 export async function recall(
   userId: string,
   query: string,
-  k = 8
+  k = 8,
+  attribution: Partial<ActivityAttribution> = {}
 ): Promise<RecallHit[]> {
-  const qv = await embed(query);
+  const qv = await embed(query, { ...attribution, trigger: "note_recall" });
   const { resources } = await notes.items
     .query({
       query: `

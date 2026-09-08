@@ -268,6 +268,12 @@ main{flex:1;min-width:0;padding:1.4rem 1.5rem 4rem;max-width:1080px}
 }
 .tab:hover{color:var(--text)}
 .tab.on{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+button[type="submit"]{
+  border:0;border-radius:10px;padding:.55rem .9rem;background:var(--accent);
+  color:#fff;font:inherit;font-weight:650;cursor:pointer;
+}
+button[type="submit"]:disabled{opacity:.45;cursor:not-allowed}
+input[type="checkbox"]{width:16px;height:16px;accent-color:var(--accent)}
 
 .cards{display:grid;gap:.85rem;margin-bottom:1.2rem}
 .card{

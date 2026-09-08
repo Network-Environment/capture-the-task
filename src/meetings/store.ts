@@ -5,6 +5,8 @@ import type {
   CommitmentDoc,
   IngestHealthDoc,
   MeetingDoc,
+  TranscriptAvailabilityDoc,
+  TranscriptAvailabilityStatus,
 } from "./types";
 
 const cosmos = new CosmosClient({
@@ -15,6 +17,7 @@ const db = cosmos.database(process.env.COSMOS_DB ?? "taskbrain");
 const meetings = db.container("meetings");
 const commitments = db.container("commitments");
 const checkpoints = db.container("meeting-checkpoints");
+const availability = db.container("transcript-availability");
 
 function meetingBlobs() {
   return BlobServiceClient.fromConnectionString(process.env.STORAGE_CONNECTION_STRING!).getContainerClient(
@@ -42,6 +45,162 @@ export async function meetingExists(transcriptId: string): Promise<boolean> {
 
 export async function upsertMeeting(doc: MeetingDoc): Promise<void> {
   await meetings.items.upsert(doc);
+}
+
+export function transcriptAvailabilityId(transcriptId: string): string {
+  return transcriptId.replace(/[^a-zA-Z0-9-_]/g, "").slice(0, 120) || `tx-${Date.now()}`;
+}
+
+export function transcriptSelectionKey(organizerId: string, transcriptId: string): string {
+  return `${organizerId}::${transcriptAvailabilityId(transcriptId)}`;
+}
+
+export function parseTranscriptSelectionKey(
+  key: string
+): { organizerId: string; id: string } | undefined {
+  const split = key.indexOf("::");
+  if (split < 1) return undefined;
+  const organizerId = key.slice(0, split);
+  const id = key.slice(split + 2);
+  return organizerId && id ? { organizerId, id } : undefined;
+}
+
+export async function getTranscriptAvailability(
+  organizerId: string,
+  id: string
+): Promise<TranscriptAvailabilityDoc | undefined> {
+  try {
+    const { resource } = await availability
+      .item(id, organizerId)
+      .read<TranscriptAvailabilityDoc>();
+    return resource;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Discovery is idempotent and never overwrites queue/processing state. */
+export async function recordTranscriptAvailability(
+  input: Omit<TranscriptAvailabilityDoc, "id" | "discoveredAt" | "updatedAt" | "status">,
+  alreadySummarized = false
+): Promise<"created" | "existing"> {
+  const id = transcriptAvailabilityId(input.transcriptId);
+  const existing = await getTranscriptAvailability(input.organizerId, id);
+  if (existing) {
+    await availability.items.upsert({
+      ...existing,
+      organizerName: input.organizerName ?? existing.organizerName,
+      meetingId: input.meetingId || existing.meetingId,
+      createdDateTime: input.createdDateTime ?? existing.createdDateTime,
+      titleHint: input.titleHint ?? existing.titleHint,
+      status: alreadySummarized ? "summarized" : existing.status,
+      updatedAt: new Date().toISOString(),
+    });
+    return "existing";
+  }
+  const now = new Date().toISOString();
+  await availability.items.create({
+    ...input,
+    id,
+    discoveredAt: now,
+    updatedAt: now,
+    status: alreadySummarized ? "summarized" : "available",
+  } satisfies TranscriptAvailabilityDoc);
+  return "created";
+}
+
+export async function listTranscriptAvailability(limit = 100): Promise<TranscriptAvailabilityDoc[]> {
+  const { resources } = await availability.items
+    .query<TranscriptAvailabilityDoc>({
+      query:
+        "SELECT TOP @n * FROM c ORDER BY c.createdDateTime DESC",
+      parameters: [{ name: "@n", value: limit }],
+    })
+    .fetchAll();
+  return resources;
+}
+
+export async function queueTranscriptSelections(
+  keys: string[],
+  requestedBy: string
+): Promise<{ queued: number; unchanged: number }> {
+  let queued = 0;
+  let unchanged = 0;
+  for (const raw of [...new Set(keys)].slice(0, 25)) {
+    const key = parseTranscriptSelectionKey(raw);
+    if (!key) {
+      unchanged++;
+      continue;
+    }
+    const doc = await getTranscriptAvailability(key.organizerId, key.id);
+    if (!doc || (doc.status !== "available" && doc.status !== "failed")) {
+      unchanged++;
+      continue;
+    }
+    const now = new Date().toISOString();
+    try {
+      await availability.item(doc.id, doc.organizerId).replace(
+        {
+          ...doc,
+          status: "queued",
+          requestedBy,
+          requestedAt: now,
+          updatedAt: now,
+          error: undefined,
+        },
+        { accessCondition: { type: "IfMatch", condition: doc._etag ?? "" } }
+      );
+      queued++;
+    } catch {
+      unchanged++;
+    }
+  }
+  return { queued, unchanged };
+}
+
+export async function claimQueuedTranscripts(limit = 2): Promise<TranscriptAvailabilityDoc[]> {
+  const staleBefore = new Date(Date.now() - 15 * 60_000).toISOString();
+  const { resources } = await availability.items
+    .query<TranscriptAvailabilityDoc>({
+      query:
+        "SELECT TOP @n * FROM c WHERE c.status = 'queued' OR (c.status = 'processing' AND c.processingAt < @stale) ORDER BY c.requestedAt",
+      parameters: [
+        { name: "@n", value: limit },
+        { name: "@stale", value: staleBefore },
+      ],
+    })
+    .fetchAll();
+  const claimed: TranscriptAvailabilityDoc[] = [];
+  for (const doc of resources) {
+    const next: TranscriptAvailabilityDoc = {
+      ...doc,
+      status: "processing",
+      processingAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      await availability.item(doc.id, doc.organizerId).replace(next, {
+        accessCondition: { type: "IfMatch", condition: doc._etag ?? "" },
+      });
+      claimed.push(next);
+    } catch {
+      // Another Function instance claimed it.
+    }
+  }
+  return claimed;
+}
+
+export async function setTranscriptAvailabilityStatus(
+  doc: TranscriptAvailabilityDoc,
+  status: TranscriptAvailabilityStatus,
+  patch: Partial<TranscriptAvailabilityDoc> = {}
+): Promise<void> {
+  await availability.items.upsert({
+    ...doc,
+    ...patch,
+    status,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 export async function writeMeetingMarkdown(path: string, md: string): Promise<void> {

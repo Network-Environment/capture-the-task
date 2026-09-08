@@ -12,10 +12,19 @@ import { mcpToolDefinitions, isMcpTool, callMcpTool } from "./mcpClient";
 import { requiresApproval, parkAction } from "../services/approvals";
 import { approvalMessage } from "../services/smartsheet";
 import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
+import type {
+  ActivityChannel,
+  ActivityInputMode,
+  ActivityOrigin,
+} from "../services/activityLog";
 
 export interface ToolContext {
   userId: string;
   conversationRef?: unknown; // serialized ConversationReference for proactive delivery
+  origin?: ActivityOrigin;
+  channel?: ActivityChannel;
+  inputMode?: ActivityInputMode;
+  trigger?: string;
 }
 
 const nativeDefs: ChatCompletionTool[] = [
@@ -187,18 +196,27 @@ export async function dispatch(
 
     switch (name) {
       case "save_note": {
-        const { path } = await saveNote(ctx.userId, {
-          kind: (args.kind as "task" | "idea" | "reference") ?? "idea",
-          title: String(args.title),
-          body: String(args.body ?? ""),
-          tags: (args.tags as string[]) ?? [],
-          links: (args.links as string[]) ?? [],
-          source: "text",
-        });
+        const { path } = await saveNote(
+          ctx.userId,
+          {
+            kind: (args.kind as "task" | "idea" | "reference") ?? "idea",
+            title: String(args.title),
+            body: String(args.body ?? ""),
+            tags: (args.tags as string[]) ?? [],
+            links: (args.links as string[]) ?? [],
+            source: "text",
+          },
+          ctx
+        );
         return `Saved: ${path}`;
       }
       case "recall_notes": {
-        const hits = await recall(ctx.userId, String(args.query), Number(args.k ?? 8));
+        const hits = await recall(
+          ctx.userId,
+          String(args.query),
+          Number(args.k ?? 8),
+          ctx
+        );
         if (!hits.length) return "No matching notes.";
         return hits
           .map((h) => `[${h.kind}] ${h.title} (${h.createdAt.slice(0, 10)}): ${h.body.slice(0, 400)}`)
@@ -230,7 +248,12 @@ export async function dispatch(
           String(args.text)
         );
       case "recall_meetings":
-        return await recallMeetings(ctx.userId, String(args.query), Number(args.k ?? 6));
+        return await recallMeetings(
+          ctx.userId,
+          String(args.query),
+          Number(args.k ?? 6),
+          ctx
+        );
       case "list_commitments":
         return await listFollowThrough(ctx.userId, args.owner ? String(args.owner) : undefined);
       case "complete_commitment":

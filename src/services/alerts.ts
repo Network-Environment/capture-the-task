@@ -24,7 +24,13 @@ export async function alertUser(userId: string, text: string): Promise<boolean> 
 }
 
 export async function alertAdmin(text: string): Promise<void> {
-  void logActivity({ type: "error", detail: { alert: text } });
+  void logActivity({
+    type: "error",
+    origin: "system",
+    channel: "internal",
+    trigger: "admin_alert",
+    detail: { alert: text },
+  });
   const admin = process.env.ADMIN_AAD_OBJECT_ID;
   if (admin) await alertUser(admin, `[admin] ${text}`);
 }

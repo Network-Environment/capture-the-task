@@ -72,7 +72,13 @@ async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Prom
   const retryCount = Number((job as unknown as Record<string, unknown>).retryCount ?? 0);
   try {
     const result = await runAgent(
-      { userId: job.userId, conversationRef: job.conversationRef },
+      {
+        userId: job.userId,
+        conversationRef: job.conversationRef,
+        origin: "scheduled_job",
+        channel: "internal",
+        trigger: `job:${job.name}`,
+      },
       `Scheduled job "${job.name}". Instruction:\n${job.prompt}\n\n` +
         `Execute it now using your tools and produce a concise result for the user.`,
       "digest"
@@ -85,13 +91,23 @@ async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Prom
       : undefined;
     await deliver(job.userId, `⏰ **${job.name}**\n\n${result}`, prefer);
     await markRun({ ...job, ...( { retryCount: 0 } as object) } as Job, "ok", result);
-    void logActivity({ type: "job_run", userId: job.userId, detail: { job: job.name, status: "ok" } });
+    void logActivity({
+      type: "job_run",
+      userId: job.userId,
+      origin: "scheduled_job",
+      channel: "internal",
+      trigger: `job:${job.name}`,
+      detail: { job: job.name, status: "ok" },
+    });
   } catch (err) {
     const message = (err as Error).message;
     console.error(`[orchestrator] job ${job.id} failed:`, err);
     void logActivity({
       type: "job_run",
       userId: job.userId,
+      origin: "scheduled_job",
+      channel: "internal",
+      trigger: `job:${job.name}`,
       detail: { job: job.name, status: "error", attempt: retryCount + 1, message },
     });
 

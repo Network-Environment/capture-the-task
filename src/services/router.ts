@@ -11,7 +11,11 @@ import type {
 } from "openai/resources/chat/completions";
 import { loadConfig } from "../config";
 const routesConfig = loadConfig<{ routes: Record<string, unknown>; escalation?: { from: string; to: string } }>("model.routes");
-import { logActivity, dayStats } from "./activityLog";
+import {
+  logActivity,
+  dayStats,
+  type ActivityAttribution,
+} from "./activityLog";
 import { alertAdmin } from "./alerts";
 
 export type TaskClass = "triage" | "agent" | "synthesis" | "digest";
@@ -78,6 +82,7 @@ function budgetGuard(task: TaskClass, s: RouteSpec & { model: string }): RouteSp
 export interface RouteOptions {
   json?: boolean;
   tools?: ChatCompletionTool[];
+  attribution?: Partial<ActivityAttribution>;
 }
 
 /**
@@ -161,6 +166,10 @@ export async function route(
   todayTokens += (res.usage?.prompt_tokens ?? 0) + (res.usage?.completion_tokens ?? 0);
   void logActivity({
     type: "model_call",
+    origin: opts.attribution?.origin,
+    channel: opts.attribution?.channel,
+    inputMode: opts.attribution?.inputMode,
+    trigger: opts.attribution?.trigger ?? task,
     detail: {
       task,
       model: s.model,
@@ -187,10 +196,27 @@ export async function routeWithEscalation(
   return first;
 }
 
-export async function embed(text: string): Promise<number[]> {
+export async function embed(
+  text: string,
+  attribution: Partial<ActivityAttribution> = {}
+): Promise<number[]> {
   const res = await client.embeddings.create({
     model: process.env.EMBED_DEPLOYMENT!,
     input: text.slice(0, 8000),
+  });
+  void logActivity({
+    type: "embedding",
+    origin: attribution.origin,
+    channel: attribution.channel,
+    inputMode: attribution.inputMode,
+    trigger: attribution.trigger ?? "embedding",
+    detail: {
+      model: process.env.EMBED_DEPLOYMENT ?? "embed",
+      inputTokens: res.usage?.prompt_tokens ?? 0,
+      outputTokens: res.usage?.total_tokens
+        ? Math.max(0, res.usage.total_tokens - (res.usage.prompt_tokens ?? 0))
+        : 0,
+    },
   });
   return res.data[0].embedding;
 }

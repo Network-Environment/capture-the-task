@@ -69,7 +69,14 @@ export async function summarizeTranscript(input: {
           `Title hint: ${input.titleHint ?? "none"}\n\n${input.transcript}`,
       },
     ],
-    { json: true }
+    {
+      json: true,
+      attribution: {
+        origin: "admin_summary",
+        channel: "internal",
+        trigger: "meeting_summary",
+      },
+    }
   );
   return parseMeetingSummary(res.choices[0]?.message?.content ?? "") ?? {
     ...EMPTY,

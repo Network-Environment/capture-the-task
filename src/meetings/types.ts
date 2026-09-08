@@ -58,8 +58,38 @@ export interface CheckpointDoc {
   id: string;
   organizerId: string;
   deltaLink?: string;
+  backfillCompletedAt?: string;
   lastError?: string;
   lastOkAt?: string;
+}
+
+export type TranscriptAvailabilityStatus =
+  | "available"
+  | "queued"
+  | "processing"
+  | "summarized"
+  | "skipped_short"
+  | "failed";
+
+export interface TranscriptAvailabilityDoc {
+  id: string;
+  organizerId: string;
+  organizerName?: string;
+  transcriptId: string;
+  meetingId: string;
+  createdDateTime?: string;
+  titleHint?: string;
+  discoveredAt: string;
+  updatedAt: string;
+  status: TranscriptAvailabilityStatus;
+  requestedBy?: string;
+  requestedAt?: string;
+  processingAt?: string;
+  completedAt?: string;
+  retryCount?: number;
+  error?: string;
+  meetingDocId?: string;
+  _etag?: string;
 }
 
 export interface IngestHealthDoc {
@@ -70,6 +100,9 @@ export interface IngestHealthDoc {
   ingested: number;
   skipped: number;
   matched: number;
+  discovered?: number;
+  queued?: number;
+  processed?: number;
   errors: string[];
 }
 
@@ -78,5 +111,7 @@ export interface IngestResult {
   ingested: number;
   skipped: number;
   matched: number;
+  discovered?: number;
+  processed?: number;
   errors: string[];
 }

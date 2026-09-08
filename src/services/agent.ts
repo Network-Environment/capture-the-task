@@ -17,7 +17,7 @@ import type {
 import { route, routeWithEscalation, TaskClass } from "./router";
 import { allToolDefinitions, dispatch, ToolContext } from "../tools/registry";
 import { lessonsPromptBlock } from "./agentMemory";
-import { logActivity } from "./activityLog";
+import { logActivity, type ActivityAttribution } from "./activityLog";
 import { RecallHit } from "./brain";
 import { SessionTurn } from "./session";
 import { loadConfig } from "../config";
@@ -101,7 +101,11 @@ export function normalizeTriageResult(raw: string): TriageResult {
   }
 }
 
-export async function triage(text: string, recent: SessionTurn[]): Promise<TriageResult> {
+export async function triage(
+  text: string,
+  recent: SessionTurn[],
+  attribution: Partial<ActivityAttribution> = {}
+): Promise<TriageResult> {
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
@@ -118,20 +122,29 @@ export async function triage(text: string, recent: SessionTurn[]): Promise<Triag
   }
   messages.push({ role: "user", content: `Capture:\n${text}` });
 
-  const res = await routeWithEscalation("triage", messages, { json: true }, (content) => {
+  const res = await routeWithEscalation("triage", messages, {
+    json: true,
+    attribution: { ...attribution, trigger: "triage" },
+  }, (content) => {
     if (!content) return true;
     try { JSON.parse(content); return false; } catch { return true; }
   });
 
   const raw = res.choices[0]?.message?.content ?? "{}";
   const result = normalizeTriageResult(raw);
-  void logActivity({ type: "triage", detail: { kind: result.kind } });
+  void logActivity({
+    type: "triage",
+    ...attribution,
+    trigger: "triage",
+    detail: { kind: result.kind },
+  });
   return result;
 }
 
 export async function respondConversationally(
   userMessage: string,
-  recent: SessionTurn[]
+  recent: SessionTurn[],
+  attribution: Partial<ActivityAttribution> = {}
 ): Promise<string> {
   const messages: ChatCompletionMessageParam[] = [
     {
@@ -144,7 +157,9 @@ export async function respondConversationally(
     ...recent.map((t) => ({ role: t.role, content: t.text }) as ChatCompletionMessageParam),
     { role: "user", content: userMessage },
   ];
-  const res = await route("agent", messages);
+  const res = await route("agent", messages, {
+    attribution: { ...attribution, trigger: "conversation" },
+  });
   return res.choices[0]?.message?.content ?? "Hey — what can I help with?";
 }
 
@@ -192,7 +207,15 @@ export async function runAgent(
   ];
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const res = await route(profile.route, messages, { tools });
+    const res = await route(profile.route, messages, {
+      tools,
+      attribution: {
+        origin: ctx.origin,
+        channel: ctx.channel,
+        inputMode: ctx.inputMode,
+        trigger: ctx.trigger ?? `agent:${name}`,
+      },
+    });
     const msg = res.choices[0]?.message;
     if (!msg) return "The agent produced no response.";
 
@@ -209,6 +232,10 @@ export async function runAgent(
         type: "tool_call",
         userId: ctx.userId,
         agent: name,
+        origin: ctx.origin,
+        channel: ctx.channel,
+        inputMode: ctx.inputMode,
+        trigger: ctx.trigger ?? `agent:${name}`,
         detail: { tool: call.function.name, ok: !result.startsWith(`Tool ${call.function.name} failed`) },
       });
       messages.push({ role: "tool", tool_call_id: call.id, content: result.slice(0, 12_000) });
@@ -217,7 +244,11 @@ export async function runAgent(
   return "I hit my tool-call limit before finishing — the partial work is saved. Try narrowing the request.";
 }
 
-export async function answerQuestion(question: string, hits: RecallHit[]): Promise<string> {
+export async function answerQuestion(
+  question: string,
+  hits: RecallHit[],
+  attribution: Partial<ActivityAttribution> = {}
+): Promise<string> {
   if (!hits.length) return "Nothing in the brain matches that yet.";
   const res = await route("synthesis", [
     {
@@ -233,6 +264,6 @@ export async function answerQuestion(question: string, hits: RecallHit[]): Promi
           .map((h) => `[${h.kind}] ${h.title} (${h.createdAt.slice(0, 10)}):\n${h.body}`)
           .join("\n---\n") + `\n\nQuestion: ${question}`,
     },
-  ]);
+  ], { attribution: { ...attribution, trigger: "answer_notes" } });
   return res.choices[0]?.message?.content ?? "No answer generated.";
 }

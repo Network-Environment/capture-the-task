@@ -187,6 +187,7 @@ SCHEDULER — jobs-as-data
 | `meetings` | `/organizerId` | 90d | one compact summary + one 1536-dim embedding per meeting. No raw VTT. |
 | `commitments` | `/ownerKey` | 180d (14d after done) | tiny follow-through records (no embeddings) |
 | `meeting-checkpoints` | `/organizerId` | — | Graph deltaLink per organizer + ingest health (`latest` / `_system`) |
+| `transcript-availability` | `/organizerId` | 90d | Graph transcript metadata + manual summary queue state. No VTT or embeddings. |
 
 Blob `meetings/{yyyy-mm}/{id}.md` holds the same structured summary (Cool tier after 1 day, delete after 90). Teams/Graph remains the system of record for transcripts; the agent does not keep VTT. Open commitments can outlive the meeting TTL because they are small JSON, not vectors.
 
@@ -194,13 +195,30 @@ Org-level lessons are written into `agent-memory` with `userId: "org"`, still ca
 
 ### Meeting intelligence (org awareness, not a transcript archive)
 
-The five-minute Flex Consumption Function (`src/meetings/timer.ts`) enumerates tenant members, polls each organizer's `getAllTranscripts` delta feed, downloads `text/vtt` in memory, skips near-silent meetings, and asks the existing `gpt-5-mini` / `standard` Foundry deployment for structured JSON (title, categories, summary, decisions, actions, risks, open questions). That JSON becomes one Cosmos meeting document, one embedding of title+summary+decisions+actions, markdown in Blob, and new/updated commitment rows. Later meetings that restate the same owner + work mark the prior commitment done.
+The five-minute Flex Consumption Function (`src/meetings/timer.ts`) enumerates
+tenant members and polls each organizer's `getAllTranscripts` delta feed. That
+automatic phase stores **metadata only** in `transcript-availability`; it does
+not download VTT or spend model tokens. The first run after this design ships
+does a one-time, metadata-only 30-day backfill per organizer, independent of
+the existing delta checkpoint.
+
+An admin selects one or more `available` (or retryable `failed`) transcripts
+on `/admin/meetings`. The App Service queues them with a CSRF-protected POST;
+the Function claims at most `MEETING_SUMMARIES_PER_RUN` (default 2) with
+etag concurrency, downloads `text/vtt` in memory, skips near-silent meetings,
+and asks the existing synthesis deployment for structured JSON. That JSON
+becomes one Cosmos meeting document, one embedding, markdown in Blob, and
+new/updated commitment rows. Raw VTT is never stored. Queue states are
+`available → queued → processing → summarized | skipped_short | failed`;
+stale processing claims recover after 15 minutes. Later meetings that restate
+the same owner + work mark the prior commitment done.
 
 Chat tools `recall_meetings`, `list_commitments`, and `complete_commitment` are org-wide but **viewer-gated** to Adam (`bceb24c5-ef85-4301-9ab2-073805d535aa`) and Valerie (`4f323599-0df8-47f7-aa01-46dbb211894c`) unless `MEETING_VIEWERS` is overridden. Other TaskBrain users get a deny string. Personal notes stay user-scoped.
 
 Tenant setup that Bicep cannot do: `./scripts/setup-meeting-ingest.sh` assigns Graph application roles on the Function managed identity. A Teams admin must then grant a tenant-wide application access policy and set `EnableGraphTranscriptAccess` / `EnableAttributedTranscripts` (MicrosoftTeams PowerShell **7.9.0+**, or Teams admin center → Meetings → Meeting settings → Transcript API access). Existing meeting transcription does **not** enable Graph export.
 
-First successful poll is a controlled backfill: each organizer's delta link starts from "all current transcripts" then only changes. Repeats are deduped by transcript ID.
+Discovery repeats are deduped by transcript ID. Existing meeting summaries
+are recognized and marked summarized without another model call.
 
 ### Smartsheet (live PMO, not a second archive)
 
@@ -366,9 +384,10 @@ repo, org permission to upload Teams apps.
 8. **Verify:** "hello" → welcome; a text task → To Do (or brain fallback); a
    voice memo → transcribed capture; "what did I capture today?" → recall;
    "every Friday at 4 summarize open Smartsheet risks" → job scheduled;
+   on `/admin/meetings`, select one discovered transcript and queue its
+   summary; the next Function run moves it through processing → summarized;
    Adam/Val: "what did we decide last week?" / "what's overdue?" uses meeting
-   tools; another user is denied; `/admin` shows ingest health, recent
-   meetings, and open/overdue commitments.
+   tools; another user is denied.
 
 Ordering constraint: bootstrap must run before the first pipeline
 (federated credential, RBAC, RG, providers, secrets). Everything else is
@@ -378,10 +397,13 @@ order-independent and re-runnable.
 
 - **Dashboard:** `https://<app>.azurewebsites.net/admin` — Entra login; only
   users assigned to the **TaskBrain Admin** enterprise app. Sidebar sections:
-  **Overview** (today’s KPIs, budget, ingest snapshot), **Capabilities**
+  **Overview** (today’s KPIs, budget, discovery snapshot), **Capabilities**
   (agent skills + native/MCP tools), **Integrations** (status vs catalog;
   tokens never displayed), **Usage** (models, channels, tools, people,
-  events), **Meetings**, **Jobs**, **Memory**. Auto-refreshes 60s. Add
+  events), **Meetings** (availability + selected summary queue), **Jobs**,
+  **Memory**. Usage separates origin, channel, input mode, and tokens by
+  origin; legacy meeting events normalize to internal discovery instead of
+  unknown. Auto-refreshes 60s. Add
   viewers in Entra → Enterprise applications → TaskBrain Admin → Users and
   groups. `/api/messages` and `/healthz` stay anonymous so the bot and CI
   smoke test keep working.
@@ -522,7 +544,8 @@ logging already support it. Do not pay this tax early.
   sender" means the number isn't in `identities` (E.164 format, with `+`);
   verify SDK method names against the installed `spectrum-ts` version.
 - **Budget seems stuck cheap:** it resets at midnight UTC; check `/admin`
-  token totals vs `DAILY_TOKEN_BUDGET`.
+  token totals vs `DAILY_TOKEN_BUDGET`. Usage → Tokens by origin identifies
+  chat, scheduled, and admin-triggered meeting-summary consumption.
 - **Dashboard login AADSTS50105:** the user is not assigned to **TaskBrain
   Admin**. Entra → Enterprise applications → Users and groups → Add.
 - **Dashboard sign-in returns an HTTP error after authenticating:** the
@@ -531,7 +554,7 @@ logging already support it. Do not pay this tax early.
   Authentication → Implicit grant → check **ID tokens**.
 - **`/admin` returns 401 from curl:** expected. Easy Auth only redirects
   requests that look like browsers; non-browser clients get a bare 401.
-- **Meeting ingest Graph 403:** run `scripts/setup-meeting-ingest.sh` and
+- **Transcript discovery Graph 403:** run `scripts/setup-meeting-ingest.sh` and
   the printed Teams PowerShell. `EnableGraphTranscriptAccess` is independent
   of in-meeting transcription. Policy can take ~30 minutes.
 - **400 `max_tokens` / `temperature` unsupported:** gpt-5-class deployments

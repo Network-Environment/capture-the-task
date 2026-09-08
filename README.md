@@ -133,10 +133,14 @@ used. Runtime secrets live as App Service settings, never in the repo.
 
 Every component writes events to the `activity` container (30-day TTL):
 captures, triage decisions, tool calls, model calls **with token counts per
-deployment**, job runs, errors. `/admin` is gated by Entra Easy Auth: share
+deployment and origin**, job runs, meeting discovery/summary, errors.
+Origin, channel, and text/voice input mode are recorded separately.
+`/admin` is gated by Entra Easy Auth: share
 the URL; only people assigned to the **TaskBrain Admin** enterprise app can
-sign in. The page shows today's stats, token spend by model, scheduled jobs,
-agent memory, and the live event stream (auto-refresh 60s).
+sign in. Teams transcript metadata is discovered automatically, but an admin
+selects which meetings consume tokens for summary/embedding. The page shows
+today's stats, token spend by model/origin, scheduled jobs, agent memory, and
+the live event stream (auto-refresh 60s).
 
 ## Two memories, on purpose
 

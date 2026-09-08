@@ -5,10 +5,31 @@
  * In Azure, App Service Easy Auth (Entra) gates /admin*. Locally the page is open.
  */
 import { Request, Response } from "restify";
-import { dayStats, recentEvents, usageBreakdown, type DayStats, type UsageBreakdown } from "../services/activityLog";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import {
+  dayStats,
+  logActivity,
+  normalizeAttribution,
+  recentEvents,
+  usageBreakdown,
+  type DayStats,
+  type UsageBreakdown,
+} from "../services/activityLog";
 import { CosmosClient } from "@azure/cosmos";
-import { listCommitmentsForDash, readHealth, recentMeetings } from "../meetings/store";
-import type { CommitmentDoc, IngestHealthDoc, MeetingDoc } from "../meetings/types";
+import {
+  listCommitmentsForDash,
+  listTranscriptAvailability,
+  queueTranscriptSelections,
+  readHealth,
+  recentMeetings,
+  transcriptSelectionKey,
+} from "../meetings/store";
+import type {
+  CommitmentDoc,
+  IngestHealthDoc,
+  MeetingDoc,
+  TranscriptAvailabilityDoc,
+} from "../meetings/types";
 import { loadConfig } from "../config";
 import { nativeToolCatalog } from "../tools/registry";
 import { mcpServerCatalog, mcpServerHealth, mcpToolDefinitions, type McpServerHealth } from "../tools/mcpClient";
@@ -50,7 +71,8 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
 
   const raw = String(req.params.section ?? "overview").toLowerCase();
   const signedIn = principal?.name ?? "local";
-  const tab = String((req.query as { tab?: string }).tab ?? "");
+  const query = req.query as { tab?: string; notice?: string };
+  const tab = String(query.tab ?? "");
 
   if (raw !== "overview" && !isSection(raw)) {
     res.sendRaw(404, renderShell({
@@ -65,11 +87,16 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
   }
 
   const section: SectionId = isSection(raw) ? raw : "overview";
-  const html = await renderSection(section, signedIn, tab);
+  const html = await renderSection(section, signedIn, tab, String(query.notice ?? ""));
   res.sendRaw(200, html, { "Content-Type": "text/html" });
 }
 
-async function renderSection(section: SectionId, signedIn: string, tab: string): Promise<string> {
+async function renderSection(
+  section: SectionId,
+  signedIn: string,
+  tab: string,
+  notice: string
+): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
   switch (section) {
     case "overview": {
@@ -104,12 +131,22 @@ async function renderSection(section: SectionId, signedIn: string, tab: string):
       return renderUsage(signedIn, usage, events);
     }
     case "meetings": {
-      const [health, meetings, commitments] = await Promise.all([
+      const [health, meetings, commitments, transcripts] = await Promise.all([
         readHealth().catch(() => undefined),
         recentMeetings(20).catch(() => [] as MeetingDoc[]),
         listCommitmentsForDash(40).catch(() => [] as CommitmentDoc[]),
+        listTranscriptAvailability(500).catch(
+          () => [] as TranscriptAvailabilityDoc[]
+        ),
       ]);
-      return renderMeetings(signedIn, health, meetings, commitments);
+      return renderMeetings(
+        signedIn,
+        health,
+        meetings,
+        commitments,
+        transcripts,
+        notice
+      );
     }
     case "jobs": {
       const jobs = await db.container("jobs").items.query("SELECT * FROM c ORDER BY c.nextRun").fetchAll();
@@ -160,9 +197,12 @@ function eventRowsHtml(events: Record<string, unknown>[]): string {
   return events
     .map((e) => {
       const type = String(e.type);
+      const attribution = normalizeAttribution(e);
       return (
         `<tr><td class="mono muted">${String(e.at).slice(11, 19)}</td>` +
         `<td>${pill(type, eventTone(type))}</td>` +
+        `<td>${pill(attribution.origin, "info")}</td>` +
+        `<td>${pill(attribution.channel, "idle")}</td>` +
         `<td class="muted">${esc(String(e.agent ?? "—"))}</td>` +
         `<td class="mono muted clip">${esc(JSON.stringify(e.detail ?? {}).slice(0, 160))}</td></tr>`
       );
@@ -181,15 +221,15 @@ export function renderOverview(d: {
   const h = d.health;
   const ingest = h
     ? `<section class="panel">
-        <h2>Meeting ingest</h2>
+        <h2>Transcript discovery</h2>
         <div class="grid" style="margin:1rem 1.15rem">
           <div class="stat"><div class="label">Last run</div><div class="value" style="font-size:1rem">${esc(h.lastRunAt.slice(0, 19).replace("T", " "))}Z</div></div>
           <div class="stat${h.errors.length ? " alert" : ""}"><div class="label">Errors</div><div class="value">${h.errors.length}</div></div>
-          <div class="stat"><div class="label">Ingested</div><div class="value">${h.ingested}</div></div>
+          <div class="stat"><div class="label">Discovered</div><div class="value">${h.discovered ?? 0}</div></div>
         </div>
         <p class="pad muted">Full transcript index and commitments live under <a href="/admin/meetings">Meetings</a>.</p>
       </section>`
-    : `<section class="panel"><h2>Meeting ingest</h2><p class="muted pad">No ingest run yet. After Graph/Teams policy is granted, the Function polls every 5 minutes.</p></section>`;
+    : `<section class="panel"><h2>Transcript discovery</h2><p class="muted pad">No discovery run yet. After Graph/Teams policy is granted, the Function checks every 5 minutes without spending summary tokens.</p></section>`;
 
   const body = `
   <p class="lede">TaskBrain ops — capabilities, health, usage. What the agent can do, how it is performing today, which tools are live, and how people are using it.</p>
@@ -198,7 +238,7 @@ export function renderOverview(d: {
   ${ingest}
   <section class="panel">
     <h2>Latest events</h2>
-    ${table(["Time", "Type", "Agent", "Detail"], eventRowsHtml(d.events), "No events yet.")}
+    ${table(["Time", "Type", "Origin", "Channel", "Agent", "Detail"], eventRowsHtml(d.events), "No events yet.")}
   </section>`;
 
   return renderShell({
@@ -303,7 +343,7 @@ export function renderIntegrations(
       { name: "Azure Speech", label: speech ? "ready" : "not ready", tone: speech ? "ok" : "warn", note: "Voice memos" },
       { name: "Graph To Do", label: graph ? "ready" : "not ready", tone: graph ? "ok" : "warn", note: "Task create from Teams" },
       { name: "iMessage (Photon)", label: photon ? "ready" : "not ready", tone: photon ? "ok" : "warn", note: "Spectrum stream" },
-      { name: "Meeting ingest", label: ingestLabel, tone: ingestTone, note: ingestNote },
+      { name: "Transcript discovery", label: ingestLabel, tone: ingestTone, note: ingestNote },
       { name: "Smartsheet catalog", label: sheetAliases > 0 ? "ready" : "not ready", tone: sheetAliases > 0 ? "ok" : "warn", note: `${sheetAliases} alias(es)` },
     ];
     const statusRows = platform
@@ -376,7 +416,7 @@ export function renderUsage(
     .join("");
 
   const body = `
-  <p class="lede">How people used the bot today — channels, tools, models, and unique users (ids truncated).</p>
+  <p class="lede">How people used the bot today — origin, channel, input mode, tools, models, and unique users (ids truncated).</p>
   ${kpiGrid(stats)}
   ${budgetBlock(totalTokens)}
   <section class="panel">
@@ -387,13 +427,15 @@ export function renderUsage(
       "No model calls yet today."
     )}
   </section>
-  ${countTable("Captures by channel", usage.byChannel, "No captures today.")}
-  ${countTable("Captures by source", usage.bySource, "No captures today.")}
+  ${countTable("Tokens by origin", usage.tokensByOrigin, "No attributed model tokens today.")}
+  ${countTable("Activity by channel", usage.byChannel, "No activity today.")}
+  ${countTable("Activity by origin", usage.byOrigin, "No activity today.")}
+  ${countTable("Captures by input mode", usage.byInputMode, "No captures today.")}
   ${countTable("Tool calls", usage.byTool, "No tool calls today.")}
   <section class="panel"><h2>People (truncated id)</h2>${table(["User", "<span class='num'>Events</span>"], peopleRows, "No user-tagged events today.")}</section>
   <section class="panel">
     <h2>Recent events</h2>
-    ${table(["Time", "Type", "Agent", "Detail"], eventRowsHtml(events), "No events yet.")}
+    ${table(["Time", "Type", "Origin", "Channel", "Agent", "Detail"], eventRowsHtml(events), "No events yet.")}
   </section>`;
 
   return renderShell({
@@ -405,12 +447,188 @@ export function renderUsage(
   });
 }
 
+function csrfSecret(): string {
+  return process.env.ADMIN_APP_SECRET ?? process.env.COSMOS_KEY ?? "local-test-only";
+}
+
+export function meetingCsrfScope(keys: string[]): string {
+  return Buffer.from([...new Set(keys)].sort().join("\n"), "utf8").toString(
+    "base64url"
+  );
+}
+
+export function meetingCsrfToken(scope: string, expiresAt = Date.now() + 3600_000): string {
+  const payload = `${expiresAt}.${scope}`;
+  const signature = createHmac("sha256", csrfSecret())
+    .update(payload)
+    .digest("base64url");
+  return Buffer.from(`${payload}.${signature}`, "utf8").toString("base64url");
+}
+
+export function verifyMeetingCsrf(token: string, scope: string): boolean {
+  try {
+    const decoded = Buffer.from(token, "base64url").toString("utf8");
+    const first = decoded.indexOf(".");
+    const last = decoded.lastIndexOf(".");
+    if (first < 1 || last <= first) return false;
+    const expires = Number(decoded.slice(0, first));
+    const tokenScope = decoded.slice(first + 1, last);
+    const signature = decoded.slice(last + 1);
+    if (!Number.isFinite(expires) || expires < Date.now() || tokenScope !== scope) {
+      return false;
+    }
+    const expected = createHmac("sha256", csrfSecret())
+      .update(`${expires}.${scope}`)
+      .digest("base64url");
+    const a = Buffer.from(signature);
+    const b = Buffer.from(expected);
+    return a.length === b.length && timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+function selectedValues(body: Record<string, unknown>): string[] {
+  const value = body.selection;
+  if (Array.isArray(value)) return value.map(String);
+  return value ? [String(value)] : [];
+}
+
+export async function queueMeetingSummaries(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const principal = easyAuthPrincipal(req);
+  if (process.env.WEBSITE_INSTANCE_ID && !principal) {
+    res.send(401, "sign in required");
+    return;
+  }
+  const origin = req.header("origin");
+  const host = req.header("host");
+  if (origin && host) {
+    try {
+      if (new URL(origin).host !== host) {
+        res.send(403, "invalid request origin");
+        return;
+      }
+    } catch {
+      res.send(403, "invalid request origin");
+      return;
+    }
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const scope = String(body._scope ?? "");
+  const token = String(body._csrf ?? "");
+  if (!verifyMeetingCsrf(token, scope)) {
+    res.send(403, "invalid or expired request");
+    return;
+  }
+  const allowed = new Set(
+    Buffer.from(scope, "base64url").toString("utf8").split("\n").filter(Boolean)
+  );
+  const selected = selectedValues(body)
+    .filter((key) => allowed.has(key))
+    .slice(0, 25);
+  if (!selected.length) {
+    res.header("Location", "/admin/meetings?notice=none");
+    res.send(303);
+    return;
+  }
+  try {
+    const result = await queueTranscriptSelections(
+      selected,
+      principal?.id ?? "local"
+    );
+    void logActivity({
+      type: "meeting_summary",
+      userId: principal?.id,
+      origin: "admin_summary",
+      channel: "internal",
+      trigger: "admin_queue",
+      detail: { queued: result.queued, unchanged: result.unchanged },
+    });
+    const notice = result.queued
+      ? `queued-${result.queued}`
+      : "already-queued";
+    res.header("Location", `/admin/meetings?notice=${notice}`);
+    res.send(303);
+  } catch (err) {
+    console.error("[admin] queue meeting summaries failed:", err);
+    res.header("Location", "/admin/meetings?notice=error");
+    res.send(303);
+  }
+}
+
 export function renderMeetings(
   signedIn: string,
   health?: IngestHealthDoc,
   meetings: MeetingDoc[] = [],
-  commitments: CommitmentDoc[] = []
+  commitments: CommitmentDoc[] = [],
+  transcripts: TranscriptAvailabilityDoc[] = [],
+  notice = ""
 ): string {
+  const selectable = transcripts.filter(
+    (t) => t.status === "available" || t.status === "failed"
+  );
+  const selectionKeys = selectable.map((t) =>
+    transcriptSelectionKey(t.organizerId, t.transcriptId)
+  );
+  const scope = meetingCsrfScope(selectionKeys);
+  const csrf = meetingCsrfToken(scope);
+  const counts = transcripts.reduce<Record<string, number>>((acc, t) => {
+    acc[t.status] = (acc[t.status] ?? 0) + 1;
+    return acc;
+  }, {});
+  const transcriptStats = [
+    "available",
+    "queued",
+    "processing",
+    "summarized",
+    "failed",
+    "skipped_short",
+  ]
+    .map(
+      (status) =>
+        `<div class="stat${status === "failed" && counts[status] ? " alert" : ""}">` +
+        `<div class="label">${esc(status.replace("_", " "))}</div>` +
+        `<div class="value">${counts[status] ?? 0}</div></div>`
+    )
+    .join("");
+  const transcriptRows = transcripts
+    .map((t) => {
+      const key = transcriptSelectionKey(t.organizerId, t.transcriptId);
+      const canSelect = t.status === "available" || t.status === "failed";
+      const tone: Tone =
+        t.status === "summarized"
+          ? "ok"
+          : t.status === "failed"
+            ? "err"
+            : t.status === "queued" || t.status === "processing"
+              ? "warn"
+              : t.status === "available"
+                ? "accent"
+                : "idle";
+      return (
+        `<tr><td>${canSelect ? `<input type="checkbox" name="selection" value="${esc(key)}" aria-label="Select ${esc(t.titleHint ?? t.transcriptId)}">` : ""}</td>` +
+        `<td class="mono muted">${esc((t.createdDateTime ?? t.discoveredAt).slice(0, 16).replace("T", " "))}</td>` +
+        `<td class="strong">${esc(t.titleHint ?? "Untitled meeting")}</td>` +
+        `<td class="muted">${esc(t.organizerName ?? t.organizerId)}</td>` +
+        `<td>${pill(t.status.replace("_", " "), tone)}</td>` +
+        `<td class="muted clip">${esc(t.error ?? "—")}</td></tr>`
+      );
+    })
+    .join("");
+  const noticeHtml =
+    notice.startsWith("queued-")
+      ? `<p class="pad">${pill("queued", "ok")} ${esc(notice.slice(7))} transcript(s) will be summarized by the next Function run.</p>`
+      : notice === "already-queued"
+        ? `<p class="pad muted">Those transcripts were already queued, processing, or summarized.</p>`
+        : notice === "none"
+          ? `<p class="pad muted">Select at least one available or failed transcript.</p>`
+          : notice === "error"
+            ? `<p class="pad">${pill("error", "err")} Could not queue the selection.</p>`
+            : "";
+
   const commitmentRows = [...commitments]
     .sort((a, b) => {
       const ao = a.status === "open" && a.due && Date.parse(a.due) < Date.now() ? 0 : 1;
@@ -443,6 +661,18 @@ export function renderMeetings(
 
   const body = `${ingestHealthPanel(health)}
   <section class="panel">
+    <h2>Transcript availability</h2>
+    ${noticeHtml}
+    <div class="grid" style="margin:1rem 1.15rem">${transcriptStats}</div>
+    <p class="pad muted">Teams creates the transcript. TaskBrain only downloads and summarizes selected meetings; raw VTT is never stored.</p>
+    <form method="post" action="/admin/meetings/summarize">
+      <input type="hidden" name="_scope" value="${esc(scope)}">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      ${table(["Select", "Date", "Meeting", "Organizer", "Status", "Error"], transcriptRows, "No transcripts discovered in the last 30 days.")}
+      <div class="pad"><button type="submit"${selectable.length ? "" : " disabled"}>Summarize selected</button></div>
+    </form>
+  </section>
+  <section class="panel">
     <h2>Open / overdue commitments</h2>
     ${table(["Owner", "Commitment", "Due", "Status", "From"], commitmentRows, "No commitments ingested yet.")}
   </section>
@@ -455,7 +685,7 @@ export function renderMeetings(
     section: "meetings",
     signedIn,
     title: "Meetings",
-    subtitle: "ingest and follow-through",
+    subtitle: "transcript discovery and follow-through",
     body,
   });
 }
@@ -513,18 +743,18 @@ export function renderMemory(signedIn: string, lessons: Record<string, unknown>[
 
 function ingestHealthPanel(h?: IngestHealthDoc): string {
   if (!h) {
-    return `<section class="panel"><h2>Meeting ingest</h2><p class="muted pad">No ingest run yet. After Graph/Teams policy is granted, the Function polls every 5 minutes.</p></section>`;
+    return `<section class="panel"><h2>Transcript discovery</h2><p class="muted pad">No discovery run yet. After Graph/Teams policy is granted, the Function checks every 5 minutes without spending summary tokens.</p></section>`;
   }
   const err = h.errors?.length
     ? h.errors.slice(0, 4).map((e) => `<div class="muted" style="padding:.2rem 1.15rem">${esc(e)}</div>`).join("")
     : `<p class="muted pad">No Graph errors on the last run.</p>`;
   return `<section class="panel">
-    <h2>Meeting ingest</h2>
+    <h2>Transcript discovery</h2>
     <div class="grid" style="margin:1rem 1.15rem">
       <div class="stat"><div class="label">Last run</div><div class="value" style="font-size:1rem">${esc(h.lastRunAt.slice(0, 19).replace("T", " "))}Z</div></div>
       <div class="stat"><div class="label">Organizers</div><div class="value">${h.scanned}</div></div>
-      <div class="stat"><div class="label">Ingested</div><div class="value">${h.ingested}</div></div>
-      <div class="stat"><div class="label">Skipped</div><div class="value">${h.skipped}</div></div>
+      <div class="stat"><div class="label">Discovered</div><div class="value">${h.discovered ?? 0}</div></div>
+      <div class="stat"><div class="label">Existing</div><div class="value">${h.skipped}</div></div>
       <div class="stat${h.errors.length ? " alert" : ""}"><div class="label">Errors</div><div class="value">${h.errors.length}</div></div>
     </div>
     ${err}

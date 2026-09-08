@@ -5,7 +5,7 @@ import {
   ConfigurationBotFrameworkAuthenticationOptions,
 } from "botbuilder";
 import { TaskBrainBot } from "./bot";
-import { adminPage } from "./admin/dashboard";
+import { adminPage, queueMeetingSummaries } from "./admin/dashboard";
 import { startOrchestrator } from "./jobs/orchestrator";
 import { initDelivery } from "./channels/deliver";
 import { startPhotonChannel, stopPhotonChannel } from "./channels/photon";
@@ -49,6 +49,7 @@ server.get("/", (_req, res, next) => {
 
 server.get("/admin", adminPage);
 server.get("/admin/:section", adminPage);
+server.post("/admin/meetings/summarize", queueMeetingSummaries);
 
 server.get("/healthz", (_req, res, next) => {
   res.send(200, { ok: true });

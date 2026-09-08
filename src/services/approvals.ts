@@ -80,11 +80,25 @@ export async function handleApprovalCommand(
   await pending.item(id, userId).delete();
 
   if (verb.toLowerCase() === "deny") {
-    void logActivity({ type: "tool_call", userId, detail: { tool: action.tool, approved: false } });
+    void logActivity({
+      type: "tool_call",
+      userId,
+      origin: "approval",
+      channel: "internal",
+      trigger: "deny_write",
+      detail: { tool: action.tool, approved: false },
+    });
     return `Denied — ${action.tool} was not executed.`;
   }
 
   const result = await callMcpTool(action.tool, action.args);
-  void logActivity({ type: "tool_call", userId, detail: { tool: action.tool, approved: true } });
+  void logActivity({
+    type: "tool_call",
+    userId,
+    origin: "approval",
+    channel: "internal",
+    trigger: "approve_write",
+    detail: { tool: action.tool, approved: true },
+  });
   return `Approved and executed ${action.tool}:\n${result.slice(0, 1500)}`;
 }

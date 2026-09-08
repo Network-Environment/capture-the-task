@@ -2,6 +2,7 @@ import { embed } from "../services/router";
 import { canViewMeetings, denyMeetings } from "./access";
 import { listOpenCommitments, searchMeetings, upsertCommitment } from "./store";
 import type { CommitmentDoc } from "./types";
+import type { ActivityAttribution } from "../services/activityLog";
 
 function fmtMeeting(m: {
   title: string;
@@ -25,9 +26,17 @@ function isOverdue(c: CommitmentDoc, now = Date.now()): boolean {
   return Number.isFinite(t) && t < now;
 }
 
-export async function recallMeetings(userId: string, query: string, k = 6): Promise<string> {
+export async function recallMeetings(
+  userId: string,
+  query: string,
+  k = 6,
+  attribution: Partial<ActivityAttribution> = {}
+): Promise<string> {
   if (!canViewMeetings(userId)) return denyMeetings();
-  const hits = await searchMeetings(await embed(query), k);
+  const hits = await searchMeetings(
+    await embed(query, { ...attribution, trigger: "meeting_recall" }),
+    k
+  );
   if (!hits.length) return "No matching meetings in the 90-day index.";
   return hits.map(fmtMeeting).join("\n---\n");
 }

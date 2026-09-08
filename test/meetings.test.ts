@@ -2,12 +2,20 @@ import "./setup";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { canViewMeetings, denyMeetings } from "../src/meetings/access";
-import { sliceOrganizers } from "../src/meetings/ingest";
+import {
+  mergeDiscoveryItems,
+  sliceOrganizers,
+  withinBackfillWindow,
+} from "../src/meetings/ingest";
 import { applyMatches, orgLessonTexts, overlapScore, ownerKey } from "../src/meetings/match";
 import { parseMeetingSummary } from "../src/meetings/summarize";
 import { capSummary, capTranscript, isTooShort, MAX_SUMMARY_CHARS, MAX_TRANSCRIPT_CHARS, parseVtt } from "../src/meetings/vtt";
 import { transcriptsDeltaPath } from "../src/meetings/graph";
-import type { MeetingSummary } from "../src/meetings/types";
+import {
+  parseTranscriptSelectionKey,
+  transcriptSelectionKey,
+} from "../src/meetings/store";
+import type { CommitmentDoc, MeetingSummary } from "../src/meetings/types";
 
 const ADAM = "bceb24c5-ef85-4301-9ab2-073805d535aa";
 const VAL = "4f323599-0df8-47f7-aa01-46dbb211894c";
@@ -66,6 +74,33 @@ describe("delta and scan", () => {
     const b = sliceOrganizers(users, a.next, 3);
     assert.deepEqual(b.slice, [1, 2, 3]);
     assert.deepEqual(sliceOrganizers([], 0).slice, []);
+  });
+
+  it("limits the first metadata backfill to 30 days", () => {
+    const now = Date.parse("2026-09-08T12:00:00Z");
+    assert.equal(withinBackfillWindow("2026-08-20T12:00:00Z", now), true);
+    assert.equal(withinBackfillWindow("2026-07-01T12:00:00Z", now), false);
+    assert.equal(withinBackfillWindow(undefined, now), false);
+    const old = { id: "old", createdDateTime: "2026-07-01T12:00:00Z" };
+    const recent = { id: "recent", createdDateTime: "2026-08-20T12:00:00Z" };
+    assert.deepEqual(
+      mergeDiscoveryItems([old, recent], [old, recent], false, now).map(
+        (t) => t.id
+      ),
+      ["recent"]
+    );
+    assert.deepEqual(
+      mergeDiscoveryItems([old], [recent], true, now).map((t) => t.id),
+      ["old", "recent"]
+    );
+  });
+
+  it("round-trips transcript selection keys without exposing transcript content", () => {
+    const key = transcriptSelectionKey("organizer-1", "MSo:transcript/1");
+    assert.deepEqual(parseTranscriptSelectionKey(key), {
+      organizerId: "organizer-1",
+      id: "MSotranscript1",
+    });
   });
 });
 

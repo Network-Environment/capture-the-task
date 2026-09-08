@@ -310,6 +310,18 @@ resource meetingCheckpointsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDataba
   }
 }
 
+resource transcriptAvailabilityColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'transcript-availability'
+  properties: {
+    resource: {
+      id: 'transcript-availability'
+      partitionKey: { paths: ['/organizerId'], kind: 'Hash' }
+      defaultTtl: 7776000 // 90 days of metadata; raw transcript content is never stored
+    }
+  }
+}
+
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: 'appi-${appName}-${suffix}'
   location: location

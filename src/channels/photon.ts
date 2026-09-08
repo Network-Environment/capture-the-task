@@ -78,7 +78,13 @@ export async function startPhotonChannel(): Promise<void> {
         await handleInbound(space, message);
       } catch (err) {
         console.error("[imessage] handler error:", err);
-        void logActivity({ type: "error", detail: { channel: "imessage", message: (err as Error).message } });
+        void logActivity({
+          type: "error",
+          origin: "system",
+          channel: "imessage",
+          trigger: "photon_stream",
+          detail: { channel: "imessage", message: (err as Error).message },
+        });
       }
     }
   })();
