@@ -71,6 +71,16 @@ const channelsConfig = loadConfig<{
   imessage: { enabled: boolean; allowActions: boolean; identities?: Record<string, string> };
 }>("channels");
 
+/**
+ * Restify populates `req.query` as an object only when the queryParser plugin
+ * is registered; otherwise it hands back the raw query string, and reading
+ * `.tab` off it yields undefined — every `?tab=` link silently falls back to
+ * the default tab. Parsing the raw string ourselves is correct either way.
+ */
+export function queryOf(req: Pick<Request, "getQuery">): URLSearchParams {
+  return new URLSearchParams(req.getQuery());
+}
+
 export async function adminPage(req: Request, res: Response): Promise<void> {
   const principal = easyAuthPrincipal(req);
   if (process.env.WEBSITE_INSTANCE_ID && !principal) {
@@ -80,8 +90,8 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
 
   const raw = String(req.params.section ?? "overview").toLowerCase();
   const signedIn = principal?.name ?? "local";
-  const query = req.query as { tab?: string; notice?: string };
-  const tab = String(query.tab ?? "");
+  const query = queryOf(req);
+  const tab = query.get("tab") ?? "";
 
   if (raw !== "overview" && !isSection(raw)) {
     res.sendRaw(404, renderShell({
@@ -96,7 +106,7 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
   }
 
   const section: SectionId = isSection(raw) ? raw : "overview";
-  const html = await renderSection(section, signedIn, tab, String(query.notice ?? ""));
+  const html = await renderSection(section, signedIn, tab, query.get("notice") ?? "");
   res.sendRaw(200, html, { "Content-Type": "text/html" });
 }
 

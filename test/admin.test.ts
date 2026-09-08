@@ -13,6 +13,7 @@ import {
   meetingCsrfScope,
   meetingCsrfToken,
   verifyMeetingCsrf,
+  queryOf,
 } from "../src/admin/dashboard";
 import type { DayStats, UsageBreakdown } from "../src/services/activityLog";
 import type { CommitmentDoc, MeetingDoc } from "../src/meetings/types";
@@ -72,6 +73,18 @@ describe("admin portal", () => {
     assert.match(tools, /browser__navigate/);
     assert.match(tools, />down</);
     assert.match(tools, /approval required/);
+  });
+
+  it("reads ?tab= from the raw query string restify hands over", () => {
+    // Without the queryParser plugin restify passes the raw string, so reading
+    // `.tab` off req.query returned undefined and every tab link was a no-op.
+    assert.equal(queryOf({ getQuery: () => "tab=tools" }).get("tab"), "tools");
+    assert.equal(queryOf({ getQuery: () => "tab=catalog" }).get("tab"), "catalog");
+    assert.equal(queryOf({ getQuery: () => "" }).get("tab"), null);
+    assert.equal(
+      queryOf({ getQuery: () => "notice=saved&tab=tools" }).get("notice"),
+      "saved"
+    );
   });
 
   it("an unreachable server still lists its tools, and a timeout reads as such", () => {
