@@ -45,6 +45,24 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      # Container Apps rejects a revision whose image tag is absent from the
+      # registry, so this image must exist before the Bicep deploy references
+      # it. On a first-ever deploy there is no registry yet; Bicep then creates
+      # the app on its placeholder image and the deploy job swaps it.
+      - name: Build browser image (when the registry already exists)
+        run: |
+          ACR=$(az acr list -g "$RESOURCE_GROUP" --query "[0].name" -o tsv 2>/dev/null || true)
+          if [ -z "$ACR" ]; then
+            echo "no registry yet — Bicep will use the placeholder image"
+            exit 0
+          fi
+          az acr build \
+            --registry "$ACR" \
+            --image "taskbrain-browser:${GITHUB_SHA}" \
+            --image "taskbrain-browser:latest" \
+            --file services/browser/Dockerfile \
+            services/browser
+          echo "BROWSER_IMAGE=$ACR.azurecr.io/taskbrain-browser:${GITHUB_SHA}" >> "$GITHUB_ENV"
       - name: Deploy Bicep (infra + runtime settings + container registry)
         id: deploy
         env:
@@ -61,6 +79,9 @@ jobs:
           WEB_SEARCH_API_KEY: ${{ secrets.WEB_SEARCH_API_KEY }}
         run: |
           test -n "$BOT_APP_ID" -a -n "$BOT_APP_PASSWORD" -a -n "$ADMIN_APP_ID" -a -n "$ADMIN_APP_SECRET" || { echo "missing required secrets (BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_APP_ID, ADMIN_APP_SECRET) — run scripts/bootstrap.sh or scripts/setup-admin-sso.sh"; exit 1; }
+          # Omitted on a first deploy so Bicep keeps its placeholder default.
+          BROWSER_PARAM=""
+          [ -n "${BROWSER_IMAGE:-}" ] && BROWSER_PARAM="browserImage=$BROWSER_IMAGE"
           OUTPUTS=$(az deployment group create \
             -g $RESOURCE_GROUP \
             -f infra/main.bicep \
@@ -83,7 +104,8 @@ jobs:
                smartsheetApiToken="$SMARTSHEET_API_TOKEN" \
                spectrumProjectId="$SPECTRUM_PROJECT_ID" \
                spectrumProjectSecret="$SPECTRUM_PROJECT_SECRET" \
-               webSearchApiKey="$WEB_SEARCH_API_KEY")
+               webSearchApiKey="$WEB_SEARCH_API_KEY" \
+               $BROWSER_PARAM)
           echo "app-name=$(jq -r '.appName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "registry-name=$(jq -r '.registryName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "function-app-name=$(jq -r '.functionAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
@@ -100,7 +122,7 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Build and push immutable images in ACR
+      - name: Build and push immutable image in ACR
         run: |
           az acr build \
             --registry "${{ needs.infra.outputs.registry-name }}" \
@@ -108,18 +130,30 @@ jobs:
             --image "taskbrain:latest" \
             --file Dockerfile \
             .
+      # Normally a no-op: the infra job already built this image and Bicep
+      # deployed it. This only does work after a first deploy, where the app
+      # was created on the placeholder image.
+      - name: Ensure the browser Container App runs this commit's image
+        run: |
+          TARGET="${{ needs.infra.outputs.registry-name }}.azurecr.io/taskbrain-browser:${GITHUB_SHA}"
+          CURRENT=$(az containerapp show \
+            -g "$RESOURCE_GROUP" \
+            -n "${{ needs.infra.outputs.browser-app-name }}" \
+            --query "properties.template.containers[0].image" -o tsv)
+          if [ "$CURRENT" = "$TARGET" ]; then
+            echo "browser app already on ${GITHUB_SHA}"
+            exit 0
+          fi
           az acr build \
             --registry "${{ needs.infra.outputs.registry-name }}" \
             --image "taskbrain-browser:${GITHUB_SHA}" \
             --image "taskbrain-browser:latest" \
             --file services/browser/Dockerfile \
             services/browser
-      - name: Point browser Container App at the new image
-        run: |
           az containerapp update \
             -g "$RESOURCE_GROUP" \
             -n "${{ needs.infra.outputs.browser-app-name }}" \
-            --image "${{ needs.infra.outputs.registry-name }}.azurecr.io/taskbrain-browser:${GITHUB_SHA}"
+            --image "$TARGET"
       - name: Restart App Service onto the new image
         run: az webapp restart -g "$RESOURCE_GROUP" -n "${{ needs.infra.outputs.app-name }}"
       - name: Smoke test (retries while App Service pulls the image)

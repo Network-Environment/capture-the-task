@@ -66,6 +66,9 @@ var planAlwaysOn = planSku != 'F1'
 @description('Immutable container tag deployed to App Service. CI passes the Git commit SHA.')
 param containerImageTag string = 'bootstrap'
 
+@description('Full image reference for the browser MCP container. Container Apps fails revision provisioning if the tag is missing from the registry, so CI passes this only after the image is built. The public placeholder default lets a first deploy create the app before any image exists.')
+param browserImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
+
 // ---- Model deployments created in Foundry. Verify names/versions in your region's model catalog. ----
 // New Pay-As-You-Go subscriptions often have 0 TPM for full gpt-5 / gpt-4.1 / gpt-4o.
 // Defaults here are the mini-class models that actually have quota so a first deploy
@@ -168,7 +171,7 @@ resource browserApp 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'mcp'
-          image: '${registry.properties.loginServer}/taskbrain-browser:${containerImageTag}'
+          image: browserImage
           env: [
             { name: 'PORT', value: '8080' }
             { name: 'MCP_TOKEN', secretRef: 'mcp-token' }
@@ -177,14 +180,8 @@ resource browserApp 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('1.0')
             memory: '2.0Gi'
           }
-          probes: [
-            {
-              type: 'Liveness'
-              httpGet: { path: '/healthz', port: 8080 }
-              periodSeconds: 30
-              initialDelaySeconds: 10
-            }
-          ]
+          // No probe: the placeholder image above does not serve /healthz, and a
+          // failing probe blocks revision provisioning on a first deploy.
         }
       ]
       scale: {

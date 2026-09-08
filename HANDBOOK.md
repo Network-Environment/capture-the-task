@@ -82,9 +82,10 @@ scripts/bootstrap.sh (once, out of band)
   │       └─ WRITES ALL APP SETTINGS: keys via listKeys() (Cosmos, Storage,
   │          Speech, Foundry), endpoints, deployment names, and the secrets
   │          above → the code's process.env is fully populated
-  ├─ az acr build → taskbrain:<git-sha> and taskbrain-browser:<git-sha>
+  ├─ az acr build → taskbrain-browser:<git-sha> BEFORE the Bicep deploy
+  │  (Container Apps refuses a revision whose tag is missing from the registry)
+  ├─ az acr build → taskbrain:<git-sha>
   ├─ App Service pulls the immutable image through managed identity
-  ├─ Container App updated to the browser image
   ├─ zip-deploy Flex Consumption Function (meeting ingest timer)
   └─ smoke test /healthz (retries)
                                                                 ▼
@@ -373,13 +374,15 @@ repo, org permission to upload Teams apps.
    creates only the Admin app and does not rotate the bot secret.
 2. **Local sanity:** `npm ci && npx tsc --noEmit && npm test`. (Also
    review Bicep model params against your region's Foundry catalog.)
-3. **Push to `main`.** Pipeline: build → tests → OIDC login → Bicep (all
-   resources including Flex Consumption Function + meeting Cosmos containers,
-   ACR, Container Apps Playwright MCP, three model deployments, every app
-   setting, Bot OAuth) → build immutable `taskbrain` and `taskbrain-browser`
-   images in ACR → update the browser Container App → App Service restart →
-   health check → zip-deploy the meeting ingest Function. Optional: set
-   `WEB_SEARCH_API_KEY` in GitHub secrets so `web_search` works.
+3. **Push to `main`.** Pipeline: build → tests → OIDC login → build
+   `taskbrain-browser` in ACR → Bicep (all resources including Flex
+   Consumption Function + meeting Cosmos containers, ACR, Container Apps
+   Playwright MCP, three model deployments, every app setting, Bot OAuth) →
+   build `taskbrain` image → App Service restart → health check → zip-deploy
+   the meeting ingest Function. The browser image is built first on purpose:
+   Container Apps fails revision provisioning if the tag is not already in the
+   registry. Optional: set `WEB_SEARCH_API_KEY` in GitHub secrets so
+   `web_search` works.
 4. **Meeting ingest tenant grant (once, after the Function exists):**
    `./scripts/setup-meeting-ingest.sh rg-taskbrain` then the printed Teams
    PowerShell (application access policy + Graph transcript access). Wait
@@ -576,6 +579,11 @@ logging already support it. Do not pay this tax early.
   `az provider register -n Microsoft.App --wait` (same for
   `Microsoft.OperationalInsights`, `Microsoft.ManagedIdentity`), or re-run
   `scripts/bootstrap.sh`. Do not add provider registration to the pipeline.
+- **Container App revision fails `MANIFEST_UNKNOWN`:** Bicep referenced an
+  image tag that is not in ACR yet. The pipeline builds `taskbrain-browser`
+  before the Bicep step for this reason; if you deploy Bicep by hand, pass
+  `browserImage=<acr>.azurecr.io/taskbrain-browser:<tag>` or let it fall back
+  to the public placeholder default.
 - **Jobs not firing:** orchestrator logs each run; check `jobs` docs'
   `nextRun`/`enabled`; remember one-offs self-disable and claims push
   `nextRun` forward ~10 min while running.
