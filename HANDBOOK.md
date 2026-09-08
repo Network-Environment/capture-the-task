@@ -140,7 +140,8 @@ SCHEDULER — jobs-as-data
 |---|---|
 | `src/index.ts` | restify server, adapter, alert init, orchestrator start, `/admin` + `/admin/:section`, `/healthz` |
 | `src/pipeline.ts` | **channel-agnostic capture pipeline**: approvals, transcription, triage, execute → Outbound |
-| `src/bot.ts` | Teams adapter: activity → CaptureInput, Adaptive Card rendering, Graph task hook |
+| `src/bot.ts` | Teams adapter: 1:1 and @mentions in team/group chat; Adaptive Card; Graph task hook |
+| `src/channels/teamsText.ts` | strip bot @mention markup; personal vs channel conversation |
 | `src/channels/photon.ts` | iMessage adapter via Photon spectrum-ts: stream consumer, allowlist, voice memo fetch, proactive send |
 | `src/channels/deliver.ts` | proactive delivery router (Teams or iMessage by last-used channel) |
 | `src/channels/types.ts` | channel policy, identity resolution, plain-text rendering |
@@ -230,7 +231,14 @@ or the agent's knowledge about how to operate?
 ### Channels (Teams + iMessage)
 
 Teams is the system of record and the only channel with Graph auth (To Do)
-and full actions. iMessage runs through **Photon** (`spectrum-ts`): a single
+and full actions. The app is a **personal bot and a team/group-chat bot**:
+1:1 chat still works; in a channel or group, @mention TaskBrain. Captures
+file under the mentioner's Entra id. Channel messages that do not mention
+the bot are ignored. Scheduled jobs and alerts still deliver to the **1:1**
+conversation (open TaskBrain once so a conversation reference exists) — they
+do not post into the team channel.
+
+iMessage runs through **Photon** (`spectrum-ts`): a single
 persistent gRPC stream in the App Service process handles inbound messages,
 replies, and voice-memo bytes. Photon has no HTTP send endpoint, so the SDK
 stream is the only viable two-way mode; no webhook or public URL is involved.
@@ -343,7 +351,9 @@ repo, org permission to upload Teams apps.
    ~30 minutes, then confirm `/admin` ingest health after a poll.
 5. **Teams package:** add `color.png` (192×192) and `outline.png` (32×32)
    beside the patched manifest; zip the three at the root; Teams admin center →
-   Manage apps → Upload new app; scope via app permission policy if desired.
+   Manage apps → Upload new app (bump manifest version on each upload). To
+   @mention in a channel: add TaskBrain to that team (Apps → TaskBrain → Add
+   to a team). Scope org-wide via app permission policy if desired.
 6. **iMessage via Photon (optional):** create a project at app.photon.codes,
    provision a line, add `SPECTRUM_PROJECT_ID` / `SPECTRUM_PROJECT_SECRET` as
    GitHub secrets (`gh secret set …`), fill `config/channels.json` identities

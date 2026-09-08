@@ -96,7 +96,8 @@ teams-app/manifest.json    Teams app package
    Bot OAuth, and App Service settings), builds an immutable image inside ACR,
    restarts App Service onto that image, and checks `/healthz`.
 2. Zip `teams-app/` (manifest + icons) and upload via Teams admin center or
-   sideload. Pin it. Send it a voice memo.
+   sideload. Pin the personal app. To @mention in a channel, add TaskBrain
+   to that team. Send it a voice memo.
 
 ## Cost profile (personal scale, ~30 captures/day)
 

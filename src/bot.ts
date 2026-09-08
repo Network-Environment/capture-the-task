@@ -9,6 +9,11 @@ import { downloadAudio } from "./services/transcription";
 import { createTodoTask } from "./services/graphTasks";
 import { saveConversationRef } from "./services/conversations";
 import { THINKING_RESPONSE } from "./channels/types";
+import {
+  botWasMentioned,
+  isPersonalTeamsConversation,
+  stripBotMention,
+} from "./channels/teamsText";
 
 const AUDIO_TYPES = [
   "audio/mp4", "audio/mpeg", "audio/wav", "audio/aac", "audio/ogg",
@@ -21,11 +26,21 @@ export class TaskBrainBot extends ActivityHandler {
 
     this.onMessage(async (context, next) => {
       const userId = context.activity.from.aadObjectId ?? context.activity.from.id;
+      const personal = isPersonalTeamsConversation(context.activity.conversation?.conversationType);
       const convRef = TurnContext.getConversationReference(context.activity);
-      void saveConversationRef(userId, convRef);
-      await context.sendActivity(THINKING_RESPONSE);
+      const bot = { id: context.activity.recipient?.id, name: context.activity.recipient?.name };
+      const entities = context.activity.entities as { type?: string; text?: string; mentioned?: { id?: string; name?: string } }[] | undefined;
 
-      // Voice clip → bytes (Teams-served URLs need the connector token)
+      // Channel / group chat: only handle @mentions so we never ingest the whole thread.
+      if (!personal && !botWasMentioned(entities, bot.id, bot.name, context.activity.text)) {
+        return next();
+      }
+
+      // Proactive jobs/alerts stay on the 1:1 chat, not the channel that @mentioned us.
+      if (personal) void saveConversationRef(userId, convRef);
+
+      const text = stripBotMention(context.activity.text, entities, bot);
+
       let audio: Buffer | undefined;
       const att = (context.activity.attachments ?? []).find((a) => AUDIO_TYPES.includes(a.contentType));
       if (att) {
@@ -38,13 +53,24 @@ export class TaskBrainBot extends ActivityHandler {
         audio = await downloadAudio(url, await getAttachmentToken(context));
       }
 
+      if (!text && !audio) {
+        await context.sendActivity(
+          personal
+            ? "Send a thought, a task, or a voice memo — or ask me what you captured."
+            : "Mention me with a task or question (or open the TaskBrain chat for a private capture)."
+        );
+        return next();
+      }
+
+      await context.sendActivity(THINKING_RESPONSE);
+
       const out = await processCapture({
         userId,
         channel: "teams",
-        text: context.activity.text,
+        text,
         audio,
         allowActions: true,
-        conversationRef: convRef,
+        conversationRef: personal ? convRef : undefined,
         createTask: (title, detail, due) => createTodoTask(context, title, detail, due),
       });
 
@@ -53,12 +79,16 @@ export class TaskBrainBot extends ActivityHandler {
     });
 
     this.onMembersAdded(async (context, next) => {
+      if (!isPersonalTeamsConversation(context.activity.conversation?.conversationType)) {
+        return next();
+      }
       for (const m of context.activity.membersAdded ?? []) {
         if (m.id !== context.activity.recipient.id) {
           await context.sendActivity(
             "Hey — I'm TaskBrain. Send me anything: a voice memo from your phone, a half-formed idea, a task. " +
               "I'll transcribe it, figure out what it is, and file it. Ask me things like " +
-              "\"what did I capture about the substation project?\" to recall."
+              "\"what did I capture about the substation project?\" to recall. " +
+              "In a team channel, @mention me."
           );
         }
       }
