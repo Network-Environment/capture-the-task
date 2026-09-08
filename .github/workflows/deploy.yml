@@ -37,6 +37,7 @@ jobs:
       app-name: ${{ steps.deploy.outputs.app-name }}
       registry-name: ${{ steps.deploy.outputs.registry-name }}
       function-app-name: ${{ steps.deploy.outputs.function-app-name }}
+      browser-app-name: ${{ steps.deploy.outputs.browser-app-name }}
     steps:
       - uses: actions/checkout@v4
       - uses: azure/login@v2
@@ -44,6 +45,11 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Register Container Apps providers
+        run: |
+          az provider register -n Microsoft.App --only-show-errors
+          az provider register -n Microsoft.OperationalInsights --only-show-errors
+          az provider register -n Microsoft.ManagedIdentity --only-show-errors
       - name: Deploy Bicep (infra + runtime settings + container registry)
         id: deploy
         env:
@@ -57,6 +63,7 @@ jobs:
           SMARTSHEET_API_TOKEN: ${{ secrets.SMARTSHEET_API_TOKEN }}
           SPECTRUM_PROJECT_ID: ${{ secrets.SPECTRUM_PROJECT_ID }}
           SPECTRUM_PROJECT_SECRET: ${{ secrets.SPECTRUM_PROJECT_SECRET }}
+          WEB_SEARCH_API_KEY: ${{ secrets.WEB_SEARCH_API_KEY }}
         run: |
           test -n "$BOT_APP_ID" -a -n "$BOT_APP_PASSWORD" -a -n "$ADMIN_APP_ID" -a -n "$ADMIN_APP_SECRET" || { echo "missing required secrets (BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_APP_ID, ADMIN_APP_SECRET) — run scripts/bootstrap.sh or scripts/setup-admin-sso.sh"; exit 1; }
           OUTPUTS=$(az deployment group create \
@@ -80,10 +87,12 @@ jobs:
                adminAadObjectId="$ADMIN_AAD_OBJECT_ID" \
                smartsheetApiToken="$SMARTSHEET_API_TOKEN" \
                spectrumProjectId="$SPECTRUM_PROJECT_ID" \
-               spectrumProjectSecret="$SPECTRUM_PROJECT_SECRET")
+               spectrumProjectSecret="$SPECTRUM_PROJECT_SECRET" \
+               webSearchApiKey="$WEB_SEARCH_API_KEY")
           echo "app-name=$(jq -r '.appName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "registry-name=$(jq -r '.registryName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "function-app-name=$(jq -r '.functionAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
+          echo "browser-app-name=$(jq -r '.browserAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: [validate, infra]
@@ -96,7 +105,7 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Build and push immutable image in ACR
+      - name: Build and push immutable images in ACR
         run: |
           az acr build \
             --registry "${{ needs.infra.outputs.registry-name }}" \
@@ -104,6 +113,18 @@ jobs:
             --image "taskbrain:latest" \
             --file Dockerfile \
             .
+          az acr build \
+            --registry "${{ needs.infra.outputs.registry-name }}" \
+            --image "taskbrain-browser:${GITHUB_SHA}" \
+            --image "taskbrain-browser:latest" \
+            --file services/browser/Dockerfile \
+            services/browser
+      - name: Point browser Container App at the new image
+        run: |
+          az containerapp update \
+            -g "$RESOURCE_GROUP" \
+            -n "${{ needs.infra.outputs.browser-app-name }}" \
+            --image "${{ needs.infra.outputs.registry-name }}.azurecr.io/taskbrain-browser:${GITHUB_SHA}"
       - name: Restart App Service onto the new image
         run: az webapp restart -g "$RESOURCE_GROUP" -n "${{ needs.infra.outputs.app-name }}"
       - name: Smoke test (retries while App Service pulls the image)
@@ -155,6 +176,7 @@ jobs:
 #    required: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
 #              BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_APP_ID, ADMIN_APP_SECRET,
 #              ADMIN_AAD_OBJECT_ID
-#    optional: SMARTSHEET_API_TOKEN, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET
+#    optional: SMARTSHEET_API_TOKEN, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET,
+#              WEB_SEARCH_API_KEY (Tavily tvly- key by default; Brave or Bing if WEB_SEARCH_ENGINE is set)
 # 4. Bicep creates a Basic ACR. The App Service system identity has AcrPull;
 #    CI builds in ACR via OIDC and deploys immutable Git SHA image tags.

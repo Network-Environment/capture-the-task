@@ -63,10 +63,14 @@ describe("admin portal", () => {
     const tools = renderCapabilities("local", "tools", [
       { name: "smartsheet__search", description: "Search sheets" },
       { name: "smartsheet__update_rows", description: "Update rows" },
+      { name: "browser__navigate", description: "Open URL", status: "down" },
     ]);
     assert.match(tools, /save_note/);
     assert.match(tools, /lookup_org/);
+    assert.match(tools, /web_search/);
     assert.match(tools, /smartsheet__search/);
+    assert.match(tools, /browser__navigate/);
+    assert.match(tools, />down</);
     assert.match(tools, /approval required/);
   });
 
@@ -87,14 +91,30 @@ describe("admin portal", () => {
           toolCount: 0,
           error: "connect failed",
         },
+        {
+          name: "browser",
+          enabled: true,
+          url: "https://browser.example/mcp",
+          authEnv: "BROWSER_MCP_TOKEN",
+          tokenPresent: true,
+          connected: true,
+          toolCount: 2,
+        },
       ]
     );
     assert.match(html, /smartsheet/);
+    assert.match(html, /browser/);
+    assert.match(html, /navigate, snapshot/);
+    assert.match(html, />connected</);
     assert.match(html, /token empty/);
+    assert.match(html, /Web search/);
     assert.doesNotMatch(html, /Bearer /);
     const catalog = renderIntegrations("local", "catalog");
     assert.match(catalog, /authEnv/);
     assert.match(catalog, /SMARTSHEET_API_TOKEN/);
+    assert.match(catalog, />browser</);
+    assert.match(catalog, /BROWSER_MCP_TOKEN/);
+    assert.match(catalog, /env:BROWSER_MCP_URL/);
     assert.doesNotMatch(catalog, /\+1/);
   });
 

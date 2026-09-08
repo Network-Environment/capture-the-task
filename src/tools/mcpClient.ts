@@ -15,9 +15,11 @@ const serversConfig = loadConfig<{ servers: unknown[] }>("mcp.servers");
 export interface ServerConfig {
   name: string;
   transport: "http";
-  url: string;
+  url?: string;
+  urlEnv?: string;
   authEnv?: string;
   enabled: boolean;
+  timeoutMs?: number;
   allowTools?: string[];
   confirmTools?: string[];
   description?: string;
@@ -34,15 +36,28 @@ interface McpToolRef {
 const clients = new Map<string, Client>();
 let toolCache: McpToolRef[] | null = null;
 
+export function resolveServerUrl(cfg: ServerConfig): string | undefined {
+  if (cfg.urlEnv) {
+    const fromEnv = process.env[cfg.urlEnv]?.trim();
+    if (fromEnv) return fromEnv;
+    return undefined;
+  }
+  const u = cfg.url?.trim();
+  return u || undefined;
+}
+
 async function connect(cfg: ServerConfig): Promise<Client> {
   const existing = clients.get(cfg.name);
   if (existing) return existing;
+
+  const url = resolveServerUrl(cfg);
+  if (!url) throw new Error(`${cfg.urlEnv ?? "url"} is not set`);
 
   const headers: Record<string, string> = {};
   if (cfg.authEnv && process.env[cfg.authEnv]) {
     headers["Authorization"] = `Bearer ${process.env[cfg.authEnv]}`;
   }
-  const transport = new StreamableHTTPClientTransport(new URL(cfg.url), {
+  const transport = new StreamableHTTPClientTransport(new URL(url), {
     requestInit: { headers },
   });
   const client = new Client({ name: "taskbrain", version: "0.1.0" });
@@ -56,6 +71,7 @@ export async function discoverMcpTools(): Promise<McpToolRef[]> {
   if (toolCache) return toolCache;
   const refs: McpToolRef[] = [];
   for (const cfg of (serversConfig.servers as ServerConfig[]).filter((s) => s.enabled)) {
+    if (!resolveServerUrl(cfg)) continue;
     try {
       const client = await connect(cfg);
       const { tools } = await client.listTools();
@@ -111,15 +127,29 @@ export async function mcpServerHealth(): Promise<McpServerHealth[]> {
   const out: McpServerHealth[] = [];
   for (const cfg of mcpServerCatalog()) {
     const tokenPresent = !!(cfg.authEnv && process.env[cfg.authEnv]);
+    const url = resolveServerUrl(cfg) ?? (cfg.urlEnv ? `env:${cfg.urlEnv}` : cfg.url ?? "");
     if (!cfg.enabled) {
       out.push({
         name: cfg.name,
         enabled: false,
-        url: cfg.url,
+        url,
         authEnv: cfg.authEnv,
         tokenPresent,
         connected: false,
         toolCount: 0,
+      });
+      continue;
+    }
+    if (!resolveServerUrl(cfg)) {
+      out.push({
+        name: cfg.name,
+        enabled: true,
+        url,
+        authEnv: cfg.authEnv,
+        tokenPresent,
+        connected: false,
+        toolCount: 0,
+        error: `${cfg.urlEnv ?? "url"} unset`,
       });
       continue;
     }
@@ -132,7 +162,7 @@ export async function mcpServerHealth(): Promise<McpServerHealth[]> {
       out.push({
         name: cfg.name,
         enabled: true,
-        url: cfg.url,
+        url,
         authEnv: cfg.authEnv,
         tokenPresent,
         connected: true,
@@ -142,7 +172,7 @@ export async function mcpServerHealth(): Promise<McpServerHealth[]> {
       out.push({
         name: cfg.name,
         enabled: true,
-        url: cfg.url,
+        url,
         authEnv: cfg.authEnv,
         tokenPresent,
         connected: false,

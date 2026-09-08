@@ -18,6 +18,15 @@ import type {
   ActivityInputMode,
   ActivityOrigin,
 } from "../services/activityLog";
+import {
+  assertPublicHttpUrl,
+  consumeBrowserBudget,
+  consumeSearchBudget,
+  isBrowserMcpTool,
+  truncateSnapshot,
+  webSearch,
+  type ResearchBudget,
+} from "./webResearch";
 
 export interface ToolContext {
   userId: string;
@@ -26,6 +35,7 @@ export interface ToolContext {
   channel?: ActivityChannel;
   inputMode?: ActivityInputMode;
   trigger?: string;
+  research?: ResearchBudget;
 }
 
 const nativeDefs: ChatCompletionTool[] = [
@@ -182,6 +192,24 @@ const nativeDefs: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description:
+        "Search the public web for current information. Returns titles, URLs, and short snippets only. " +
+        "Use this first for 'what's the latest on X'. Do not use for Smartsheet, org directory, or meetings — those have their own tools. " +
+        "Open a URL with the browser tools only when the user named it or a search hit must be read as a rendered page.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          count: { type: "number", description: "How many hits to return (5–8, default 8)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
 ];
 
 export function nativeToolCatalog(): { name: string; description: string }[] {
@@ -205,6 +233,21 @@ export async function dispatch(
       if (requiresApproval(name)) {
         const id = await parkAction(ctx.userId, name, args);
         return approvalMessage(id, name, args) + " Tell the user the write is queued until they approve.";
+      }
+      const [server, ...rest] = name.split("__");
+      const tool = rest.join("__");
+      if (server === "browser") {
+        if (!isBrowserMcpTool(server, tool)) {
+          return "Browser tool not allowed in v1 (navigate and snapshot only).";
+        }
+        const capped = consumeBrowserBudget(ctx);
+        if (capped) return capped;
+        if (tool === "navigate") {
+          const checked = await assertPublicHttpUrl(String(args.url ?? ""));
+          if ("error" in checked) return checked.error;
+          args = { ...args, url: checked.href };
+        }
+        return truncateSnapshot(await callMcpTool(name, args));
       }
       return await callMcpTool(name, args);
     }
@@ -275,6 +318,11 @@ export async function dispatch(
         return await markCommitmentDone(ctx.userId, String(args.idOrText));
       case "lookup_org":
         return await lookupOrg(ctx.userId, String(args.query ?? ""));
+      case "web_search": {
+        const capped = consumeSearchBudget(ctx);
+        if (capped) return capped;
+        return await webSearch(String(args.query ?? ""), args.count as number | undefined);
+      }
       default:
         return `Unknown tool: ${name}`;
     }

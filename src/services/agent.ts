@@ -230,6 +230,8 @@ export async function runAgent(
       let args: Record<string, unknown> = {};
       try { args = JSON.parse(call.function.arguments || "{}"); } catch { /* empty */ }
       const result = await dispatch(ctx, call.function.name, args);
+      const research =
+        call.function.name === "web_search" || call.function.name.startsWith("browser__");
       void logActivity({
         type: "tool_call",
         userId: ctx.userId,
@@ -237,7 +239,7 @@ export async function runAgent(
         origin: ctx.origin,
         channel: ctx.channel,
         inputMode: ctx.inputMode,
-        trigger: ctx.trigger ?? `agent:${name}`,
+        trigger: research ? "web_research" : (ctx.trigger ?? `agent:${name}`),
         detail: { tool: call.function.name, ok: !result.startsWith(`Tool ${call.function.name} failed`) },
       });
       messages.push({ role: "tool", tool_call_id: call.id, content: result.slice(0, 12_000) });

@@ -118,13 +118,44 @@ async function renderSection(
       return renderOverview({ stats, events, health, signedIn, today, orgCounts: counts });
     }
     case "capabilities": {
-      let mcp: { name: string; description: string }[] = [];
+      let mcp: ToolCatalogRow[] = [];
       if (tab === "tools") {
         try {
-          const defs = await mcpToolDefinitions();
-          mcp = defs.map((t) => ({ name: t.function.name, description: t.function.description ?? "" }));
+          const [defs, health] = await Promise.all([
+            mcpToolDefinitions(),
+            mcpServerHealth(),
+          ]);
+          const discovered = new Map(
+            defs.map((t) => [t.function.name, t.function.description ?? ""])
+          );
+          const healthByServer = new Map(health.map((h) => [h.name, h]));
+          mcp = mcpServerCatalog().flatMap((server) =>
+            (server.allowTools ?? []).map((tool) => {
+              const name = `${server.name}__${tool}`;
+              const serverHealth = healthByServer.get(server.name);
+              return {
+                name,
+                description:
+                  discovered.get(name) ??
+                  `[${server.name}] ${server.description ?? tool}`,
+                status: !server.enabled
+                  ? "disabled"
+                  : serverHealth?.connected && discovered.has(name)
+                    ? "connected"
+                    : serverHealth?.connected
+                      ? "unavailable"
+                      : "down",
+              };
+            })
+          );
         } catch {
-          mcp = [];
+          mcp = mcpServerCatalog().flatMap((server) =>
+            (server.allowTools ?? []).map((tool) => ({
+              name: `${server.name}__${tool}`,
+              description: `[${server.name}] ${server.description ?? tool}`,
+              status: server.enabled ? "down" : "disabled",
+            }))
+          );
         }
       }
       return renderCapabilities(signedIn, tab === "tools" ? "tools" : "skills", mcp);
@@ -271,10 +302,16 @@ export function renderOverview(d: {
   });
 }
 
+interface ToolCatalogRow {
+  name: string;
+  description: string;
+  status?: "ready" | "not configured" | "connected" | "down" | "disabled" | "unavailable";
+}
+
 export function renderCapabilities(
   signedIn: string,
   tab: "skills" | "tools",
-  mcpTools: { name: string; description: string }[] = []
+  mcpTools: ToolCatalogRow[] = []
 ): string {
   const tabBar = tabs("/admin/capabilities", [
     { id: "skills", label: "Skills" },
@@ -297,20 +334,25 @@ export function renderCapabilities(
       <div class="cards">${cards}</div>`;
   } else {
     const native = nativeToolCatalog()
-      .map(
-        (t) =>
-          `<tr><td class="mono strong">${esc(t.name)}</td><td>${pill("native", "info")}</td><td>${pill("open", "ok")}</td><td class="muted">${esc(t.description)}</td></tr>`
-      )
+      .map((t) => {
+        const ready = t.name !== "web_search" || !!process.env.WEB_SEARCH_API_KEY;
+        const status = ready ? pill("ready", "ok") : pill("not configured", "warn");
+        return `<tr><td class="mono strong">${esc(t.name)}</td><td>${pill("native", "info")}</td><td>${status}</td><td>${pill("open", "ok")}</td><td class="muted">${esc(t.description)}</td></tr>`;
+      })
       .join("");
     const mcpRows = mcpTools
       .map((t) => {
         const gate = requiresApproval(t.name) ? pill("approval required", "warn") : pill("read", "ok");
-        return `<tr><td class="mono strong">${esc(t.name)}</td><td>${pill("mcp", "accent")}</td><td>${gate}</td><td class="muted">${esc(t.description)}</td></tr>`;
+        const tone: Tone =
+          t.status === "connected" ? "ok" :
+          t.status === "disabled" ? "idle" :
+          t.status === "unavailable" ? "warn" : "err";
+        return `<tr><td class="mono strong">${esc(t.name)}</td><td>${pill("mcp", "accent")}</td><td>${pill(t.status ?? "connected", tone)}</td><td>${gate}</td><td class="muted">${esc(t.description)}</td></tr>`;
       })
       .join("");
-    inner = `<p class="lede">Native tools always ship with the bot. MCP tools appear when the server connects. Writes listed in confirmTools park until approve pa-x.</p>
+    inner = `<p class="lede">Every configured tool is listed, including tools whose backing service is down. Writes listed in confirmTools park until approve pa-x.</p>
       <section class="panel"><h2>Tool catalog</h2>${table(
-        ["Name", "Kind", "Gate", "Description"],
+        ["Name", "Kind", "Status", "Gate", "Description"],
         native + mcpRows,
         "No tools registered."
       )}</section>`;
@@ -344,12 +386,14 @@ export function renderIntegrations(
 
   let inner: string;
   if (tab === "status") {
+    const serverConfig = new Map(mcpServerCatalog().map((s) => [s.name, s]));
     const mcpRows = mcp
       .map((s) => {
         const tone: Tone = !s.enabled ? "idle" : s.connected ? "ok" : "err";
         const label = !s.enabled ? "disabled" : s.connected ? "connected" : "down";
         const token = s.authEnv ? (s.tokenPresent ? pill("token set", "ok") : pill("token empty", "err")) : pill("no auth", "idle");
-        return `<tr><td class="strong">${esc(s.name)}</td><td>${pill(label, tone)}</td><td>${token}</td><td class="num">${s.toolCount}</td><td class="muted clip">${esc(s.error ?? "—")}</td></tr>`;
+        const tools = (serverConfig.get(s.name)?.allowTools ?? []).join(", ") || "all";
+        return `<tr><td class="strong">${esc(s.name)}</td><td>${pill(label, tone)}</td><td>${token}</td><td><span class="num">${s.toolCount}</span><div class="muted">${esc(tools)}</div></td><td class="muted clip">${esc(s.error ?? "—")}</td></tr>`;
       })
       .join("");
     const ingestTone: Tone = !health ? "warn" : health.errors.length ? "err" : "ok";
@@ -366,6 +410,7 @@ export function renderIntegrations(
       { name: "iMessage (Photon)", label: photon ? "ready" : "not ready", tone: photon ? "ok" : "warn", note: "Spectrum stream" },
       { name: "Transcript discovery", label: ingestLabel, tone: ingestTone, note: ingestNote },
       { name: "Smartsheet catalog", label: sheetAliases > 0 ? "ready" : "not ready", tone: sheetAliases > 0 ? "ok" : "warn", note: `${sheetAliases} alias(es)` },
+      { name: "Web search", label: process.env.WEB_SEARCH_API_KEY ? "ready" : "not ready", tone: process.env.WEB_SEARCH_API_KEY ? "ok" : "warn", note: process.env.WEB_SEARCH_ENGINE || "tavily" },
     ];
     const statusRows = platform
       .map(
@@ -376,7 +421,7 @@ export function renderIntegrations(
     inner = `<p class="lede">Live wiring. Secrets are never shown — only whether they are present and whether MCP answered.</p>
       <section class="panel"><h2>Platform</h2>${table(["Integration", "Status", "Note"], statusRows, "—")}</section>
       <section class="panel"><h2>MCP servers</h2>${table(
-        ["Server", "Link", "Auth", "<span class='num'>Tools</span>", "Error"],
+        ["Server", "Link", "Auth", "Tools", "Error"],
         mcpRows,
         "No MCP servers in config."
       )}</section>`;
@@ -385,7 +430,7 @@ export function renderIntegrations(
       .map((s) => {
         const allow = (s.allowTools ?? []).map((t) => pill(t, "info")).join(" ") || pill("all", "idle");
         const confirm = (s.confirmTools ?? []).map((t) => pill(t, "warn")).join(" ") || '<span class="muted">none</span>';
-        return `<tr><td class="strong">${esc(s.name)}</td><td class="mono muted clip">${esc(s.url)}</td><td class="mono">${esc(s.authEnv ?? "—")}</td><td>${allow}</td><td>${confirm}</td></tr>`;
+        return `<tr><td class="strong">${esc(s.name)}</td><td class="mono muted clip">${esc(s.url ?? (s.urlEnv ? `env:${s.urlEnv}` : "—"))}</td><td class="mono">${esc(s.authEnv ?? "—")}</td><td>${allow}</td><td>${confirm}</td></tr>`;
       })
       .join("");
     const idCount = Object.keys(channelsConfig.imessage.identities ?? {}).length;

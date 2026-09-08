@@ -37,9 +37,10 @@ agent (PREMIUM tier) with full tools → proactive Teams message with the result
 ## Modularity contracts
 
 - **Integrations = config.** `config/mcp.servers.json` declares MCP servers
-  (URL + token env var + tool allowlist). Smartsheet's hosted server
-  (mcp.smartsheet.com) ships enabled. Adding Jira/ServiceNow/etc. later is a
-  JSON entry, not code.
+  (URL or `urlEnv` + token env var + tool allowlist). Smartsheet's hosted server
+  (mcp.smartsheet.com) ships enabled. The `browser` server is TaskBrain's own
+  Chromium MCP (navigate + snapshot). Adding Jira/ServiceNow/etc. later is a
+  JSON entry, not code. Native `web_search` is a registry tool, not MCP.
 - **Models = app settings.** `config/model.routes.json` maps task classes
   (triage/agent/synthesis/digest) to env-var-named Foundry deployments, with
   cheap→standard escalation on triage parse failure. Retier without redeploying.
@@ -77,12 +78,14 @@ src/
   tools/
     registry.ts            unified tool registry (native + MCP) + dispatch
     mcpClient.ts           MCP Streamable HTTP client, config-driven discovery
+    webResearch.ts         native web_search + SSRF / caps for the browser MCP
   jobs/
     orchestrator.ts        single 60s poller: due jobs → agent → proactive msg
 config/
-  mcp.servers.json         external integrations (Smartsheet enabled)
+  mcp.servers.json         external integrations (Smartsheet + browser MCP)
   model.routes.json        model tiers per task class
 infra/main.bicep           all Azure resources (incl. jobs container)
+services/browser/          Playwright MCP (Chromium; not in the bot image)
 teams-app/manifest.json    Teams app package
 ```
 

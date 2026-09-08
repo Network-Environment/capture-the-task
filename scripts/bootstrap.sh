@@ -109,6 +109,8 @@ echo
 echo "== Resource providers =="
 RPS=(
   Microsoft.Web                    # App Service plan + site
+  Microsoft.App                    # Container Apps (remote Chromium MCP)
+  Microsoft.ManagedIdentity        # user-assigned identity for ACR pull
   Microsoft.ContainerRegistry      # application image registry + ACR Tasks
   Microsoft.Storage                # notes blobs
   Microsoft.DocumentDB             # Cosmos
@@ -116,6 +118,7 @@ RPS=(
   Microsoft.MachineLearningServices # Foundry hub/project in ai.azure.com
   Microsoft.Capacity               # Azure Portal Quotas blade
   Microsoft.Insights               # App Insights
+  Microsoft.OperationalInsights    # Log Analytics for Container Apps
   Microsoft.BotService             # Azure Bot + Teams channel
 )
 PENDING=()

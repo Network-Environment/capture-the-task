@@ -34,8 +34,15 @@ param smartsheetApiToken string = ''
 param spectrumProjectId string = ''
 
 @secure()
-@description('Photon project secret (optional)')
-param spectrumProjectSecret string = ''
+@description('Tavily (default), Brave, or Bing API key for native web_search (optional)')
+param webSearchApiKey string = ''
+
+@description('Search engine for web_search: tavily (default), brave, or bing')
+param webSearchEngine string = 'tavily'
+
+@secure()
+@description('Shared bearer between App Service and the browser Container App. Empty = generated per RG.')
+param browserMcpToken string = ''
 
 @description('Daily token budget before cheap-tier downgrade')
 param dailyTokenBudget string = '5000000'
@@ -67,6 +74,11 @@ param embedModelName string = 'text-embedding-3-small'
 param embedModelVersion string = '1'
 
 var suffix = uniqueString(resourceGroup().id)
+var browserToken = !empty(browserMcpToken) ? browserMcpToken : uniqueString('browser-mcp', resourceGroup().id, subscription().subscriptionId)
+var acrPullRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+)
 
 // ---------- Container registry ----------
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
@@ -77,6 +89,113 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
     adminUserEnabled: false
     publicNetworkAccess: 'Enabled'
   }
+}
+
+// Remote Chromium lives here, not in the Alpine App Service image.
+resource browserIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-browser-${suffix}'
+  location: location
+}
+
+resource browserAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, browserIdentity.id, acrPullRoleId)
+  scope: registry
+  properties: {
+    roleDefinitionId: acrPullRoleId
+    principalId: browserIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource logs 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
+  name: 'log-${appName}-${suffix}'
+  location: location
+  properties: {
+    sku: { name: 'PerGB2018' }
+    retentionInDays: 30
+  }
+}
+
+resource browserEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
+  name: 'cae-${appName}-${suffix}'
+  location: location
+  properties: {
+    appLogsConfiguration: {
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: logs.properties.customerId
+        sharedKey: logs.listKeys().primarySharedKey
+      }
+    }
+    zoneRedundant: false
+  }
+}
+
+resource browserApp 'Microsoft.App/containerApps@2024-03-01' = {
+  name: 'ca-browser-${suffix}'
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${browserIdentity.id}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: browserEnv.id
+    configuration: {
+      activeRevisionsMode: 'Single'
+      ingress: {
+        external: true
+        targetPort: 8080
+        allowInsecure: false
+        transport: 'http'
+      }
+      registries: [
+        {
+          server: registry.properties.loginServer
+          identity: browserIdentity.id
+        }
+      ]
+      secrets: [
+        { name: 'mcp-token', value: browserToken }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'mcp'
+          image: '${registry.properties.loginServer}/taskbrain-browser:${containerImageTag}'
+          env: [
+            { name: 'PORT', value: '8080' }
+            { name: 'MCP_TOKEN', secretRef: 'mcp-token' }
+          ]
+          resources: {
+            cpu: json('1.0')
+            memory: '2.0Gi'
+          }
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: { path: '/healthz', port: 8080 }
+              periodSeconds: 30
+              initialDelaySeconds: 10
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 0
+        maxReplicas: 1
+        rules: [
+          {
+            name: 'http-scale'
+            http: { metadata: { concurrentRequests: '10' } }
+          }
+        ]
+      }
+    }
+  }
+  dependsOn: [ browserAcrPull ]
 }
 
 // ---------- Storage: markdown notes (the portable brain) ----------
@@ -437,6 +556,10 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         // --- Integrations / channels ---
         { name: 'GRAPH_CONNECTION_NAME', value: 'graph-connection' }
         { name: 'SMARTSHEET_API_TOKEN', value: smartsheetApiToken }
+        { name: 'WEB_SEARCH_API_KEY', value: webSearchApiKey }
+        { name: 'WEB_SEARCH_ENGINE', value: webSearchEngine }
+        { name: 'BROWSER_MCP_URL', value: 'https://${browserApp.properties.configuration.ingress.fqdn}/mcp' }
+        { name: 'BROWSER_MCP_TOKEN', value: browserToken }
         { name: 'SPECTRUM_PROJECT_ID', value: spectrumProjectId }
         { name: 'SPECTRUM_PROJECT_SECRET', value: spectrumProjectSecret }
         // --- Ops ---
@@ -458,10 +581,6 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
 }
 
 // App Service pulls from ACR without registry credentials or stored secrets.
-var acrPullRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
-  '7f951dda-4ed3-4680-a7ca-43fe172d538d'
-)
 resource appAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(registry.id, app.id, acrPullRoleId)
   scope: registry
@@ -656,3 +775,5 @@ output speechEndpoint string = speech.properties.endpoint
 output foundryEndpoint string = foundry.properties.endpoint
 output functionAppName string = functionApp.name
 output functionPrincipalId string = functionApp.identity.principalId
+output browserAppName string = browserApp.name
+output browserMcpUrl string = 'https://${browserApp.properties.configuration.ingress.fqdn}/mcp'
