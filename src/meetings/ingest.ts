@@ -10,6 +10,7 @@ import {
   type GraphTranscript,
 } from "./graph";
 import { applyMatches, orgLessonTexts } from "./match";
+import { listOrgDirectory } from "../org/store";
 import {
   claimQueuedTranscripts,
   getCheckpoint,
@@ -132,7 +133,8 @@ export async function processAvailableTranscript(
   await upsertMeeting(doc);
 
   const open = await listOpenCommitments();
-  const { upserts, matched } = applyMatches(open, summary, id, summary.title);
+  const people = (await listOrgDirectory().catch(() => ({ people: [] }))).people;
+  const { upserts, matched } = applyMatches(open, summary, id, summary.title, people);
   for (const c of upserts) await upsertCommitment(c);
 
   for (const text of orgLessonTexts(summary, matched)) {

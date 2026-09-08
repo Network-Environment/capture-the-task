@@ -1,6 +1,6 @@
 /**
  * Admin portal — server-rendered HTML, zero frontend build.
- * Sidebar sections: overview, capabilities, integrations, usage, meetings, jobs, memory.
+ * Sidebar sections: overview, capabilities, integrations, usage, org, meetings, jobs, memory.
  *
  * In Azure, App Service Easy Auth (Entra) gates /admin*. Locally the page is open.
  */
@@ -36,6 +36,15 @@ import { mcpServerCatalog, mcpServerHealth, mcpToolDefinitions, type McpServerHe
 import { catalogSheets } from "../services/smartsheet";
 import { requiresApproval } from "../services/approvals";
 import { imessageEnabled } from "../channels/types";
+import {
+  listOrgDirectory,
+  orgCounts,
+  savePerson,
+  saveRole,
+  saveUnit,
+} from "../org/store";
+import { parseAliases } from "../org/resolve";
+import type { OrgDirectory } from "../org/types";
 import {
   countTable,
   esc,
@@ -100,12 +109,13 @@ async function renderSection(
   const today = new Date().toISOString().slice(0, 10);
   switch (section) {
     case "overview": {
-      const [stats, events, health] = await Promise.all([
+      const [stats, events, health, counts] = await Promise.all([
         dayStats(),
         recentEvents(12),
         readHealth().catch(() => undefined),
+        orgCounts().catch(() => ({ people: 0, units: 0, roles: 0 })),
       ]);
-      return renderOverview({ stats, events, health, signedIn, today });
+      return renderOverview({ stats, events, health, signedIn, today, orgCounts: counts });
     }
     case "capabilities": {
       let mcp: { name: string; description: string }[] = [];
@@ -129,6 +139,13 @@ async function renderSection(
     case "usage": {
       const [usage, events] = await Promise.all([usageBreakdown(), recentEvents(80)]);
       return renderUsage(signedIn, usage, events);
+    }
+    case "org": {
+      const dir = await listOrgDirectory().catch(
+        () => ({ units: [], people: [], roles: [] }) as OrgDirectory
+      );
+      const orgTab = tab === "teams" || tab === "roles" ? tab : "people";
+      return renderOrg(signedIn, orgTab, dir, notice);
     }
     case "meetings": {
       const [health, meetings, commitments, transcripts] = await Promise.all([
@@ -216,6 +233,7 @@ export function renderOverview(d: {
   health?: IngestHealthDoc;
   signedIn: string;
   today: string;
+  orgCounts?: { people: number; units: number; roles?: number };
 }): string {
   const totalTokens = d.stats.inputTokens + d.stats.outputTokens;
   const h = d.health;
@@ -231,8 +249,11 @@ export function renderOverview(d: {
       </section>`
     : `<section class="panel"><h2>Transcript discovery</h2><p class="muted pad">No discovery run yet. After Graph/Teams policy is granted, the Function checks every 5 minutes without spending summary tokens.</p></section>`;
 
+  const peopleN = d.orgCounts?.people ?? 0;
+  const unitsN = d.orgCounts?.units ?? 0;
   const body = `
   <p class="lede">TaskBrain ops — capabilities, health, usage. What the agent can do, how it is performing today, which tools are live, and how people are using it.</p>
+  <p class="lede"><a href="/admin/org">${peopleN} people, ${unitsN} teams</a> in the org directory.</p>
   ${kpiGrid(d.stats)}
   ${budgetBlock(totalTokens)}
   ${ingest}
@@ -556,6 +577,307 @@ export async function queueMeetingSummaries(
     console.error("[admin] queue meeting summaries failed:", err);
     res.header("Location", "/admin/meetings?notice=error");
     res.send(303);
+  }
+}
+
+export type OrgTab = "people" | "teams" | "roles";
+
+function field(body: Record<string, unknown>, key: string): string {
+  return String(body[key] ?? "").trim();
+}
+
+function selectHtml(
+  name: string,
+  items: { id: string; label: string }[],
+  selected?: string,
+  empty = "—"
+): string {
+  const opts = [`<option value="">${esc(empty)}</option>`].concat(
+    items.map(
+      (i) =>
+        `<option value="${esc(i.id)}"${i.id === selected ? " selected" : ""}>${esc(i.label)}</option>`
+    )
+  );
+  return `<select name="${esc(name)}">${opts.join("")}</select>`;
+}
+
+function orgNoticeHtml(notice: string): string {
+  if (notice === "saved") return `<p class="pad">${pill("saved", "ok")} Directory updated.</p>`;
+  if (notice === "archived") return `<p class="pad">${pill("archived", "warn")} Record is no longer active.</p>`;
+  if (notice === "missing") return `<p class="pad muted">Name is required.</p>`;
+  if (notice === "error") return `<p class="pad">${pill("error", "err")} Could not save the org record.</p>`;
+  return "";
+}
+
+function orgFormChrome(tab: OrgTab, ids: string[]): { scope: string; csrf: string; hidden: string } {
+  const scope = meetingCsrfScope([`org:${tab}`, ...ids]);
+  const csrf = meetingCsrfToken(scope);
+  const hidden =
+    `<input type="hidden" name="_scope" value="${esc(scope)}">` +
+    `<input type="hidden" name="_csrf" value="${esc(csrf)}">` +
+    `<input type="hidden" name="_tab" value="${esc(tab)}">`;
+  return { scope, csrf, hidden };
+}
+
+export function renderOrg(
+  signedIn: string,
+  tab: OrgTab,
+  dir: OrgDirectory,
+  notice = ""
+): string {
+  const tabBar = tabs("/admin/org", [
+    { id: "people", label: "People" },
+    { id: "teams", label: "Teams" },
+    { id: "roles", label: "Roles" },
+  ], tab);
+  const unitOpts = dir.units
+    .filter((u) => u.status === "active")
+    .map((u) => ({ id: u.id, label: u.name }));
+  const personOpts = dir.people
+    .filter((p) => p.status === "active")
+    .map((p) => ({ id: p.id, label: p.displayName }));
+  const unitName = (id?: string) => dir.units.find((u) => u.id === id)?.name ?? "—";
+  const personName = (id?: string) => dir.people.find((p) => p.id === id)?.displayName ?? "—";
+
+  let inner: string;
+  if (tab === "teams") {
+    const ids = dir.units.map((u) => u.id);
+    const { hidden } = orgFormChrome(tab, ids);
+    const rows = dir.units
+      .map((u) => {
+        const { hidden: rowHidden } = orgFormChrome(tab, ids);
+        return (
+          `<tr><td class="strong">${esc(u.name)}</td>` +
+          `<td class="muted">${esc(u.parentId ? unitName(u.parentId) : "—")}</td>` +
+          `<td class="muted clip">${esc(u.purpose || "—")}</td>` +
+          `<td>${pill(u.status, u.status === "active" ? "ok" : "idle")}</td>` +
+          `<td><form method="post" action="/admin/org">${rowHidden}` +
+          `<input type="hidden" name="id" value="${esc(u.id)}">` +
+          `<input type="hidden" name="name" value="${esc(u.name)}">` +
+          `<input type="hidden" name="parentId" value="${esc(u.parentId ?? "")}">` +
+          `<input type="hidden" name="purpose" value="${esc(u.purpose)}">` +
+          `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td></tr>`
+        );
+      })
+      .join("");
+    inner = `${orgNoticeHtml(notice)}
+      <section class="panel">
+        <h2>Add team</h2>
+        <form class="form" method="post" action="/admin/org">
+          ${hidden}
+          <input type="hidden" name="_action" value="save">
+          <label>Name <input name="name" required maxlength="80"></label>
+          <label>Parent ${selectHtml("parentId", unitOpts)}</label>
+          <label class="span2">Purpose / mandate <textarea name="purpose" maxlength="400"></textarea></label>
+          <div class="actions"><button type="submit">Save team</button></div>
+        </form>
+      </section>
+      <section class="panel">
+        <h2>Teams</h2>
+        ${table(["Name", "Parent", "Purpose", "Status", ""], rows, "No teams yet.")}
+      </section>`;
+  } else if (tab === "roles") {
+    const ids = dir.roles.map((r) => r.id);
+    const { hidden } = orgFormChrome(tab, ids);
+    const rows = dir.roles
+      .map((r) => {
+        const { hidden: rowHidden } = orgFormChrome(tab, ids);
+        return (
+          `<tr><td class="strong">${esc(r.title)}</td>` +
+          `<td>${esc(personName(r.personId))}</td>` +
+          `<td class="muted">${esc(r.unitId ? unitName(r.unitId) : "—")}</td>` +
+          `<td class="muted clip">${esc(r.mandate || "—")}</td>` +
+          `<td>${pill(r.status, r.status === "active" ? "ok" : "idle")}</td>` +
+          `<td><form method="post" action="/admin/org">${rowHidden}` +
+          `<input type="hidden" name="id" value="${esc(r.id)}">` +
+          `<input type="hidden" name="personId" value="${esc(r.personId)}">` +
+          `<input type="hidden" name="title" value="${esc(r.title)}">` +
+          `<input type="hidden" name="unitId" value="${esc(r.unitId ?? "")}">` +
+          `<input type="hidden" name="mandate" value="${esc(r.mandate)}">` +
+          `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td></tr>`
+        );
+      })
+      .join("");
+    inner = `${orgNoticeHtml(notice)}
+      <section class="panel">
+        <h2>Add role</h2>
+        <form class="form" method="post" action="/admin/org">
+          ${hidden}
+          <input type="hidden" name="_action" value="save">
+          <label>Title <input name="title" required maxlength="80"></label>
+          <label>Person ${selectHtml("personId", personOpts, undefined, "Select person")}</label>
+          <label>Team ${selectHtml("unitId", unitOpts)}</label>
+          <label class="span2">Mandate <textarea name="mandate" maxlength="400"></textarea></label>
+          <div class="actions"><button type="submit">Save role</button></div>
+        </form>
+      </section>
+      <section class="panel">
+        <h2>Roles</h2>
+        ${table(["Title", "Person", "Team", "Mandate", "Status", ""], rows, "No named roles yet.")}
+      </section>`;
+  } else {
+    const ids = dir.people.map((p) => p.id);
+    const { hidden } = orgFormChrome("people", ids);
+    const rows = dir.people
+      .map((p) => {
+        const { hidden: rowHidden } = orgFormChrome("people", ids);
+        const hats = dir.roles
+          .filter((r) => r.personId === p.id && r.status === "active")
+          .map((r) => r.title)
+          .join(", ");
+        return (
+          `<tr><td class="strong">${esc(p.displayName)}</td>` +
+          `<td class="muted">${esc(p.title ?? "—")}</td>` +
+          `<td class="muted">${esc(p.unitId ? unitName(p.unitId) : "—")}</td>` +
+          `<td class="muted">${esc(p.managerPersonId ? personName(p.managerPersonId) : "—")}</td>` +
+          `<td class="muted clip">${esc(p.mandate || "—")}</td>` +
+          `<td class="muted clip">${esc(hats || "—")}</td>` +
+          `<td>${pill(p.status, p.status === "active" ? "ok" : "idle")}</td>` +
+          `<td><form method="post" action="/admin/org">${rowHidden}` +
+          `<input type="hidden" name="id" value="${esc(p.id)}">` +
+          `<input type="hidden" name="displayName" value="${esc(p.displayName)}">` +
+          `<input type="hidden" name="entraId" value="${esc(p.entraId ?? "")}">` +
+          `<input type="hidden" name="aliases" value="${esc(p.aliases.join(", "))}">` +
+          `<input type="hidden" name="title" value="${esc(p.title ?? "")}">` +
+          `<input type="hidden" name="managerPersonId" value="${esc(p.managerPersonId ?? "")}">` +
+          `<input type="hidden" name="unitId" value="${esc(p.unitId ?? "")}">` +
+          `<input type="hidden" name="mandate" value="${esc(p.mandate)}">` +
+          `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td></tr>`
+        );
+      })
+      .join("");
+    inner = `${orgNoticeHtml(notice)}
+      <section class="panel">
+        <h2>Add or update person</h2>
+        <p class="pad muted">Optional Entra object id ties Teams/iMessage identity. Aliases (comma-separated) match meeting owners like "Val".</p>
+        <form class="form" method="post" action="/admin/org">
+          ${hidden}
+          <input type="hidden" name="_action" value="save">
+          <label>Name <input name="displayName" required maxlength="80"></label>
+          <label>Title <input name="title" maxlength="80"></label>
+          <label>Entra object id <input name="entraId" maxlength="64" class="mono"></label>
+          <label>Aliases <input name="aliases" placeholder="Val, Valerie"></label>
+          <label>Home team ${selectHtml("unitId", unitOpts)}</label>
+          <label>Manager ${selectHtml("managerPersonId", personOpts)}</label>
+          <label class="span2">Mandate (what they should be doing) <textarea name="mandate" maxlength="400"></textarea></label>
+          <div class="actions"><button type="submit">Save person</button></div>
+        </form>
+      </section>
+      <section class="panel">
+        <h2>People</h2>
+        ${table(["Name", "Title", "Team", "Manager", "Mandate", "Roles", "Status", ""], rows, "No people in the directory yet.")}
+      </section>`;
+  }
+
+  return renderShell({
+    section: "org",
+    signedIn,
+    title: "Org",
+    subtitle: "who reports to whom, and what they should be doing",
+    body: tabBar + inner,
+  });
+}
+
+function requireAdminPrincipal(req: Request, res: Response): { id: string; name: string } | "local" | undefined {
+  const principal = easyAuthPrincipal(req);
+  if (process.env.WEBSITE_INSTANCE_ID && !principal) {
+    res.send(401, "sign in required");
+    return undefined;
+  }
+  const origin = req.header("origin");
+  const host = req.header("host");
+  if (origin && host) {
+    try {
+      if (new URL(origin).host !== host) {
+        res.send(403, "invalid request origin");
+        return undefined;
+      }
+    } catch {
+      res.send(403, "invalid request origin");
+      return undefined;
+    }
+  }
+  return principal ?? "local";
+}
+
+export async function saveOrgDirectory(req: Request, res: Response): Promise<void> {
+  const who = requireAdminPrincipal(req, res);
+  if (!who) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const tabRaw = field(body, "_tab");
+  const tab: OrgTab = tabRaw === "teams" || tabRaw === "roles" ? tabRaw : "people";
+  const redirect = (notice: string) => {
+    res.header("Location", `/admin/org?tab=${tab}&notice=${notice}`);
+    res.send(303);
+  };
+  const scope = field(body, "_scope");
+  if (!verifyMeetingCsrf(field(body, "_csrf"), scope)) {
+    res.send(403, "invalid or expired request");
+    return;
+  }
+  const allowed = new Set(
+    Buffer.from(scope, "base64url").toString("utf8").split("\n").filter(Boolean)
+  );
+  if (!allowed.has(`org:${tab}`)) {
+    res.send(403, "invalid request scope");
+    return;
+  }
+  const action = field(body, "_action") || "save";
+  const id = field(body, "id");
+  if (id && !allowed.has(id)) {
+    res.send(403, "invalid request scope");
+    return;
+  }
+  try {
+    if (tab === "teams") {
+      const name = field(body, "name");
+      if (!name) return redirect("missing");
+      await saveUnit({
+        id: id || undefined,
+        name,
+        parentId: field(body, "parentId") || undefined,
+        purpose: field(body, "purpose"),
+        archive: action === "archive",
+      });
+    } else if (tab === "roles") {
+      const title = field(body, "title");
+      const personId = field(body, "personId");
+      if (!title || !personId) return redirect("missing");
+      await saveRole({
+        id: id || undefined,
+        personId,
+        title,
+        unitId: field(body, "unitId") || undefined,
+        mandate: field(body, "mandate"),
+        archive: action === "archive",
+      });
+    } else {
+      const displayName = field(body, "displayName");
+      if (!displayName) return redirect("missing");
+      await savePerson({
+        id: id || undefined,
+        displayName,
+        entraId: field(body, "entraId") || undefined,
+        aliases: parseAliases(field(body, "aliases")),
+        managerPersonId: field(body, "managerPersonId") || undefined,
+        unitId: field(body, "unitId") || undefined,
+        title: field(body, "title") || undefined,
+        mandate: field(body, "mandate"),
+        archive: action === "archive",
+      });
+    }
+    void logActivity({
+      type: "tool_call",
+      userId: who === "local" ? undefined : who.id,
+      origin: "system",
+      channel: "internal",
+      trigger: "admin_org",
+      detail: { tab, action, id: id || undefined },
+    });
+    redirect(action === "archive" ? "archived" : "saved");
+  } catch (err) {
+    console.error("[admin] save org failed:", err);
+    redirect("error");
   }
 }
 

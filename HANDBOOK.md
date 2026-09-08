@@ -138,7 +138,7 @@ SCHEDULER — jobs-as-data
 
 | Path | Responsibility |
 |---|---|
-| `src/index.ts` | restify server, adapter, alert init, orchestrator start, `/admin` + `/admin/:section`, `/healthz` |
+| `src/index.ts` | restify server, adapter, alert init, orchestrator start, `/admin` + `/admin/:section`, POST meetings/org, `/healthz` |
 | `src/pipeline.ts` | **channel-agnostic capture pipeline**: approvals, transcription, triage, execute → Outbound |
 | `src/bot.ts` | Teams adapter: 1:1 and @mentions in team/group chat; Adaptive Card; Graph task hook |
 | `src/channels/teamsText.ts` | strip bot @mention markup; personal vs channel conversation |
@@ -158,8 +158,11 @@ SCHEDULER — jobs-as-data
 | `src/services/conversations.ts` | per-user, per-channel references (`{user}:teams`, `{user}:imessage`, `{user}:latest`) |
 | `src/services/alerts.ts` | proactive alerts to users and admin |
 | `src/services/activityLog.ts` | event spine: captures, triage, tool/model calls (+tokens), job runs, errors |
-| `src/admin/dashboard.ts` | sectioned `/admin` portal (overview, capabilities, integrations, usage, meetings, jobs, memory) |
+| `src/admin/dashboard.ts` | sectioned `/admin` portal (overview, capabilities, integrations, usage, org, meetings, jobs, memory) |
 | `src/admin/markup.ts` | admin HTML shell, sidebar, shared CSS |
+| `src/org/types.ts` | org directory documents: unit, person, role |
+| `src/org/resolve.ts` | name/alias resolution, search, capped prompt snapshot |
+| `src/org/store.ts` | Cosmos org CRUD + `lookup_org` |
 | `src/tools/registry.ts` | unified tool definitions + dispatch (native + MCP + approval gate) |
 | `src/services/smartsheet.ts` | PMO catalog prompt, PMO routing, inferred sheet match, write-approval copy |
 | `src/meetings/` | Teams meeting ingest worker: Graph delta, VTT parse, Foundry summary, Cosmos/Blob, Adam/Val recall |
@@ -187,7 +190,7 @@ SCHEDULER — jobs-as-data
 | `meetings` | `/organizerId` | 90d | one compact summary + one 1536-dim embedding per meeting. No raw VTT. |
 | `commitments` | `/ownerKey` | 180d (14d after done) | tiny follow-through records (no embeddings) |
 | `meeting-checkpoints` | `/organizerId` | — | Graph deltaLink per organizer + ingest health (`latest` / `_system`) |
-| `transcript-availability` | `/organizerId` | 90d | Graph transcript metadata + manual summary queue state. No VTT or embeddings. |
+| `org` | `/kind` | — | org directory: teams (`unit`), people, named roles. Mandates only; no transcript or Smartsheet copies. |
 
 Blob `meetings/{yyyy-mm}/{id}.md` holds the same structured summary (Cool tier after 1 day, delete after 90). Teams/Graph remains the system of record for transcripts; the agent does not keep VTT. Open commitments can outlive the meeting TTL because they are small JSON, not vectors.
 
@@ -213,7 +216,7 @@ new/updated commitment rows. Raw VTT is never stored. Queue states are
 stale processing claims recover after 15 minutes. Later meetings that restate
 the same owner + work mark the prior commitment done.
 
-Chat tools `recall_meetings`, `list_commitments`, and `complete_commitment` are org-wide but **viewer-gated** to Adam (`bceb24c5-ef85-4301-9ab2-073805d535aa`) and Valerie (`4f323599-0df8-47f7-aa01-46dbb211894c`) unless `MEETING_VIEWERS` is overridden. Other TaskBrain users get a deny string. Personal notes stay user-scoped.
+Chat tools `recall_meetings`, `list_commitments`, `complete_commitment`, and `lookup_org` are org-wide but **viewer-gated** to Adam (`bceb24c5-ef85-4301-9ab2-073805d535aa`) and Valerie (`4f323599-0df8-47f7-aa01-46dbb211894c`) unless `MEETING_VIEWERS` is overridden. Other TaskBrain users get a deny string. Personal notes stay user-scoped.
 
 Tenant setup that Bicep cannot do: `./scripts/setup-meeting-ingest.sh` assigns Graph application roles on the Function managed identity. A Teams admin must then grant a tenant-wide application access policy and set `EnableGraphTranscriptAccess` / `EnableAttributedTranscripts` (MicrosoftTeams PowerShell **7.9.0+**, or Teams admin center → Meetings → Meeting settings → Transcript API access). Existing meeting transcription does **not** enable Graph export.
 
@@ -236,15 +239,19 @@ matches are mentioned, not written. Token: GitHub repo secret
 `SMARTSHEET_API_TOKEN` → App Service; if tools are missing, check the app
 setting, do not mint a new token or re-run bootstrap.
 
-### The two memories (do not merge them)
+### The three stores (do not merge them)
 
 The **second brain** (`notes` + Blob) is the user's knowledge — retrieved on
 demand, never injected wholesale. **Agent self-memory** (`agent-memory`) is
 the agent's operational knowledge (preferences, aliases, tool quirks,
 self-observations) — injected into every agent prompt, hard-capped and
-consolidated so it cannot become context rot. New features that "remember"
-something must pick the correct store by asking: is this the user's knowledge,
-or the agent's knowledge about how to operate?
+consolidated so it cannot become context rot. The **org directory** (`org`)
+is the company structure: teams, people, reporting, and mandates (what
+someone *should* be doing). Admins maintain it on `/admin/org`. Meeting
+commitments remain what people *are* doing. A compact snapshot is injected
+only for meeting viewers; everyone else uses `lookup_org` (same viewer
+gate). New features that "remember" something must pick the store: user
+knowledge, agent operating knowledge, or org structure?
 
 ### Channels (Teams + iMessage)
 
@@ -400,7 +407,7 @@ order-independent and re-runnable.
   **Overview** (today’s KPIs, budget, discovery snapshot), **Capabilities**
   (agent skills + native/MCP tools), **Integrations** (status vs catalog;
   tokens never displayed), **Usage** (models, channels, tools, people,
-  events), **Meetings** (availability + selected summary queue), **Jobs**,
+  events), **Org** (people, teams, named roles), **Meetings** (availability + selected summary queue), **Jobs**,
   **Memory**. Usage separates origin, channel, input mode, and tokens by
   origin; legacy meeting events normalize to internal discovery instead of
   unknown. Auto-refreshes 60s. Add

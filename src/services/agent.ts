@@ -22,6 +22,7 @@ import { RecallHit } from "./brain";
 import { SessionTurn } from "./session";
 import { loadConfig } from "../config";
 import { catalogPromptBlock } from "./smartsheet";
+import { orgPromptBlock } from "../org/store";
 const agentsConfig = loadConfig<{ default: string; profiles: Record<string, unknown> }>("agents");
 
 export type TriageResult =
@@ -200,9 +201,10 @@ export async function runAgent(
   const catalog = name === "pmo" || profile.tools === "*" || (Array.isArray(profile.tools) && profile.tools.some((t) => t.startsWith("smartsheet")))
     ? catalogPromptBlock()
     : "";
+  const orgBlock = await orgPromptBlock(ctx.userId);
 
   const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: profile.persona + lessons + catalog },
+    { role: "system", content: profile.persona + lessons + catalog + orgBlock },
     { role: "user", content: userMessage },
   ];
 

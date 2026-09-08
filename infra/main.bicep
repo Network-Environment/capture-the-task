@@ -322,6 +322,17 @@ resource transcriptAvailabilityColl 'Microsoft.DocumentDB/databaseAccounts/sqlDa
   }
 }
 
+resource orgColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'org'
+  properties: {
+    resource: {
+      id: 'org'
+      partitionKey: { paths: ['/kind'], kind: 'Hash' }
+    }
+  }
+}
+
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: 'appi-${appName}-${suffix}'
   location: location

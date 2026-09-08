@@ -35,6 +35,7 @@ export const SECTIONS = [
   { id: "capabilities", href: "/admin/capabilities", label: "Capabilities" },
   { id: "integrations", href: "/admin/integrations", label: "Integrations" },
   { id: "usage", href: "/admin/usage", label: "Usage" },
+  { id: "org", href: "/admin/org", label: "Org" },
   { id: "meetings", href: "/admin/meetings", label: "Meetings" },
   { id: "jobs", href: "/admin/jobs", label: "Jobs" },
   { id: "memory", href: "/admin/memory", label: "Memory" },
@@ -273,7 +274,22 @@ button[type="submit"]{
   color:#fff;font:inherit;font-weight:650;cursor:pointer;
 }
 button[type="submit"]:disabled{opacity:.45;cursor:not-allowed}
+button.ghost{
+  border:1px solid var(--border);border-radius:10px;padding:.55rem .9rem;background:transparent;
+  color:var(--text);font:inherit;font-weight:650;cursor:pointer;
+}
+button.danger{background:var(--err)}
 input[type="checkbox"]{width:16px;height:16px;accent-color:var(--accent)}
+.form{
+  display:grid;gap:.75rem;padding:1rem 1.15rem;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+}
+.form .span2{grid-column:1 / -1}
+.form label{display:flex;flex-direction:column;gap:.3rem;font-size:11.5px;font-weight:650;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
+.form input,.form select,.form textarea{
+  font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:.5rem .7rem;
+}
+.form textarea{min-height:4.5rem;resize:vertical}
+.form .actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;grid-column:1 / -1}
 
 .cards{display:grid;gap:.85rem;margin-bottom:1.2rem}
 .card{

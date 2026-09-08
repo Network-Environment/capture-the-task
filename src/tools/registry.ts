@@ -12,6 +12,7 @@ import { mcpToolDefinitions, isMcpTool, callMcpTool } from "./mcpClient";
 import { requiresApproval, parkAction } from "../services/approvals";
 import { approvalMessage } from "../services/smartsheet";
 import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
+import { lookupOrg } from "../org/store";
 import type {
   ActivityChannel,
   ActivityInputMode,
@@ -167,6 +168,20 @@ const nativeDefs: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "lookup_org",
+      description:
+        "Look up people, teams, and named roles in the org directory: reporting, mandates " +
+        "(what they should be doing), and open commitment counts (what they are doing).",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string", description: "Name, team, role, or alias" } },
+        required: ["query"],
+      },
+    },
+  },
 ];
 
 export function nativeToolCatalog(): { name: string; description: string }[] {
@@ -258,6 +273,8 @@ export async function dispatch(
         return await listFollowThrough(ctx.userId, args.owner ? String(args.owner) : undefined);
       case "complete_commitment":
         return await markCommitmentDone(ctx.userId, String(args.idOrText));
+      case "lookup_org":
+        return await lookupOrg(ctx.userId, String(args.query ?? ""));
       default:
         return `Unknown tool: ${name}`;
     }

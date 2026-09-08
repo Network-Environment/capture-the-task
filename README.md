@@ -140,9 +140,11 @@ the URL; only people assigned to the **TaskBrain Admin** enterprise app can
 sign in. Teams transcript metadata is discovered automatically, but an admin
 selects which meetings consume tokens for summary/embedding. The page shows
 today's stats, token spend by model/origin, scheduled jobs, agent memory, and
-the live event stream (auto-refresh 60s).
+the live event stream (auto-refresh 60s). **Org** is the maintainable
+directory of teams, people, and roles so the agent can resolve work to
+people without guessing.
 
-## Two memories, on purpose
+## Three stores, on purpose
 
 - **Second brain** (`notes`): the USER's knowledge. Markdown + vectors, recall
   on demand.
@@ -152,6 +154,8 @@ the live event stream (auto-refresh 60s).
   remember_lesson tool when the user corrects it; injected into every agent
   prompt; capped at 40 lessons with automatic cheap-tier consolidation so the
   agent's self-knowledge can't itself become context rot.
+- **Org directory** (`org`): teams, people, reporting, and mandates. Admins
+  edit it on `/admin/org`. Commitments remain follow-through from meetings.
 
 ## Agent topology: profiles now, multi-agent later
 

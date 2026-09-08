@@ -1,5 +1,7 @@
 import type { CommitmentDoc, MeetingAction, MeetingSummary } from "./types";
 import { commitmentTtlSeconds } from "./store";
+import { resolvePerson } from "../org/resolve";
+import type { OrgPerson } from "../org/types";
 
 function tokens(s: string): Set<string> {
   return new Set(
@@ -28,11 +30,16 @@ export function ownerKey(action: Pick<MeetingAction, "ownerId" | "ownerName">): 
 export function findMatch(
   open: CommitmentDoc[],
   action: MeetingAction,
-  attendeeKeys: Set<string>
+  attendeeKeys: Set<string>,
+  personId?: string
 ): CommitmentDoc | undefined {
   const key = ownerKey(action);
   const candidates = open.filter(
-    (c) => c.ownerKey === key || (action.ownerName && c.ownerName.toLowerCase() === action.ownerName.toLowerCase())
+    (c) =>
+      (personId && c.personId === personId) ||
+      c.ownerKey === key ||
+      (personId && c.ownerKey === `person:${personId}`) ||
+      (action.ownerName && c.ownerName.toLowerCase() === action.ownerName.toLowerCase())
   );
   let best: CommitmentDoc | undefined;
   let score = 0;
@@ -66,7 +73,8 @@ export function applyMatches(
   open: CommitmentDoc[],
   summary: MeetingSummary,
   sourceMeetingId: string,
-  sourceTitle: string
+  sourceTitle: string,
+  people: OrgPerson[] = []
 ): { upserts: CommitmentDoc[]; matched: number } {
   const now = new Date().toISOString();
   const ttl = commitmentTtlSeconds();
@@ -76,28 +84,32 @@ export function applyMatches(
   const used = new Set<string>();
 
   for (const action of summary.actions) {
+    const person = resolvePerson(people, action);
     const hit = findMatch(
       open.filter((c) => !used.has(c.id)),
       action,
-      attendeeKeys
+      attendeeKeys,
+      person?.id
     );
     if (hit) {
       used.add(hit.id);
       matched++;
       upserts.push({
         ...hit,
+        personId: person?.id ?? hit.personId,
         status: "done",
         updatedAt: now,
         ttl: 14 * 86400,
       });
       continue;
     }
-    const key = ownerKey(action);
+    const key = person ? `person:${person.id}` : ownerKey(action);
     upserts.push({
       id: `cmt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       ownerKey: key,
-      ownerName: action.ownerName,
-      ownerId: action.ownerId,
+      ownerName: person?.displayName ?? action.ownerName,
+      ownerId: person?.entraId ?? action.ownerId,
+      personId: person?.id,
       text: action.text,
       due: action.due,
       status: "open",

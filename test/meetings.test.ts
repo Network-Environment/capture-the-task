@@ -156,6 +156,40 @@ describe("commitments", () => {
     assert.equal(upserts[0]?.status, "open");
     assert.equal(upserts[0]?.ownerKey, "adam");
   });
+
+  it("collapses alias owners onto the same personId", () => {
+    const people = [
+      {
+        id: "per-val",
+        kind: "person" as const,
+        displayName: "Valerie Moraru",
+        aliases: ["Val"],
+        mandate: "PMO",
+        status: "active" as const,
+        createdAt: "2026-09-08T00:00:00Z",
+        updatedAt: "2026-09-08T00:00:00Z",
+      },
+    ];
+    const first = applyMatches(
+      [],
+      summary({ actions: [{ text: "file the window", ownerName: "Val" }] }),
+      "m1",
+      "Standup",
+      people
+    );
+    assert.equal(first.upserts[0]?.personId, "per-val");
+    assert.equal(first.upserts[0]?.ownerKey, "person:per-val");
+    const second = applyMatches(
+      first.upserts,
+      summary({ actions: [{ text: "file the change window Friday", ownerName: "Valerie Moraru" }] }),
+      "m2",
+      "Standup",
+      people
+    );
+    assert.equal(second.matched, 1);
+    assert.equal(second.upserts[0]?.personId, "per-val");
+    assert.equal(second.upserts[0]?.status, "done");
+  });
 });
 
 describe("authorization", () => {

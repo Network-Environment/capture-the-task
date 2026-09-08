@@ -44,6 +44,7 @@ export interface CommitmentDoc {
   ownerKey: string;
   ownerName: string;
   ownerId?: string;
+  personId?: string;
   text: string;
   due?: string;
   status: CommitmentStatus;

@@ -9,6 +9,7 @@ import {
   renderMemory,
   renderOverview,
   renderUsage,
+  renderOrg,
   meetingCsrfScope,
   meetingCsrfToken,
   verifyMeetingCsrf,
@@ -47,6 +48,8 @@ describe("admin portal", () => {
     assert.match(html, /href="\/admin\/capabilities"/);
     assert.match(html, /href="\/admin\/integrations"/);
     assert.match(html, /href="\/admin\/usage"/);
+    assert.match(html, /href="\/admin\/org"/);
+    assert.match(html, /0 people, 0 teams/);
     assert.match(html, /TaskBrain ops/);
     assert.match(html, /No discovery run yet/);
     assert.doesNotMatch(html, /No meetings in the 90-day index yet/);
@@ -62,6 +65,7 @@ describe("admin portal", () => {
       { name: "smartsheet__update_rows", description: "Update rows" },
     ]);
     assert.match(tools, /save_note/);
+    assert.match(tools, /lookup_org/);
     assert.match(tools, /smartsheet__search/);
     assert.match(tools, /approval required/);
   });
@@ -195,5 +199,38 @@ describe("admin portal", () => {
     assert.match(usage, /Activity by origin/);
     assert.match(usage, /Captures by input mode/);
     assert.match(usage, /Recent events/);
+  });
+
+  it("org people tab has CSRF-bound save form and no bulk-delete", () => {
+    const html = renderOrg("local", "people", {
+      units: [],
+      people: [
+        {
+          id: "per-val",
+          kind: "person",
+          displayName: "Valerie Moraru",
+          aliases: ["Val"],
+          mandate: "Keep the register honest",
+          status: "active",
+          createdAt: "2026-09-08T00:00:00Z",
+          updatedAt: "2026-09-08T00:00:00Z",
+        },
+      ],
+      roles: [],
+    });
+    assert.match(html, /href="\/admin\/org\?tab=teams"/);
+    assert.match(html, /href="\/admin\/org\?tab=roles"/);
+    assert.match(html, /action="\/admin\/org"/);
+    assert.match(html, /name="_csrf"/);
+    assert.match(html, /Valerie Moraru/);
+    assert.match(html, /Save person/);
+    assert.match(html, /Archive/);
+    assert.doesNotMatch(html, /Delete all/);
+    const teams = renderOrg("local", "teams", { units: [], people: [], roles: [] });
+    assert.match(teams, /Save team/);
+    const roles = renderOrg("local", "roles", { units: [], people: [], roles: [] });
+    assert.match(roles, /Save role/);
+    const scope = meetingCsrfScope(["org:people", "per-val"]);
+    assert.equal(verifyMeetingCsrf(meetingCsrfToken(scope), scope), true);
   });
 });
