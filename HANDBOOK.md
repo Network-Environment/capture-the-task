@@ -570,6 +570,12 @@ logging already support it. Do not pay this tax early.
   (Tavily `tvly-…` Bearer token from [app.tavily.com](https://app.tavily.com/);
   or Brave / Bing if `WEB_SEARCH_ENGINE` is `brave`/`bing`) and redeploy so
   Bicep copies it.
+- **CI fails `AuthorizationFailed` on `Microsoft.X/register/action`:** provider
+  registration is subscription scope and the CI identity only has rights on
+  `rg-taskbrain`. Register once as an owner:
+  `az provider register -n Microsoft.App --wait` (same for
+  `Microsoft.OperationalInsights`, `Microsoft.ManagedIdentity`), or re-run
+  `scripts/bootstrap.sh`. Do not add provider registration to the pipeline.
 - **Jobs not firing:** orchestrator logs each run; check `jobs` docs'
   `nextRun`/`enabled`; remember one-offs self-disable and claims push
   `nextRun` forward ~10 min while running.

@@ -45,11 +45,6 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Register Container Apps providers
-        run: |
-          az provider register -n Microsoft.App --only-show-errors
-          az provider register -n Microsoft.OperationalInsights --only-show-errors
-          az provider register -n Microsoft.ManagedIdentity --only-show-errors
       - name: Deploy Bicep (infra + runtime settings + container registry)
         id: deploy
         env:
@@ -180,3 +175,6 @@ jobs:
 #              WEB_SEARCH_API_KEY (Tavily tvly- key by default; Brave or Bing if WEB_SEARCH_ENGINE is set)
 # 4. Bicep creates a Basic ACR. The App Service system identity has AcrPull;
 #    CI builds in ACR via OIDC and deploys immutable Git SHA image tags.
+# 5. Resource providers are registered out of band by bootstrap.sh. CI only has
+#    rights on the resource group, and `az provider register` is subscription
+#    scope, so it cannot self-heal a missing provider.
