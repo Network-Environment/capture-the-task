@@ -35,6 +35,7 @@ import type {
   TranscriptAvailabilityDoc,
 } from "./types";
 import { capTranscript, isTooShort, parseVtt } from "./vtt";
+import { projectCommitment, projectMeeting, projectPerson } from "../graph/project";
 
 const ORGANIZERS_PER_RUN = Number(process.env.MEETING_ORGANIZERS_PER_RUN ?? 25);
 const BACKFILL_DAYS = 30;
@@ -136,6 +137,23 @@ export async function processAvailableTranscript(
   const people = (await listOrgDirectory().catch(() => ({ people: [] }))).people;
   const { upserts, matched } = applyMatches(open, summary, id, summary.title, people);
   for (const c of upserts) await upsertCommitment(c);
+
+  // Graph projection is derived and repairable by the backfill. A transient
+  // graph failure must not discard an otherwise valid meeting summary.
+  try {
+    const ownerIds = new Set(upserts.map((commitment) => commitment.personId).filter(Boolean));
+    const graphErrors: string[] = [];
+    for (const person of people.filter((candidate) => ownerIds.has(candidate.id))) {
+      graphErrors.push(...(await projectPerson(person)).errors);
+    }
+    graphErrors.push(...(await projectMeeting(doc)).errors);
+    for (const commitment of upserts) {
+      graphErrors.push(...(await projectCommitment(commitment)).errors);
+    }
+    if (graphErrors.length) console.error("[graph] meeting projection incomplete:", graphErrors);
+  } catch (err) {
+    console.error("[graph] meeting projection failed (non-fatal):", err);
+  }
 
   for (const text of orgLessonTexts(summary, matched)) {
     await rememberLesson(ORG_LESSON_USER, "self", text);

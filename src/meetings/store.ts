@@ -298,6 +298,20 @@ export async function listCommitmentsForDash(limit = 40): Promise<CommitmentDoc[
   return resources as CommitmentDoc[];
 }
 
+export async function listAllMeetings(): Promise<MeetingDoc[]> {
+  const { resources } = await meetings.items
+    .query<MeetingDoc>({ query: "SELECT * FROM c" })
+    .fetchAll();
+  return resources;
+}
+
+export async function listAllCommitments(): Promise<CommitmentDoc[]> {
+  const { resources } = await commitments.items
+    .query<CommitmentDoc>({ query: "SELECT * FROM c" })
+    .fetchAll();
+  return resources;
+}
+
 export function renderMeetingMarkdown(m: MeetingDoc): string {
   const fm = [
     "---",

@@ -251,23 +251,27 @@ export async function runAgent(
 export async function answerQuestion(
   question: string,
   hits: RecallHit[],
-  attribution: Partial<ActivityAttribution> = {}
+  attribution: Partial<ActivityAttribution> = {},
+  graphContext = ""
 ): Promise<string> {
-  if (!hits.length) return "Nothing in the brain matches that yet.";
+  if (!hits.length && !graphContext) return "Nothing in the brain or execution graph matches that yet.";
   const res = await route("synthesis", [
     {
       role: "system",
       content:
-        "Answer the user's question strictly from the provided notes. Cite note " +
-        "titles in **bold**. If the notes don't answer it, say so. Be concise.",
+        "Answer strictly from the provided private notes and shared execution graph. " +
+        "Cite note titles in **bold** and graph items by title. Distinguish planned, open, " +
+        "blocked, and done work. If the sources don't answer it, say so. Be concise.",
     },
     {
       role: "user",
       content:
-        hits
-          .map((h) => `[${h.kind}] ${h.title} (${h.createdAt.slice(0, 10)}):\n${h.body}`)
-          .join("\n---\n") + `\n\nQuestion: ${question}`,
+        `PRIVATE NOTES:\n${
+          hits
+            .map((h) => `[${h.kind}] ${h.title} (${h.createdAt.slice(0, 10)}):\n${h.body}`)
+            .join("\n---\n") || "none"
+        }\n\nSHARED EXECUTION GRAPH:\n${graphContext || "none"}\n\nQuestion: ${question}`,
     },
-  ], { attribution: { ...attribution, trigger: "answer_notes" } });
+  ], { attribution: { ...attribution, trigger: "answer_knowledge" } });
   return res.choices[0]?.message?.content ?? "No answer generated.";
 }

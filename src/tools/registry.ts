@@ -27,6 +27,19 @@ import {
   webSearch,
   type ResearchBudget,
 } from "./webResearch";
+import {
+  graphEnabled,
+  graphWritesEnabled,
+  getGraphNode,
+  patchGraphNode,
+  putGraphEdge,
+  putGraphNode,
+  searchExecutionGraph,
+  setGraphSingleRelationship,
+} from "../graph/store";
+import { deterministicGraphId } from "../graph/validation";
+import type { GraphEdgeType, GraphNodeStatus } from "../graph/types";
+import { canViewMeetings, denyMeetings } from "../meetings/access";
 
 export interface ToolContext {
   userId: string;
@@ -210,17 +223,135 @@ const nativeDefs: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "search_execution_graph",
+      description:
+        "Search TaskBrain's shared execution graph, then expand connected projects, tasks, people, meetings, and evidence. Use for status, ownership, blockers, dependencies, and why work exists.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          limit: { type: "number", description: "Maximum nodes, 1-100 (default 40)" },
+          depth: { type: "number", description: "Relationship hops, 0-2 (default 1)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_graph_project",
+      description: "Create an authoritative project in TaskBrain's shared execution graph.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          description: { type: "string" },
+          status: { type: "string", enum: ["planned", "active", "blocked", "done", "cancelled"] },
+          ownerPersonId: { type: "string", description: "Org person id, if known" },
+          due: { type: "string", description: "ISO-8601 due date" },
+        },
+        required: ["title"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_graph_task",
+      description:
+        "Create an authoritative task in TaskBrain's shared execution graph, optionally linked to a project, owner, and dependencies.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          description: { type: "string" },
+          status: { type: "string", enum: ["open", "active", "blocked", "done", "cancelled"] },
+          projectId: { type: "string" },
+          ownerPersonId: { type: "string", description: "Org person id, if known" },
+          due: { type: "string", description: "ISO-8601 due date" },
+          dependsOn: { type: "array", items: { type: "string" } },
+        },
+        required: ["title"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_graph_item",
+      description: "Update an execution graph project or task after identifying its exact graph id.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          description: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["planned", "open", "active", "blocked", "done", "cancelled", "stale"],
+          },
+          ownerPersonId: { type: "string" },
+          due: { type: "string" },
+          expectedVersion: { type: "number" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "propose_graph_relationship",
+      description:
+        "Propose a non-destructive relationship between existing graph nodes. Agent-inferred links remain pending until a team member accepts them.",
+      parameters: {
+        type: "object",
+        properties: {
+          fromId: { type: "string" },
+          toId: { type: "string" },
+          type: {
+            type: "string",
+            enum: ["part_of", "assigned_to", "depends_on", "originated_from", "supports", "related_to"],
+          },
+          evidence: { type: "string" },
+          confidence: { type: "number" },
+        },
+        required: ["fromId", "toId", "type", "evidence"],
+      },
+    },
+  },
 ];
 
 export function nativeToolCatalog(): { name: string; description: string }[] {
-  return nativeDefs.map((d) => ({
+  return enabledNativeDefs().map((d) => ({
     name: d.function.name,
     description: d.function.description ?? "",
   }));
 }
 
 export async function allToolDefinitions(): Promise<ChatCompletionTool[]> {
-  return [...nativeDefs, ...(await mcpToolDefinitions())];
+  return [...enabledNativeDefs(), ...(await mcpToolDefinitions())];
+}
+
+const graphReadTools = new Set(["search_execution_graph"]);
+const graphWriteTools = new Set([
+  "create_graph_project",
+  "create_graph_task",
+  "update_graph_item",
+  "propose_graph_relationship",
+]);
+
+function enabledNativeDefs(): ChatCompletionTool[] {
+  return nativeDefs.filter((tool) => {
+    const name = tool.function.name;
+    if (graphReadTools.has(name)) return graphEnabled();
+    if (graphWriteTools.has(name)) return graphEnabled() && graphWritesEnabled();
+    return true;
+  });
 }
 
 export async function dispatch(
@@ -323,11 +454,202 @@ export async function dispatch(
         if (capped) return capped;
         return await webSearch(String(args.query ?? ""), args.count as number | undefined);
       }
+      case "search_execution_graph": {
+        if (!canViewMeetings(ctx.userId)) return denyMeetings();
+        if (!graphEnabled()) return "Execution graph is disabled.";
+        const graph = await searchExecutionGraph(
+          String(args.query ?? ""),
+          ctx.userId,
+          { limit: Number(args.limit ?? 40), depth: Number(args.depth ?? 1) },
+          ctx
+        );
+        if (!graph.nodes.length) return "No matching execution graph items.";
+        const edgeLines = graph.edges.map(
+          (edge) => `${edge.fromId} -[${edge.type}]-> ${edge.toId}`
+        );
+        return [
+          ...graph.nodes.map(
+            (node) =>
+              `${node.id} v${node.version} | ${node.type} | ${node.status ?? "n/a"} | ${node.title}` +
+              `${node.ownerPersonId ? ` | owner ${node.ownerPersonId}` : ""}` +
+              `${node.due ? ` | due ${node.due}` : ""}` +
+              `${node.description ? `\n${node.description.slice(0, 500)}` : ""}`
+          ),
+          ...(edgeLines.length ? ["Relationships:", ...edgeLines] : []),
+          ...(graph.truncated ? ["Result truncated; narrow the query."] : []),
+        ].join("\n");
+      }
+      case "create_graph_project": {
+        if (!canViewMeetings(ctx.userId)) return denyMeetings();
+        if (!graphWritesEnabled()) return "Execution graph writes are disabled during read-only rollout.";
+        const ownerPersonId = args.ownerPersonId
+          ? normalizePersonGraphId(String(args.ownerPersonId))
+          : undefined;
+        await assertGraphTargets([ownerPersonId], ctx.userId);
+        const node = await putGraphNode(
+          {
+            type: "project",
+            title: String(args.title ?? ""),
+            description: args.description ? String(args.description) : undefined,
+            status: (args.status as GraphNodeStatus) ?? "planned",
+            ownerPersonId,
+            due: args.due ? String(args.due) : undefined,
+            provenance: "agent",
+          },
+          ctx.userId,
+          ctx
+        );
+        if (ownerPersonId) {
+          await setGraphSingleRelationship(
+            node.id,
+            "assigned_to",
+            ownerPersonId,
+            ctx.userId,
+            "agent",
+            "Explicit owner supplied when the project was created."
+          );
+        }
+        return `Created project ${node.id} v${node.version}: ${node.title}`;
+      }
+      case "create_graph_task": {
+        if (!canViewMeetings(ctx.userId)) return denyMeetings();
+        if (!graphWritesEnabled()) return "Execution graph writes are disabled during read-only rollout.";
+        const ownerPersonId = args.ownerPersonId
+          ? normalizePersonGraphId(String(args.ownerPersonId))
+          : undefined;
+        const dependencies = ((args.dependsOn as string[] | undefined) ?? []).map(String);
+        await assertGraphTargets(
+          [ownerPersonId, args.projectId ? String(args.projectId) : undefined, ...dependencies],
+          ctx.userId
+        );
+        const node = await putGraphNode(
+          {
+            type: "task",
+            title: String(args.title ?? ""),
+            description: args.description ? String(args.description) : undefined,
+            status: (args.status as GraphNodeStatus) ?? "open",
+            ownerPersonId,
+            due: args.due ? String(args.due) : undefined,
+            provenance: "agent",
+          },
+          ctx.userId,
+          ctx
+        );
+        await setGraphSingleRelationship(
+          node.id,
+          "part_of",
+          args.projectId ? String(args.projectId) : undefined,
+          ctx.userId,
+          "agent",
+          "Explicit project supplied when the task was created."
+        );
+        await setGraphSingleRelationship(
+          node.id,
+          "assigned_to",
+          ownerPersonId,
+          ctx.userId,
+          "agent",
+          "Explicit owner supplied when the task was created."
+        );
+        const dependencyEdges: { toId: string; type: GraphEdgeType; evidence: string }[] =
+          dependencies.map((toId) => ({
+            toId,
+            type: "depends_on" as const,
+            evidence: "Explicit dependency supplied when the task was created.",
+          }));
+        for (const edge of dependencyEdges) {
+          await putGraphEdge(
+            {
+              fromId: node.id,
+              toId: edge.toId,
+              type: edge.type,
+              reviewState: "accepted",
+              provenance: "agent",
+              evidence: edge.evidence,
+            },
+            ctx.userId
+          );
+        }
+        return `Created task ${node.id} v${node.version}: ${node.title}`;
+      }
+      case "update_graph_item": {
+        if (!canViewMeetings(ctx.userId)) return denyMeetings();
+        if (!graphWritesEnabled()) return "Execution graph writes are disabled during read-only rollout.";
+        const current = await getGraphNode(String(args.id ?? ""), ctx.userId);
+        if (!current) return "Graph item not found.";
+        if (current.source && current.source.kind !== "graph") {
+          return "Projected graph items are read-only; update the source commitment, meeting, or org record.";
+        }
+        const patch: Parameters<typeof patchGraphNode>[1] = {};
+        if ("title" in args) patch.title = String(args.title ?? "");
+        if ("description" in args) patch.description = args.description ? String(args.description) : null;
+        if ("status" in args) patch.status = args.status as GraphNodeStatus;
+        if ("ownerPersonId" in args) {
+          patch.ownerPersonId = args.ownerPersonId
+            ? normalizePersonGraphId(String(args.ownerPersonId))
+            : null;
+          await assertGraphTargets(
+            [patch.ownerPersonId ?? undefined],
+            ctx.userId
+          );
+        }
+        if ("due" in args) patch.due = args.due ? String(args.due) : null;
+        const node = await patchGraphNode(
+          String(args.id ?? ""),
+          patch,
+          ctx.userId,
+          args.expectedVersion === undefined ? undefined : Number(args.expectedVersion),
+          ctx
+        );
+        if ("ownerPersonId" in args) {
+          await setGraphSingleRelationship(
+            node.id,
+            "assigned_to",
+            args.ownerPersonId ? normalizePersonGraphId(String(args.ownerPersonId)) : undefined,
+            ctx.userId,
+            "agent",
+            "Explicit owner supplied when the item was updated."
+          );
+        }
+        return `Updated ${node.id} v${node.version}: ${node.title} (${node.status ?? "no status"})`;
+      }
+      case "propose_graph_relationship": {
+        if (!canViewMeetings(ctx.userId)) return denyMeetings();
+        if (!graphWritesEnabled()) return "Execution graph writes are disabled during read-only rollout.";
+        const edge = await putGraphEdge(
+          {
+            fromId: String(args.fromId ?? ""),
+            toId: String(args.toId ?? ""),
+            type: args.type as GraphEdgeType,
+            reviewState: "proposed",
+            provenance: "agent",
+            evidence: String(args.evidence ?? ""),
+            confidence: args.confidence === undefined ? undefined : Number(args.confidence),
+          },
+          ctx.userId
+        );
+        return `Proposed ${edge.type} relationship ${edge.id} for team review.`;
+      }
       default:
         return `Unknown tool: ${name}`;
     }
   } catch (err) {
     // Tool errors go back to the model as text so it can recover or report.
     return `Tool ${name} failed: ${(err as Error).message}`;
+  }
+}
+
+function normalizePersonGraphId(id: string): string {
+  return id.startsWith("org-person:") ? id : deterministicGraphId("org-person", id);
+}
+
+async function assertGraphTargets(
+  ids: (string | undefined)[],
+  userId: string
+): Promise<void> {
+  for (const id of ids.filter(Boolean) as string[]) {
+    if (!(await getGraphNode(id, userId))) {
+      throw new Error(`Relationship target does not exist: ${id}`);
+    }
   }
 }

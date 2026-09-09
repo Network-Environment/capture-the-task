@@ -35,6 +35,7 @@ export const SECTIONS = [
   { id: "capabilities", href: "/admin/capabilities", label: "Capabilities" },
   { id: "integrations", href: "/admin/integrations", label: "Integrations" },
   { id: "usage", href: "/admin/usage", label: "Usage" },
+  { id: "graph", href: "/admin/graph", label: "Execution graph" },
   { id: "org", href: "/admin/org", label: "Org" },
   { id: "meetings", href: "/admin/meetings", label: "Meetings" },
   { id: "jobs", href: "/admin/jobs", label: "Jobs" },
@@ -68,6 +69,8 @@ export function renderShell(opts: {
   subtitle: string;
   body: string;
   notFound?: boolean;
+  autoRefresh?: boolean;
+  wide?: boolean;
 }): string {
   const { signedIn, title, subtitle, body } = opts;
   const nav = SECTIONS.map((s) => {
@@ -78,7 +81,7 @@ export function renderShell(opts: {
   return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="60">
+${opts.autoRefresh === false ? "" : '<meta http-equiv="refresh" content="60">'}
 <title>${esc(title)} · TaskBrain admin</title>
 <script>(function(){try{var t=localStorage.getItem("tb-theme");if(t){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();</script>
 <style>${ADMIN_CSS}</style></head><body>
@@ -91,7 +94,7 @@ export function renderShell(opts: {
     </div>
   </div>
   <div class="spacer"></div>
-  <div class="live"><span class="dot"></span>auto-refresh 60s</div>
+  <div class="live"><span class="dot"></span>${opts.autoRefresh === false ? "interactive" : "auto-refresh 60s"}</div>
   <button class="iconbtn" id="theme" type="button" title="Toggle theme" aria-label="Toggle theme">
     <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
     <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
@@ -106,7 +109,7 @@ export function renderShell(opts: {
     <p class="nav-label">Portal</p>
     ${nav}
   </aside>
-  <main>${opts.notFound ? `<section class="panel"><h2>Not found</h2><p class="pad muted">Unknown section.</p></section>` : body}</main>
+  <main${opts.wide ? ' class="wide"' : ""}>${opts.notFound ? `<section class="panel"><h2>Not found</h2><p class="pad muted">Unknown section.</p></section>` : body}</main>
 </div>
 <script>
 document.getElementById("theme").addEventListener("click", function(){
@@ -229,6 +232,7 @@ header{
 .nav-item:hover{background:var(--surface);color:var(--text)}
 .nav-item.on{background:var(--accent-soft);color:var(--accent)}
 main{flex:1;min-width:0;padding:1.4rem 1.5rem 4rem;max-width:1080px}
+main.wide{max-width:none}
 
 .lede{margin:0 0 1.15rem;color:var(--muted);font-size:13.5px;max-width:62ch}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.85rem;margin-bottom:1.4rem}
@@ -291,6 +295,37 @@ input[type="checkbox"]{width:16px;height:16px;accent-color:var(--accent)}
 .form textarea{min-height:4.5rem;resize:vertical}
 .form .actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;grid-column:1 / -1}
 
+.graph-toolbar{
+  display:flex;gap:.55rem;align-items:center;flex-wrap:wrap;margin:0 0 1rem;
+}
+.graph-toolbar input,.graph-toolbar select,.graph-edge-form input,.graph-edge-form select{
+  font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:.5rem .7rem;
+}
+.graph-toolbar input[type="search"]{min-width:280px;flex:1}
+.graph-check{display:flex;align-items:center;gap:.35rem;color:var(--muted);font-size:13px}
+.graph-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:1rem}
+.graph-canvas-panel{min-height:68vh}
+#execution-graph{height:68vh;min-height:520px;background:var(--surface-2)}
+.graph-detail{max-height:68vh;overflow:auto}
+.graph-detail h3{margin:0 0 .5rem}
+.graph-detail p{overflow-wrap:anywhere}
+.graph-meta{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:.75rem 0}
+.graph-relation{padding:.55rem 0;border-bottom:1px solid var(--border);display:flex;gap:.35rem;align-items:center;flex-wrap:wrap}
+.graph-review{display:flex;gap:.3rem;margin-left:auto}
+.graph-review button{font-size:12px;padding:.3rem .5rem}
+.graph-edge-form{display:grid;gap:.45rem;margin-top:.6rem}
+.graph-list-panel{margin-top:1rem}
+.graph-accessible-list{margin:0;padding-left:1.2rem;columns:2}
+.graph-accessible-list li{break-inside:avoid;margin:.35rem 0}
+.link-button{border:0;background:none;color:var(--accent);font:inherit;padding:0;cursor:pointer;text-decoration:underline}
+.graph-error{color:var(--err)}
+dialog{
+  width:min(680px,calc(100vw - 2rem));padding:0;border:1px solid var(--border);
+  border-radius:var(--radius);background:var(--surface);color:var(--text);box-shadow:var(--shadow);
+}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+
 .cards{display:grid;gap:.85rem;margin-bottom:1.2rem}
 .card{
   background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
@@ -334,11 +369,15 @@ td.share{min-width:150px}
   .nav-label{display:none}
   .nav-item{flex:none;margin:0;white-space:nowrap}
   main{padding:1.1rem 1rem 3rem}
+  .graph-layout{grid-template-columns:1fr}
+  .graph-detail{max-height:none}
 }
 @media (max-width:640px){
   .head-in{padding:.7rem 1rem;gap:.6rem}
   .brand p,.live{display:none}
   td,th{padding:.55rem .8rem}
   td.clip{max-width:200px}
+  .graph-toolbar input[type="search"]{min-width:100%}
+  .graph-accessible-list{columns:1}
 }
 `;

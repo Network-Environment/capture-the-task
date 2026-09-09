@@ -14,6 +14,9 @@ import {
   meetingCsrfToken,
   verifyMeetingCsrf,
   queryOf,
+  renderExecutionGraph,
+  readExecutionGraphApi,
+  mutateExecutionGraphApi,
 } from "../src/admin/dashboard";
 import type { DayStats, UsageBreakdown } from "../src/services/activityLog";
 import type { CommitmentDoc, MeetingDoc } from "../src/meetings/types";
@@ -38,7 +41,90 @@ const emptyUsage: UsageBreakdown = {
   tokensByOrigin: {},
 };
 
+function responseRecorder(): {
+  res: { send: (status: number, body?: unknown) => void; header: () => void };
+  status: () => number | undefined;
+} {
+  let code: number | undefined;
+  return {
+    res: {
+      send: (status) => {
+        code = status;
+      },
+      header: () => {},
+    },
+    status: () => code,
+  };
+}
+
 describe("admin portal", () => {
+  it("renders the execution graph without destructive page refresh", () => {
+    const prior = process.env.EXECUTION_GRAPH_ENABLED;
+    const priorWrites = process.env.EXECUTION_GRAPH_WRITES_ENABLED;
+    process.env.EXECUTION_GRAPH_ENABLED = "true";
+    process.env.EXECUTION_GRAPH_WRITES_ENABLED = "false";
+    try {
+      const html = renderExecutionGraph("local");
+      assert.match(html, /id="execution-graph"/);
+      assert.match(html, /\/admin\/api\/graph/);
+      assert.match(html, /\/admin\/assets\/graph\.js/);
+      assert.match(html, /Accessible execution list/);
+      assert.doesNotMatch(html, /http-equiv="refresh"/);
+      assert.match(html, /id="graph-new-task" type="button" disabled/);
+    } finally {
+      if (prior === undefined) delete process.env.EXECUTION_GRAPH_ENABLED;
+      else process.env.EXECUTION_GRAPH_ENABLED = prior;
+      if (priorWrites === undefined) delete process.env.EXECUTION_GRAPH_WRITES_ENABLED;
+      else process.env.EXECUTION_GRAPH_WRITES_ENABLED = priorWrites;
+    }
+  });
+
+  it("protects graph APIs with Easy Auth, same-origin, and CSRF before data access", async () => {
+    const priorWebsite = process.env.WEBSITE_INSTANCE_ID;
+    const priorGraph = process.env.EXECUTION_GRAPH_ENABLED;
+    const priorWrites = process.env.EXECUTION_GRAPH_WRITES_ENABLED;
+    try {
+      process.env.EXECUTION_GRAPH_ENABLED = "true";
+      process.env.EXECUTION_GRAPH_WRITES_ENABLED = "true";
+      process.env.WEBSITE_INSTANCE_ID = "production";
+      const unauth = responseRecorder();
+      await readExecutionGraphApi(
+        {
+          header: () => undefined,
+          getQuery: () => "",
+        } as never,
+        unauth.res as never
+      );
+      assert.equal(unauth.status(), 401);
+
+      delete process.env.WEBSITE_INSTANCE_ID;
+      const crossOrigin = responseRecorder();
+      await mutateExecutionGraphApi(
+        {
+          header: (name: string) =>
+            name === "origin" ? "https://evil.example" : name === "host" ? "localhost" : undefined,
+          body: {},
+        } as never,
+        crossOrigin.res as never
+      );
+      assert.equal(crossOrigin.status(), 403);
+
+      const badCsrf = responseRecorder();
+      await mutateExecutionGraphApi(
+        { header: () => undefined, body: { scope: "graph:mutate", csrf: "bad" } } as never,
+        badCsrf.res as never
+      );
+      assert.equal(badCsrf.status(), 403);
+    } finally {
+      if (priorWebsite === undefined) delete process.env.WEBSITE_INSTANCE_ID;
+      else process.env.WEBSITE_INSTANCE_ID = priorWebsite;
+      if (priorGraph === undefined) delete process.env.EXECUTION_GRAPH_ENABLED;
+      else process.env.EXECUTION_GRAPH_ENABLED = priorGraph;
+      if (priorWrites === undefined) delete process.env.EXECUTION_GRAPH_WRITES_ENABLED;
+      else process.env.EXECUTION_GRAPH_WRITES_ENABLED = priorWrites;
+    }
+  });
+
   it("overview has a sidebar and does not dump recent meetings", () => {
     const html = renderOverview({
       stats: emptyStats,
@@ -49,6 +135,7 @@ describe("admin portal", () => {
     assert.match(html, /href="\/admin\/capabilities"/);
     assert.match(html, /href="\/admin\/integrations"/);
     assert.match(html, /href="\/admin\/usage"/);
+    assert.match(html, /href="\/admin\/graph"/);
     assert.match(html, /href="\/admin\/org"/);
     assert.match(html, /0 people, 0 teams/);
     assert.match(html, /TaskBrain ops/);

@@ -12,11 +12,13 @@ the **Invariants** section true in every change you make.
 TaskBrain is a personal/team capture assistant for a Microsoft 365
 organization (Tristan Energy). A user sends a text message or **voice memo to
 a Teams bot** (desktop or mobile). The system transcribes, classifies, and
-acts: tasks go to Microsoft To Do, ideas and references become markdown notes
+acts: personal tasks go to Microsoft To Do, ideas and references become markdown notes
 in an Obsidian-compatible "second brain," questions are answered by vector
 recall over that brain, and action requests (Smartsheet/PMO operations,
 scheduled jobs) run through an agentic tool loop. Confirmation comes back as
-an Adaptive Card. Scheduled jobs deliver results proactively.
+an Adaptive Card. Shared projects and tasks live in TaskBrain's execution
+graph, where the agent and team use the same ownership, dependency, status,
+meeting, and evidence relationships. Scheduled jobs deliver results proactively.
 
 Primary external integration: **Smartsheet** (the org's PMO tool) via its
 hosted MCP server. The integration layer is generic MCP — more services are
@@ -57,6 +59,10 @@ flowchart TD
   SUM --> MTG[(meetings + commitments)]
   MTG --> ADM
   MTG --> AG
+  MTG --> KG[(execution graph · nodes + edges)]
+  REG --> KG
+  KG --> ADM
+  KG --> AG
 ```
 
 ### How everything is linked on deploy (the wiring map)
@@ -124,9 +130,8 @@ Outbound {title, body, tags} → adapter renders (Adaptive Card / plain text)
 AGENT LOOP — agent.ts::runAgent
    profile (config/agents.json): persona + tool allowlist + model route
    + lessons from agent self-memory injected into system prompt
-   tools = native (save_note, recall_notes, schedule_job, list_jobs,
-           cancel_job, remember_lesson, recall_meetings, list_commitments,
-           complete_commitment) + MCP tools (config-driven discovery)
+   tools = native (brain, scheduler, meetings/org, execution graph,
+           web_search) + MCP tools (config-driven discovery)
    ≤8 tool rounds; write-listed MCP tools PARK for human approval instead
    of executing.
 
@@ -162,8 +167,10 @@ SCHEDULER — jobs-as-data
 | `src/services/conversations.ts` | per-user, per-channel references (`{user}:teams`, `{user}:imessage`, `{user}:latest`) |
 | `src/services/alerts.ts` | proactive alerts to users and admin |
 | `src/services/activityLog.ts` | event spine: captures, triage, tool/model calls (+tokens), job runs, errors |
-| `src/admin/dashboard.ts` | sectioned `/admin` portal (overview, capabilities, integrations, usage, org, meetings, jobs, memory) |
+| `src/admin/dashboard.ts` | sectioned `/admin` portal + authenticated execution graph JSON API |
 | `src/admin/markup.ts` | admin HTML shell, sidebar, shared CSS |
+| `src/admin/client/graph.ts` | bundled Cytoscape execution map, filters, editor, and proposal review |
+| `src/graph/` | graph types, validation, Cosmos repository/traversal, source projection |
 | `src/org/types.ts` | org directory documents: unit, person, role |
 | `src/org/resolve.ts` | name/alias resolution, search, capped prompt snapshot |
 | `src/org/store.ts` | Cosmos org CRUD + `lookup_org` |
@@ -177,6 +184,7 @@ SCHEDULER — jobs-as-data
 | `infra/main.bicep` | all Azure resources |
 | `Dockerfile` | multi-stage production image (Node 22, non-root runtime) |
 | `scripts/bootstrap.sh` | one-time Entra/M365 setup (idempotent) |
+| `scripts/backfill-graph.ts` | dry-run-by-default shared-source graph migration |
 | `.github/workflows/deploy.yml` | CI/CD via OIDC |
 | `teams-app/manifest.json` | Teams app package (needs color.png 192², outline.png 32²) |
 
@@ -195,6 +203,8 @@ SCHEDULER — jobs-as-data
 | `commitments` | `/ownerKey` | 180d (14d after done) | tiny follow-through records (no embeddings) |
 | `meeting-checkpoints` | `/organizerId` | — | Graph deltaLink per organizer + ingest health (`latest` / `_system`) |
 | `org` | `/kind` | — | org directory: teams (`unit`), people, named roles. Mandates only; no transcript or Smartsheet copies. |
+| `graph-nodes` | `/workspaceId` | source-derived only | shared projects/tasks plus projected people, meetings, and evidence; 1536-dim embedding for hybrid recall |
+| `graph-edges` | `/workspaceId` | source-derived only | typed relationships and review state (`accepted`, `proposed`, `rejected`) |
 
 Blob `meetings/{yyyy-mm}/{id}.md` holds the same structured summary (Cool tier after 1 day, delete after 90). Teams/Graph remains the system of record for transcripts; the agent does not keep VTT. Open commitments can outlive the meeting TTL because they are small JSON, not vectors.
 
@@ -243,7 +253,7 @@ matches are mentioned, not written. Token: GitHub repo secret
 `SMARTSHEET_API_TOKEN` → App Service; if tools are missing, check the app
 setting, do not mint a new token or re-run bootstrap.
 
-### The three stores (do not merge them)
+### The four stores (do not merge them)
 
 The **second brain** (`notes` + Blob) is the user's knowledge — retrieved on
 demand, never injected wholesale. **Agent self-memory** (`agent-memory`) is
@@ -255,7 +265,24 @@ someone *should* be doing). Admins maintain it on `/admin/org`. Meeting
 commitments remain what people *are* doing. A compact snapshot is injected
 only for meeting viewers; everyone else uses `lookup_org` (same viewer
 gate). New features that "remember" something must pick the store: user
-knowledge, agent operating knowledge, or org structure?
+knowledge, agent operating knowledge, org structure, or shared execution?
+
+The **execution graph** (`graph-nodes` + `graph-edges`) is shared operational
+state: projects, tasks, owners, dependencies, source meetings, and evidence.
+Graph projects/tasks are authoritative once graph writes are enabled. Org
+people, meetings, and commitments remain authoritative in their existing
+stores and are projected with deterministic IDs (`org-person:*`, `meeting:*`,
+`commitment:*`). A normal personal task capture remains a private note/To Do
+item; it is never silently published into the shared graph. Create a shared
+graph task explicitly through the agent or Execution graph admin page.
+
+Edges are typed: `part_of`, `assigned_to`, `depends_on`, `originated_from`,
+`supports`, and `related_to`. Explicit structural links and source projections
+are accepted. Model-inferred links always enter as `proposed` and need review.
+Dependency cycles, invalid endpoint type pairs, and self-links are rejected.
+Agent traversal is capped at two hops / 100 nodes and combines vector seeds
+with explicit neighbors; private nodes cannot be used as hidden traversal
+bridges.
 
 ### Channels (Teams + iMessage)
 
@@ -334,6 +361,9 @@ patched by bootstrap.sh) supplies the same names.
 | `STORAGE_CONNECTION_STRING` / `NOTES_CONTAINER` / `MEETINGS_CONTAINER` | Blob notes + meeting summaries | Bicep + `listKeys()` |
 | `COSMOS_ENDPOINT` / `COSMOS_KEY` / `COSMOS_DB` | Cosmos DB | Bicep + `listKeys()` |
 | `MEETING_VIEWERS` | Entra object ids allowed to query meetings/commitments | Bicep default Adam+Val |
+| `EXECUTION_GRAPH_ENABLED` | expose graph projection, recall, API, and admin view | Bicep `true` |
+| `EXECUTION_GRAPH_WRITES_ENABLED` | expose human/agent project-task mutations | GitHub repository variable, default `false` |
+| `GRAPH_WORKSPACE_ID` | shared Cosmos partition / workspace identity | Bicep `org` |
 | `MEETING_TTL_DAYS` / `COMMITMENT_TTL_DAYS` | Cosmos TTL for meeting docs / commitments | Bicep 90 / 180 |
 | `MEETING_ORGANIZERS_PER_RUN` | Function round-robin batch size | Function app setting (25) |
 | `GRAPH_CONNECTION_NAME` | Bot Service OAuth connection name | Bicep constant `graph-connection` |
@@ -383,7 +413,10 @@ repo, org permission to upload Teams apps.
    the meeting ingest Function. The browser image is built first on purpose:
    Container Apps fails revision provisioning if the tag is not already in the
    registry. Optional: set `WEB_SEARCH_API_KEY` in GitHub secrets so
-   `web_search` works.
+   `web_search` works. The deployment creates graph containers and enables
+   read-only graph projection. Agent/admin graph writes remain hidden unless
+   the GitHub repository variable `EXECUTION_GRAPH_WRITES_ENABLED` is exactly
+   `true`.
 4. **Meeting ingest tenant grant (once, after the Function exists):**
    `./scripts/setup-meeting-ingest.sh rg-taskbrain` then the printed Teams
    PowerShell (application access policy + Graph transcript access). Wait
@@ -409,6 +442,15 @@ repo, org permission to upload Teams apps.
    summary; the next Function run moves it through processing → summarized;
    Adam/Val: "what did we decide last week?" / "what's overdue?" uses meeting
    tools; another user is denied.
+9. **Execution graph rollout:** leave writes off for the first deploy. Run
+   `npm run graph:backfill` with production environment variables to inspect
+   shared-source counts and unresolved owners; it does not write by default.
+   Apply with `npm run graph:backfill -- --apply`, inspect `/admin/graph` for
+   orphan counts and projected commitments, then set the GitHub repository
+   variable `EXECUTION_GRAPH_WRITES_ENABLED=true` and redeploy. Roll back
+   writes by setting it to `false`; projections and reads continue. Roll back
+   the entire feature with Bicep `executionGraphEnabled=false`. The backfill is
+   idempotent and never scans or publishes personal notes.
 
 Ordering constraint: bootstrap must run before the first pipeline
 (federated credential, RBAC, RG, providers, secrets). Everything else is
@@ -428,6 +470,13 @@ order-independent and re-runnable.
   viewers in Entra → Enterprise applications → TaskBrain Admin → Users and
   groups. `/api/messages` and `/healthz` stay anonymous so the bot and CI
   smoke test keep working.
+- **Execution graph:** `/admin/graph` is an interactive, non-auto-refreshing
+  Cytoscape view. Search or filter by type/status/owner, inspect dependencies
+  and source evidence, edit TaskBrain-owned projects/tasks, and accept/reject
+  proposed links. People, meetings, and commitment projections are read-only;
+  edit their source system. The accessible list beneath the canvas provides
+  the same selection path without pointer-only graph navigation. Page state
+  and viewport stay local to the browser.
 - **Alerts (push):** job failures after final retry → owner + admin; budget
   trip → admin, once per day. Delivery requires the recipient to have
   messaged the bot at least once (conversation reference).
@@ -462,6 +511,15 @@ calls per turn. SSRF blocks `file:`, localhost, and private IPs. Snapshots are
 truncated; page HTML is never written to Cosmos/Blob unless the user asks to
 `save_note`. Chromium is not in the App Service image. Click/type/login are
 out of v1. `digest` does not get search.
+
+**Use the execution graph:** ask "what is blocked on Project X?", "who owns
+the launch tasks?", or "why does this work exist?" so the agent uses
+`search_execution_graph` and follows accepted edges. Explicitly ask "create a
+shared task/project" to use `create_graph_task` / `create_graph_project`;
+ordinary captured tasks stay private. `update_graph_item` changes TaskBrain-
+owned records. `propose_graph_relationship` is the only inference path and
+cannot self-approve. Keep queries narrow; the two-hop/100-node cap is a
+safety and context-budget boundary, not a paging target.
 
 **Add/adjust an agent profile:** edit `config/agents.json`. Persona = system
 prompt; keep tool allowlists minimal; pick the route by cost (agent for tool
@@ -535,6 +593,13 @@ logging already support it. Do not pay this tax early.
 14. Chromium never ships in the App Service image. Public-web research is
     `web_search` plus a remote browser MCP. Crawled page HTML is not stored
     in the brain unless the user explicitly `save_note`s a summary.
+15. Personal notes and ordinary task captures are never published to the
+    shared execution graph implicitly. Promotion must be explicit.
+16. Graph source projections are deterministic and read-only. Update people,
+    meetings, or commitments in their source store; only TaskBrain-owned
+    projects/tasks are directly editable.
+17. Agent-inferred graph relationships remain `proposed` until a human
+    accepts them. Accepted dependency edges must remain acyclic.
 
 ## 8. Known gaps / roadmap
 
@@ -618,3 +683,16 @@ logging already support it. Do not pay this tax early.
 - **Function has no functions after deploy:** Flex Consumption needs the zip
   at the `fn-packages` container; CI `config-zip` step must succeed after
   infra created `functionAppName`.
+- **Execution graph is empty:** confirm `EXECUTION_GRAPH_ENABLED=true` on both
+  App Service and the meeting Function, then dry-run/apply
+  `npm run graph:backfill`. Missing embeddings on older projected records are
+  repaired by the same idempotent backfill.
+- **Execution graph is read-only:** this is the safe rollout default. Set the
+  GitHub repository variable `EXECUTION_GRAPH_WRITES_ENABLED=true` and
+  redeploy after reviewing the backfill. Do not hand-edit the App Service
+  setting; Bicep overwrites it.
+- **Graph editor returns 409:** the item changed after the page loaded or the
+  dependency would create a cycle. Reload the graph and reapply a valid edit.
+- **Graph canvas is blank but the list works:** verify
+  `/admin/assets/graph.js` returns JavaScript. `npm run build` creates the
+  local bundle; `npm run dev` builds it once before starting the watcher.

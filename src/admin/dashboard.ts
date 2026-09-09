@@ -30,6 +30,7 @@ import type {
   MeetingDoc,
   TranscriptAvailabilityDoc,
 } from "../meetings/types";
+import { canViewMeetings } from "../meetings/access";
 import { loadConfig } from "../config";
 import { nativeToolCatalog } from "../tools/registry";
 import { mcpServerCatalog, mcpServerHealth, mcpToolDefinitions, type McpServerHealth } from "../tools/mcpClient";
@@ -45,6 +46,24 @@ import {
 } from "../org/store";
 import { parseAliases } from "../org/resolve";
 import type { OrgDirectory } from "../org/types";
+import {
+  graphEnabled,
+  graphWritesEnabled,
+  getGraphNode,
+  executionGraphStats,
+  graphNeighborhood,
+  listExecutionGraph,
+  patchGraphNode,
+  putGraphEdge,
+  putGraphNode,
+  reviewGraphEdge,
+  setGraphSingleRelationship,
+} from "../graph/store";
+import type {
+  GraphEdgeType,
+  GraphNodeStatus,
+  GraphNodeType,
+} from "../graph/types";
 import {
   countTable,
   esc,
@@ -106,6 +125,10 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
   }
 
   const section: SectionId = isSection(raw) ? raw : "overview";
+  if (section === "graph" && principal && !canViewMeetings(principal.id)) {
+    res.send(403, "execution graph is limited to designated org operators");
+    return;
+  }
   const html = await renderSection(section, signedIn, tab, query.get("notice") ?? "");
   res.sendRaw(200, html, { "Content-Type": "text/html" });
 }
@@ -142,6 +165,8 @@ async function renderSection(
       const [usage, events] = await Promise.all([usageBreakdown(), recentEvents(80)]);
       return renderUsage(signedIn, usage, events);
     }
+    case "graph":
+      return renderExecutionGraph(signedIn);
     case "org": {
       const dir = await listOrgDirectory().catch(
         () => ({ units: [], people: [], roles: [] }) as OrgDirectory
@@ -1062,6 +1087,331 @@ export function renderMeetings(
     subtitle: "transcript discovery and follow-through",
     body,
   });
+}
+
+const GRAPH_CSRF_SCOPE = "graph:mutate";
+
+export function renderExecutionGraph(signedIn: string): string {
+  const csrf = meetingCsrfToken(GRAPH_CSRF_SCOPE);
+  const writesEnabled = graphWritesEnabled();
+  const body = graphEnabled()
+    ? `<div class="graph-toolbar" aria-label="Execution graph filters">
+        <input id="graph-search" type="search" placeholder="Search projects, tasks, people, meetings…" aria-label="Search execution graph">
+        <select id="graph-type" aria-label="Filter by type">
+          <option value="">All types</option><option value="project">Projects</option>
+          <option value="task">Tasks</option><option value="person">People</option>
+          <option value="meeting">Meetings</option><option value="evidence">Evidence</option>
+        </select>
+        <select id="graph-status" aria-label="Filter by status">
+          <option value="">All states</option><option value="planned">Planned</option>
+          <option value="open">Open</option><option value="active">Active</option>
+          <option value="blocked">Blocked</option><option value="done">Done</option>
+          <option value="cancelled">Cancelled</option><option value="stale">Stale</option>
+        </select>
+        <input id="graph-owner" list="graph-people" placeholder="Owner graph id" aria-label="Filter by owner">
+        <datalist id="graph-people"></datalist>
+        <label class="graph-check"><input id="graph-proposals" type="checkbox" checked> Proposed links</label>
+        <button id="graph-new-project" type="button" class="ghost"${writesEnabled ? "" : " disabled"}>New project</button>
+        <button id="graph-new-task" type="button"${writesEnabled ? "" : " disabled"}>New task</button>
+      </div>
+      <p id="graph-message" class="lede" role="status">Loading execution graph…</p>
+      <div class="graph-layout">
+        <section class="panel graph-canvas-panel" aria-label="Relationship map">
+          <div id="execution-graph" role="img" aria-label="Interactive execution relationship map"></div>
+        </section>
+        <aside id="graph-detail" class="panel graph-detail" aria-label="Selected item">
+          <h2>Selection</h2><div class="pad muted">Select an item to inspect or edit it.</div>
+        </aside>
+      </div>
+      <section class="panel graph-list-panel">
+        <h2>Accessible execution list</h2>
+        <div id="graph-list" class="pad muted">Loading…</div>
+      </section>
+      <dialog id="graph-dialog" aria-labelledby="graph-dialog-title"><form id="graph-form" method="dialog" class="form">
+        <input type="hidden" name="id"><input type="hidden" name="version">
+        <h2 class="span2" id="graph-dialog-title">Execution item</h2>
+        <label>Type <select name="type"><option value="project">Project</option><option value="task">Task</option></select></label>
+        <label>Status <select name="status"><option value="planned">Planned</option><option value="open">Open</option><option value="active">Active</option><option value="blocked">Blocked</option><option value="done">Done</option><option value="cancelled">Cancelled</option></select></label>
+        <label class="span2">Title <input name="title" maxlength="240" required></label>
+        <label class="span2">Description <textarea name="description" maxlength="8000"></textarea></label>
+        <label>Owner graph id <input name="ownerPersonId" placeholder="org-person:…"></label>
+        <label>Due <input name="due" type="date"></label>
+        <label class="span2">Project graph id (new tasks) <input name="projectId" placeholder="project:…"></label>
+        <div class="actions"><button value="save" type="submit">Save</button><button value="cancel" type="button" class="ghost" id="graph-dialog-cancel">Cancel</button></div>
+      </form></dialog>
+      <script>window.TASKBRAIN_GRAPH=${JSON.stringify({
+        csrf,
+        scope: GRAPH_CSRF_SCOPE,
+        api: "/admin/api/graph",
+        writesEnabled,
+      }).replace(/</g, "\\u003c")};</script>
+      <script src="/admin/assets/graph.js" defer></script>`
+    : `<section class="panel"><h2>Execution graph</h2><p class="pad muted">The execution graph is disabled. Set EXECUTION_GRAPH_ENABLED=true and deploy its Cosmos containers.</p></section>`;
+  return renderShell({
+    section: "graph",
+    signedIn,
+    title: "Execution graph",
+    subtitle: "projects, ownership, dependencies, and evidence",
+    body,
+    autoRefresh: false,
+    wide: true,
+  });
+}
+
+export async function readExecutionGraphApi(req: Request, res: Response): Promise<void> {
+  const principal = easyAuthPrincipal(req);
+  if (process.env.WEBSITE_INSTANCE_ID && !principal) {
+    res.send(401, { error: "sign in required" });
+    return;
+  }
+  if (!graphEnabled()) {
+    res.send(503, { error: "execution graph disabled" });
+    return;
+  }
+  if (principal && !canViewMeetings(principal.id)) {
+    res.send(403, { error: "execution graph is limited to designated org operators" });
+    return;
+  }
+  const query = queryOf(req);
+  try {
+    const actorId = principal?.id ?? "local";
+    const focus = query.get("focus");
+    const includeProposed = query.get("proposed") !== "false";
+    const [payload, stats] = await Promise.all([
+      focus
+        ? graphNeighborhood(
+            [focus],
+            actorId,
+            Number(query.get("depth") ?? 2),
+            Number(query.get("limit") ?? 100),
+            includeProposed
+          )
+        : listExecutionGraph(actorId, {
+            types: csv(query.get("types")).filter(isGraphNodeType),
+            statuses: csv(query.get("statuses")).filter(isGraphNodeStatus),
+            ownerPersonId: query.get("owner") || undefined,
+            query: query.get("q") || undefined,
+            includeProposed,
+            limit: Number(query.get("limit") ?? 50),
+            cursor: query.get("cursor") || undefined,
+          }),
+      executionGraphStats(actorId),
+    ]);
+    payload.stats = stats;
+    void logActivity({
+      type: "tool_call",
+      userId: principal?.id,
+      origin: "system",
+      channel: "internal",
+      trigger: "admin_graph_read",
+      detail: { nodes: payload.nodes.length, edges: payload.edges.length },
+    });
+    res.header("Cache-Control", "private, no-store");
+    res.send(200, payload);
+  } catch (err) {
+    console.error("[admin] graph read failed:", err);
+    res.send(500, { error: "could not load execution graph" });
+  }
+}
+
+export async function mutateExecutionGraphApi(req: Request, res: Response): Promise<void> {
+  const who = requireAdminPrincipal(req, res);
+  if (!who) return;
+  if (!graphEnabled()) {
+    res.send(503, { error: "execution graph disabled" });
+    return;
+  }
+  if (who !== "local" && !canViewMeetings(who.id)) {
+    res.send(403, { error: "execution graph is limited to designated org operators" });
+    return;
+  }
+  if (!graphWritesEnabled()) {
+    res.send(403, { error: "execution graph is in read-only rollout" });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (
+    String(body.scope ?? "") !== GRAPH_CSRF_SCOPE ||
+    !verifyMeetingCsrf(String(body.csrf ?? ""), GRAPH_CSRF_SCOPE)
+  ) {
+    res.send(403, { error: "invalid or expired request" });
+    return;
+  }
+  const actorId = who === "local" ? "local" : who.id;
+  const action = String(body.action ?? "");
+  try {
+    let result: unknown;
+    if (action === "create_node") {
+      const type = String(body.type);
+      if (type !== "project" && type !== "task") {
+        res.send(400, { error: "Only projects and tasks can be created in the editor." });
+        return;
+      }
+      const ownerPersonId = optionalString(body.ownerPersonId);
+      const projectId = type === "task" ? optionalString(body.projectId) : undefined;
+      for (const targetId of [ownerPersonId, projectId].filter(Boolean) as string[]) {
+        if (!(await getGraphNode(targetId, actorId))) {
+          res.send(400, { error: `Relationship target does not exist: ${targetId}` });
+          return;
+        }
+      }
+      result = await putGraphNode(
+        {
+          type,
+          title: String(body.title ?? ""),
+          description: optionalString(body.description),
+          status: optionalString(body.status) as GraphNodeStatus | undefined,
+          ownerPersonId,
+          due: optionalString(body.due),
+          visibility: "workspace",
+          provenance: "human",
+        },
+        actorId,
+        { origin: "system", channel: "internal", trigger: "admin_graph" }
+      );
+      const created = result as { id: string; type: GraphNodeType };
+      if (created.type === "task") {
+        await setGraphSingleRelationship(
+          created.id,
+          "part_of",
+          projectId,
+          actorId,
+          "human",
+          "Explicitly selected in the execution graph editor."
+        );
+      }
+      await setGraphSingleRelationship(
+        created.id,
+        "assigned_to",
+        ownerPersonId,
+        actorId,
+        "human",
+        "Explicitly selected in the execution graph editor."
+      );
+    } else if (action === "update_node") {
+      const current = await getGraphNode(String(body.id ?? ""), actorId);
+      if (!current || (current.type !== "project" && current.type !== "task")) {
+        res.send(400, { error: "Only projects and tasks can be edited." });
+        return;
+      }
+      if (current.source && current.source.kind !== "graph") {
+        res.send(400, { error: "Projected source records are read-only; update their source system." });
+        return;
+      }
+      const updatedOwner = Object.hasOwn(body, "ownerPersonId")
+        ? optionalString(body.ownerPersonId)
+        : undefined;
+      if (updatedOwner && !(await getGraphNode(updatedOwner, actorId))) {
+        res.send(400, { error: `Relationship target does not exist: ${updatedOwner}` });
+        return;
+      }
+      result = await patchGraphNode(
+        String(body.id ?? ""),
+        {
+          title: Object.hasOwn(body, "title") ? optionalString(body.title) : undefined,
+          description: Object.hasOwn(body, "description") ? nullableString(body.description) : undefined,
+          status: optionalString(body.status) as GraphNodeStatus | undefined,
+          ownerPersonId: Object.hasOwn(body, "ownerPersonId") ? updatedOwner ?? null : undefined,
+          due: Object.hasOwn(body, "due") ? nullableString(body.due) : undefined,
+        },
+        actorId,
+        numberOrUndefined(body.expectedVersion),
+        { origin: "system", channel: "internal", trigger: "admin_graph" }
+      );
+      if (Object.hasOwn(body, "ownerPersonId")) {
+        await setGraphSingleRelationship(
+          String(body.id ?? ""),
+          "assigned_to",
+          optionalString(body.ownerPersonId),
+          actorId,
+          "human",
+          "Explicitly selected in the execution graph editor."
+        );
+      }
+    } else if (action === "create_edge") {
+      result = await putGraphEdge(
+        {
+          fromId: String(body.fromId ?? ""),
+          toId: String(body.toId ?? ""),
+          type: String(body.type) as GraphEdgeType,
+          reviewState: "accepted",
+          provenance: "human",
+          evidence: optionalString(body.evidence),
+        },
+        actorId
+      );
+    } else if (action === "review_edge") {
+      const review = String(body.reviewState);
+      if (review !== "accepted" && review !== "rejected") {
+        res.send(400, { error: "reviewState must be accepted or rejected" });
+        return;
+      }
+      result = await reviewGraphEdge(
+        String(body.id ?? ""),
+        review,
+        actorId,
+        numberOrUndefined(body.expectedVersion)
+      );
+    } else {
+      res.send(400, { error: "unknown graph action" });
+      return;
+    }
+    void logActivity({
+      type: "tool_call",
+      userId: who === "local" ? undefined : who.id,
+      origin: "system",
+      channel: "internal",
+      trigger: "admin_graph",
+      detail: { action },
+    });
+    res.header("Cache-Control", "no-store");
+    res.send(
+      action === "create_node" || action === "create_edge" ? 201 : 200,
+      safeGraphResult(result)
+    );
+  } catch (err) {
+    const message = (err as Error).message;
+    const status =
+      (err as { code?: number }).code === 412 ||
+      message.includes("changed since") ||
+      message.includes("cycle")
+        ? 409
+        : 400;
+    res.send(status, { error: message.slice(0, 300) });
+  }
+}
+
+function csv(value: string | null): string[] {
+  return (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function optionalString(value: unknown): string | undefined {
+  const out = String(value ?? "").trim();
+  return out || undefined;
+}
+
+function nullableString(value: unknown): string | null {
+  return optionalString(value) ?? null;
+}
+
+function safeGraphResult(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const { embedding: _embedding, ...safe } = value as Record<string, unknown>;
+  return safe;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function isGraphNodeType(value: string): value is GraphNodeType {
+  return ["project", "task", "person", "meeting", "evidence"].includes(value);
+}
+
+function isGraphNodeStatus(value: string): value is GraphNodeStatus {
+  return ["planned", "active", "blocked", "done", "cancelled", "open", "stale"].includes(value);
 }
 
 export function renderJobs(signedIn: string, jobs: Record<string, unknown>[]): string {

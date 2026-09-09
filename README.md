@@ -21,9 +21,9 @@ Triage (CHEAP model tier) — classify → extract → decide
         │
         ├── task        ──► Microsoft To Do (Graph API)
         ├── idea/note   ──► Blob (markdown, Obsidian-compatible) + Cosmos (metadata + embedding)
-        ├── question    ──► vector recall over the brain, answer with sources
+        ├── question    ──► private brain + shared execution-graph recall
         ├── action      ──► AGENT LOOP (STANDARD tier) with unified tool registry:
-        │                     native tools (brain, scheduler, To Do)
+        │                     native tools (brain, scheduler, execution graph)
         │                     + MCP servers from config (Smartsheet PMO first)
         └── follow-up   ──► short-window session state (Cosmos, TTL)
         ▼
@@ -60,6 +60,9 @@ agent (PREMIUM tier) with full tools → proactive Teams message with the result
   any time. The brain is portable; Azure is the index, not the cage.
 - **Follow-up window.** Last 5 turns kept in Cosmos with a 15-minute TTL so
   "actually make that Friday" works, then it evaporates.
+- **Shared execution is explicit.** TaskBrain-owned projects/tasks form a
+  typed graph with people, meeting sources, dependencies, and reviewed
+  relationships. Personal notes and ordinary captures never auto-publish.
 
 ## Repo layout
 
@@ -81,11 +84,18 @@ src/
     webResearch.ts         native web_search + SSRF / caps for the browser MCP
   jobs/
     orchestrator.ts        single 60s poller: due jobs → agent → proactive msg
+  graph/
+    types.ts               projects/tasks/people/meetings + typed edges
+    store.ts               scoped Cosmos CRUD, hybrid recall, traversal
+    project.ts             deterministic org/meeting/commitment projection
+    validation.ts          relationship, visibility, cycle, and size guards
+  admin/client/graph.ts     bundled Cytoscape execution graph UI
 config/
   mcp.servers.json         external integrations (Smartsheet + browser MCP)
   model.routes.json        model tiers per task class
 infra/main.bicep           all Azure resources (incl. jobs container)
 services/browser/          Playwright MCP (Chromium; not in the bot image)
+scripts/backfill-graph.ts  dry-run/apply migration of shared source records
 teams-app/manifest.json    Teams app package
 ```
 
@@ -143,11 +153,12 @@ the URL; only people assigned to the **TaskBrain Admin** enterprise app can
 sign in. Teams transcript metadata is discovered automatically, but an admin
 selects which meetings consume tokens for summary/embedding. The page shows
 today's stats, token spend by model/origin, scheduled jobs, agent memory, and
-the live event stream (auto-refresh 60s). **Org** is the maintainable
+the live event stream (auto-refresh 60s). **Execution graph** is the
+interactive project/task relationship map (no forced refresh). **Org** is the maintainable
 directory of teams, people, and roles so the agent can resolve work to
 people without guessing.
 
-## Three stores, on purpose
+## Four stores, on purpose
 
 - **Second brain** (`notes`): the USER's knowledge. Markdown + vectors, recall
   on demand.
@@ -159,6 +170,9 @@ people without guessing.
   agent's self-knowledge can't itself become context rot.
 - **Org directory** (`org`): teams, people, reporting, and mandates. Admins
   edit it on `/admin/org`. Commitments remain follow-through from meetings.
+- **Execution graph** (`graph-nodes` + `graph-edges`): shared projects, tasks,
+  ownership, dependencies, and projected source context. Inferred edges wait
+  for human review; personal notes stay out unless explicitly promoted.
 
 ## Agent topology: profiles now, multi-agent later
 

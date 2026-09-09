@@ -23,6 +23,8 @@ import { logActivity } from "./services/activityLog";
 import { handleApprovalCommand } from "./services/approvals";
 import { agentProfileFor, isPmoRequest, maybeProposeSheetUpdate } from "./services/smartsheet";
 import { Channel } from "./channels/types";
+import { graphEnabled, searchExecutionGraph } from "./graph/store";
+import { canViewMeetings } from "./meetings/access";
 
 export interface CaptureInput {
   userId: string; // canonical user id (Entra object id) — channels must resolve to this
@@ -178,8 +180,31 @@ async function execute(
     }
 
     case "question": {
-      const hits = await recall(userId, text, 8, attribution);
-      const answer = await answerQuestion(text, hits, attribution);
+      const [hits, graph] = await Promise.all([
+        recall(userId, text, 8, attribution),
+        graphEnabled() && canViewMeetings(userId)
+          ? searchExecutionGraph(text, userId, { limit: 24, depth: 1 }, attribution).catch(
+              (err) => {
+                console.error("[graph] question recall failed (non-fatal):", err);
+                return undefined;
+              }
+            )
+          : undefined,
+      ]);
+      const graphContext = graph?.nodes.length
+        ? [
+            ...graph.nodes.map(
+              (node) =>
+                `${node.id} | ${node.type} | ${node.status ?? "n/a"} | ${node.title}` +
+                `${node.due ? ` | due ${node.due}` : ""}` +
+                `${node.description ? `\n${node.description}` : ""}`
+            ),
+            ...graph.edges.map(
+              (edge) => `${edge.fromId} -[${edge.type}]-> ${edge.toId}`
+            ),
+          ].join("\n")
+        : "";
+      const answer = await answerQuestion(text, hits, attribution, graphContext);
       return { title: "From your brain", body: answer, tags: [], summaryLine: answer.slice(0, 200) };
     }
 

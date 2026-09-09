@@ -3,6 +3,7 @@ import { canViewMeetings, denyMeetings } from "./access";
 import { listOpenCommitments, searchMeetings, upsertCommitment } from "./store";
 import type { CommitmentDoc } from "./types";
 import type { ActivityAttribution } from "../services/activityLog";
+import { projectCommitment } from "../graph/project";
 
 function fmtMeeting(m: {
   title: string;
@@ -63,11 +64,16 @@ export async function markCommitmentDone(userId: string, idOrText: string): Prom
   const q = idOrText.toLowerCase();
   const hit = open.find((c) => c.id === idOrText || c.text.toLowerCase().includes(q));
   if (!hit) return "No matching open commitment.";
-  await upsertCommitment({
+  const completed: CommitmentDoc = {
     ...hit,
     status: "done",
     updatedAt: new Date().toISOString(),
     ttl: 14 * 86400,
-  });
+  };
+  await upsertCommitment(completed);
+  const projected = await projectCommitment(completed);
+  if (projected.errors.length) {
+    console.error("[graph] commitment completion projection failed:", projected.errors);
+  }
   return `Marked done: ${hit.ownerName} — ${hit.text}`;
 }

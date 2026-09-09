@@ -7,10 +7,12 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build:admin",
+    "build:admin": "esbuild src/admin/client/graph.ts --bundle --minify --platform=browser --outfile=dist/admin/graph.js",
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts",
-    "test": "tsx --test --test-force-exit test/*.test.ts"
+    "dev": "npm run build:admin && tsx watch src/index.ts",
+    "test": "tsx --test --test-force-exit test/*.test.ts",
+    "graph:backfill": "tsx scripts/backfill-graph.ts"
   },
   "dependencies": {
     "@azure/cosmos": "^4.1.1",
@@ -21,6 +23,7 @@
     "botbuilder": "^4.23.1",
     "botframework-connector": "^4.23.1",
     "cron-parser": "^5.0.0",
+    "cytoscape": "^3.33.1",
     "openai": "^4.67.0",
     "restify": "^11.1.0",
     "spectrum-ts": "^12.8.0"
@@ -28,6 +31,7 @@
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/restify": "^8.5.12",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4"
   }

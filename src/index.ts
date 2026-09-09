@@ -5,10 +5,18 @@ import {
   ConfigurationBotFrameworkAuthenticationOptions,
 } from "botbuilder";
 import { TaskBrainBot } from "./bot";
-import { adminPage, queueMeetingSummaries, saveOrgDirectory } from "./admin/dashboard";
+import {
+  adminPage,
+  mutateExecutionGraphApi,
+  queueMeetingSummaries,
+  readExecutionGraphApi,
+  saveOrgDirectory,
+} from "./admin/dashboard";
 import { startOrchestrator } from "./jobs/orchestrator";
 import { initDelivery } from "./channels/deliver";
 import { startPhotonChannel, stopPhotonChannel } from "./channels/photon";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const auth = new ConfigurationBotFrameworkAuthentication(
   process.env as ConfigurationBotFrameworkAuthenticationOptions
@@ -48,6 +56,23 @@ server.get("/", (_req, res, next) => {
 });
 
 server.get("/admin", adminPage);
+server.get("/admin/assets/graph.js", (_req, res, next) => {
+  try {
+    res.sendRaw(
+      200,
+      readFileSync(join(process.cwd(), "dist", "admin", "graph.js"), "utf8"),
+      {
+        "Content-Type": "text/javascript; charset=utf-8",
+        "Cache-Control": "private, no-cache",
+      }
+    );
+  } catch {
+    res.send(503, "graph client bundle is unavailable; run npm run build:admin");
+  }
+  return next();
+});
+server.get("/admin/api/graph", readExecutionGraphApi);
+server.post("/admin/api/graph", mutateExecutionGraphApi);
 server.get("/admin/:section", adminPage);
 server.post("/admin/meetings/summarize", queueMeetingSummaries);
 server.post("/admin/org", saveOrgDirectory);

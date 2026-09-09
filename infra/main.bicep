@@ -44,6 +44,15 @@ param webSearchApiKey string = ''
 @description('Search engine for web_search: tavily (default), brave, or bing')
 param webSearchEngine string = 'tavily'
 
+@description('Enable the shared TaskBrain execution graph')
+param executionGraphEnabled bool = true
+
+@description('Allow human and agent graph mutations after read-only rollout validation')
+param executionGraphWritesEnabled bool = false
+
+@description('Stable partition key for the shared execution graph')
+param graphWorkspaceId string = 'org'
+
 @secure()
 @description('Shared bearer between App Service and the browser Container App. Empty = generated per RG.')
 param browserMcpToken string = ''
@@ -416,6 +425,59 @@ resource commitmentsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/con
   }
 }
 
+resource graphNodesColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'graph-nodes'
+  properties: {
+    resource: {
+      id: 'graph-nodes'
+      partitionKey: { paths: ['/workspaceId'], kind: 'Hash' }
+      defaultTtl: -1
+      vectorEmbeddingPolicy: {
+        vectorEmbeddings: [
+          {
+            path: '/embedding'
+            dataType: 'float32'
+            distanceFunction: 'cosine'
+            dimensions: 1536
+          }
+        ]
+      }
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        automatic: true
+        includedPaths: [ { path: '/*' } ]
+        excludedPaths: [ { path: '/embedding/*' }, { path: '/"_etag"/?' } ]
+        vectorIndexes: [ { path: '/embedding', type: 'diskANN' } ]
+        compositeIndexes: [
+          [
+            { path: '/updatedAt', order: 'descending' }
+            { path: '/id', order: 'descending' }
+          ]
+        ]
+      }
+    }
+  }
+}
+
+resource graphEdgesColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'graph-edges'
+  properties: {
+    resource: {
+      id: 'graph-edges'
+      partitionKey: { paths: ['/workspaceId'], kind: 'Hash' }
+      defaultTtl: -1
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        automatic: true
+        includedPaths: [ { path: '/*' } ]
+        excludedPaths: [ { path: '/"_etag"/?' } ]
+      }
+    }
+  }
+}
+
 resource meetingCheckpointsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
   parent: cosmosDb
   name: 'meeting-checkpoints'
@@ -556,6 +618,9 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'SMARTSHEET_API_TOKEN', value: smartsheetApiToken }
         { name: 'WEB_SEARCH_API_KEY', value: webSearchApiKey }
         { name: 'WEB_SEARCH_ENGINE', value: webSearchEngine }
+        { name: 'EXECUTION_GRAPH_ENABLED', value: string(executionGraphEnabled) }
+        { name: 'EXECUTION_GRAPH_WRITES_ENABLED', value: string(executionGraphWritesEnabled) }
+        { name: 'GRAPH_WORKSPACE_ID', value: graphWorkspaceId }
         { name: 'BROWSER_MCP_URL', value: 'https://${browserApp.properties.configuration.ingress.fqdn}/mcp' }
         { name: 'BROWSER_MCP_TOKEN', value: browserToken }
         { name: 'SPECTRUM_PROJECT_ID', value: spectrumProjectId }
@@ -576,6 +641,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
     }
   }
   identity: { type: 'SystemAssigned' }
+  dependsOn: [ graphNodesColl, graphEdgesColl ]
 }
 
 // App Service pulls from ACR without registry credentials or stored secrets.
@@ -656,6 +722,8 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       appSettings: [
         { name: 'AzureWebJobsStorage', value: storageConn }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
+        { name: 'EXECUTION_GRAPH_ENABLED', value: string(executionGraphEnabled) }
+        { name: 'GRAPH_WORKSPACE_ID', value: graphWorkspaceId }
         { name: 'FOUNDRY_ENDPOINT', value: 'https://${foundry.properties.customSubDomainName}.openai.azure.com' }
         { name: 'FOUNDRY_API_KEY', value: foundry.listKeys().key1 }
         { name: 'CHEAP_DEPLOYMENT', value: depCheap.name }
@@ -700,6 +768,8 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     meetingsColl
     commitmentsColl
     meetingCheckpointsColl
+    graphNodesColl
+    graphEdgesColl
   ]
 }
 

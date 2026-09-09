@@ -3,6 +3,7 @@ import { canViewMeetings, denyMeetings } from "../meetings/access";
 import { listOpenCommitments } from "../meetings/store";
 import { compactOrgPrompt, newOrgId, resolvePerson, searchOrgDirectory } from "./resolve";
 import type { OrgDirectory, OrgDoc, OrgKind, OrgPerson, OrgRole, OrgUnit } from "./types";
+import { projectPerson } from "../graph/project";
 
 const cosmos = new CosmosClient({
   endpoint: process.env.COSMOS_ENDPOINT!,
@@ -92,7 +93,10 @@ export async function savePerson(input: {
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
-  return upsertOrgDoc(doc);
+  const saved = await upsertOrgDoc(doc);
+  const projected = await projectPerson(saved);
+  if (projected.errors.length) console.error("[graph] person projection failed:", projected.errors);
+  return saved;
 }
 
 export async function saveRole(input: {

@@ -13,6 +13,8 @@
     "STANDARD_DEPLOYMENT": "standard",
     "EMBED_DEPLOYMENT": "embed",
     "MEETING_TTL_DAYS": "90",
-    "COMMITMENT_TTL_DAYS": "180"
+    "COMMITMENT_TTL_DAYS": "180",
+    "EXECUTION_GRAPH_ENABLED": "true",
+    "GRAPH_WORKSPACE_ID": "org"
   }
 }
