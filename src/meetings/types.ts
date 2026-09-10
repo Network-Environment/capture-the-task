@@ -104,6 +104,8 @@ export interface IngestHealthDoc {
   discovered?: number;
   queued?: number;
   processed?: number;
+  /** Transcripts returned by Graph that carried no resolvable meeting id. */
+  unresolved?: number;
   errors: string[];
 }
 
@@ -114,5 +116,6 @@ export interface IngestResult {
   matched: number;
   discovered?: number;
   processed?: number;
+  unresolved?: number;
   errors: string[];
 }

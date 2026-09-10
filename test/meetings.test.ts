@@ -10,7 +10,7 @@ import {
 import { applyMatches, orgLessonTexts, overlapScore, ownerKey } from "../src/meetings/match";
 import { parseMeetingSummary } from "../src/meetings/summarize";
 import { capSummary, capTranscript, isTooShort, MAX_SUMMARY_CHARS, MAX_TRANSCRIPT_CHARS, parseVtt } from "../src/meetings/vtt";
-import { transcriptsDeltaPath } from "../src/meetings/graph";
+import { meetingIdFromTranscript, transcriptsDeltaPath } from "../src/meetings/graph";
 import {
   parseTranscriptSelectionKey,
   transcriptSelectionKey,
@@ -93,6 +93,20 @@ describe("delta and scan", () => {
       mergeDiscoveryItems([old], [recent], true, now).map((t) => t.id),
       ["old", "recent"]
     );
+  });
+
+  it("recovers a missing meeting id from the transcript content url", () => {
+    assert.equal(meetingIdFromTranscript({ id: "t1", meetingId: "direct" }), "direct");
+    assert.equal(
+      meetingIdFromTranscript({
+        id: "t2",
+        transcriptContentUrl:
+          "https://graph.microsoft.com/v1.0/users/u1/onlineMeetings/MSo%3Dmeeting-9/transcripts/t2/content",
+      }),
+      "MSo=meeting-9"
+    );
+    assert.equal(meetingIdFromTranscript({ id: "t3", callId: "call-only" }), undefined);
+    assert.equal(meetingIdFromTranscript({ id: "t4" }), undefined);
   });
 
   it("round-trips transcript selection keys without exposing transcript content", () => {

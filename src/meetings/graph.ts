@@ -73,7 +73,19 @@ export interface GraphTranscript {
   createdDateTime?: string;
   meetingId?: string;
   callId?: string;
+  transcriptContentUrl?: string;
   meetingOrganizer?: { user?: { id?: string; displayName?: string } };
+}
+
+/**
+ * Graph omits `meetingId` on some transcripts (channel meetings and ad-hoc
+ * calls) but still returns a content URL that embeds it. Recover it so those
+ * meetings are not dropped from discovery.
+ */
+export function meetingIdFromTranscript(t: GraphTranscript): string | undefined {
+  if (t.meetingId) return t.meetingId;
+  const match = /\/onlineMeetings\/([^/]+)\/transcripts\//.exec(t.transcriptContentUrl ?? "");
+  return match ? decodeURIComponent(match[1]) : undefined;
 }
 
 export async function getTranscriptDelta(

@@ -7,6 +7,7 @@ import {
   getMeetingMeta,
   getTranscriptDelta,
   listEnabledUsers,
+  meetingIdFromTranscript,
   type GraphTranscript,
 } from "./graph";
 import { applyMatches, orgLessonTexts } from "./match";
@@ -230,19 +231,20 @@ export async function processQueuedTranscripts(
 async function discoverItem(
   user: { id: string; displayName?: string },
   t: GraphTranscript
-): Promise<"created" | "existing" | "skipped"> {
-  if (!t.meetingId) return "skipped";
+): Promise<"created" | "existing" | "unresolved"> {
+  const meetingId = meetingIdFromTranscript(t);
+  if (!meetingId) return "unresolved";
   const id = transcriptAvailabilityId(t.id);
   const existing = await getTranscriptAvailability(user.id, id);
   if (existing) return "existing";
   const summarized = await meetingExists(t.id);
-  const meta = await getMeetingMeta(user.id, t.meetingId);
+  const meta = await getMeetingMeta(user.id, meetingId);
   return recordTranscriptAvailability(
     {
       organizerId: user.id,
       organizerName: user.displayName,
       transcriptId: t.id,
-      meetingId: t.meetingId,
+      meetingId,
       createdDateTime: meta?.startDateTime ?? t.createdDateTime,
       titleHint: meta?.subject,
     },
@@ -259,6 +261,7 @@ export async function runMeetingIngest(
     skipped: 0,
     matched: 0,
     discovered: 0,
+    unresolved: 0,
     errors: [],
   };
   const users = await listEnabledUsers();
@@ -292,7 +295,12 @@ export async function runMeetingIngest(
         try {
           const status = await discoverItem(user, t);
           if (status === "created") result.discovered!++;
-          else result.skipped++;
+          else if (status === "unresolved") {
+            result.unresolved!++;
+            log.info?.(
+              `[meeting-discovery] no meeting id: organizer=${user.id} transcript=${t.id} created=${t.createdDateTime ?? "?"} fields=${Object.keys(t).join(",")}`
+            );
+          } else result.skipped++;
         } catch (err) {
           result.errors.push(`${user.displayName ?? user.id}: ${(err as Error).message}`.slice(0, 180));
         }
@@ -338,6 +346,7 @@ export async function runMeetingIngest(
     skipped: result.skipped,
     matched: result.matched,
     discovered: result.discovered,
+    unresolved: result.unresolved,
     errors: result.errors.slice(0, 12),
   });
   void logActivity({
@@ -347,13 +356,14 @@ export async function runMeetingIngest(
     channel: "internal",
     detail: {
       scanned: result.scanned,
+      unresolved: result.unresolved,
       discovered: result.discovered,
       skipped: result.skipped,
       errors: result.errors.length,
     },
   });
   log.info?.(
-    `[meeting-discovery] scanned=${result.scanned} discovered=${result.discovered} existing=${result.skipped} errors=${result.errors.length}`
+    `[meeting-discovery] scanned=${result.scanned} discovered=${result.discovered} existing=${result.skipped} unresolved=${result.unresolved} errors=${result.errors.length}`
   );
   return result;
 }

@@ -1479,8 +1479,10 @@ function ingestHealthPanel(h?: IngestHealthDoc): string {
       <div class="stat"><div class="label">Organizers</div><div class="value">${h.scanned}</div></div>
       <div class="stat"><div class="label">Discovered</div><div class="value">${h.discovered ?? 0}</div></div>
       <div class="stat"><div class="label">Existing</div><div class="value">${h.skipped}</div></div>
+      <div class="stat${h.unresolved ? " alert" : ""}"><div class="label">No meeting id</div><div class="value">${h.unresolved ?? 0}</div></div>
       <div class="stat${h.errors.length ? " alert" : ""}"><div class="label">Errors</div><div class="value">${h.errors.length}</div></div>
     </div>
+    ${h.unresolved ? `<p class="muted pad">${h.unresolved} transcript(s) were returned by Graph without a resolvable meeting id and could not be indexed.</p>` : ""}
     ${err}
   </section>`;
 }
