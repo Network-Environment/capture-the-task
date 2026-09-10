@@ -245,7 +245,11 @@ async function discoverItem(
       organizerName: user.displayName,
       transcriptId: t.id,
       meetingId,
-      createdDateTime: meta?.startDateTime ?? t.createdDateTime,
+      // The meeting's own startDateTime is the series start, so every
+      // occurrence of a recurring series reports the same date and new ones
+      // sort to the bottom of the transcript list. The transcript's timestamp
+      // is per-occurrence.
+      createdDateTime: t.createdDateTime ?? meta?.startDateTime,
       titleHint: meta?.subject,
     },
     summarized
