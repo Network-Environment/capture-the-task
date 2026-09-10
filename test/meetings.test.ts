@@ -13,6 +13,7 @@ import { capSummary, capTranscript, isTooShort, MAX_SUMMARY_CHARS, MAX_TRANSCRIP
 import { meetingIdFromTranscript, transcriptsDeltaPath } from "../src/meetings/graph";
 import {
   parseTranscriptSelectionKey,
+  transcriptAvailabilityId,
   transcriptSelectionKey,
 } from "../src/meetings/store";
 import type { CommitmentDoc, MeetingSummary } from "../src/meetings/types";
@@ -113,8 +114,20 @@ describe("delta and scan", () => {
     const key = transcriptSelectionKey("organizer-1", "MSo:transcript/1");
     assert.deepEqual(parseTranscriptSelectionKey(key), {
       organizerId: "organizer-1",
-      id: "MSotranscript1",
+      id: transcriptAvailabilityId("MSo:transcript/1"),
     });
+    assert.match(transcriptAvailabilityId("MSo:transcript/1"), /^MSotranscript1-[0-9a-f]{32}$/);
+  });
+
+  it("keeps occurrences of one recurring series on distinct availability ids", () => {
+    // Real Teams transcript ids exceed 200 chars and share a thread prefix
+    // well past 120, so only the tail distinguishes two occurrences.
+    const thread = "ktVizInGAAAAi_B6lATZRTE5Om1lZXRpbmdfTXpGaU56QmpNbVF0TmpReE1TMDBZekV4TFdJMVpqQXRORFV5TnpFeU5tUXdaRFpoQHRocmVhZC52MqEw2Txh";
+    const first = `${thread}NjI0NTk4Ni04NWU3LTRiYzYtYTViZC1mYmVmYmYyZTc5NTAtMTc4ODM3MjA4My1UcmFuc2NyaXB0VjI=`;
+    const second = `${thread}NjI0NTk4Ni04NWU3LTRiYzYtYTViZC1mYmVmYmYyZTc5NTAtMTc5OTk5OTk5OS1UcmFuc2NyaXB0VjI=`;
+    assert.notEqual(transcriptAvailabilityId(first), transcriptAvailabilityId(second));
+    assert.equal(transcriptAvailabilityId(first), transcriptAvailabilityId(first));
+    assert.ok(transcriptAvailabilityId(first).length <= 1023);
   });
 });
 

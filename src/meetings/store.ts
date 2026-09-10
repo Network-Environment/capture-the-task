@@ -1,5 +1,6 @@
 import { CosmosClient } from "@azure/cosmos";
 import { BlobServiceClient } from "@azure/storage-blob";
+import { createHash } from "node:crypto";
 import type {
   CheckpointDoc,
   CommitmentDoc,
@@ -47,8 +48,16 @@ export async function upsertMeeting(doc: MeetingDoc): Promise<void> {
   await meetings.items.upsert(doc);
 }
 
+/**
+ * Teams transcript ids run past 200 characters and encode the meeting thread
+ * in their first ~120, so truncation alone collapses every occurrence of a
+ * recurring series onto one id. The digest keeps the id unique per transcript.
+ */
 export function transcriptAvailabilityId(transcriptId: string): string {
-  return transcriptId.replace(/[^a-zA-Z0-9-_]/g, "").slice(0, 120) || `tx-${Date.now()}`;
+  if (!transcriptId) return `tx-${Date.now()}`;
+  const digest = createHash("sha256").update(transcriptId).digest("hex").slice(0, 32);
+  const readable = transcriptId.replace(/[^a-zA-Z0-9-_]/g, "").slice(0, 80);
+  return readable ? `${readable}-${digest}` : `tx-${digest}`;
 }
 
 export function transcriptSelectionKey(organizerId: string, transcriptId: string): string {
