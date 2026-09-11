@@ -53,6 +53,21 @@ param executionGraphWritesEnabled bool = false
 @description('Stable partition key for the shared execution graph')
 param graphWorkspaceId string = 'org'
 
+@description('Use the structured conversational intent gateway for inbound channels')
+param intentGatewayEnabled bool = true
+
+@description('Evaluate the intent gateway without enforcing it')
+param intentShadowMode bool = true
+
+@description('Ask a focused question before uncertain mutations')
+param clarificationEnforcementEnabled bool = false
+
+@description('Apply risk policy to native and MCP operations')
+param unifiedActionPolicyEnabled bool = false
+
+@description('Minimum interpretation confidence before a mutation can proceed')
+param intentConfidenceThreshold string = '0.72'
+
 @secure()
 @description('Shared bearer between App Service and the browser Container App. Empty = generated per RG.')
 param browserMcpToken string = ''
@@ -321,6 +336,18 @@ resource sessionColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/contain
       id: 'sessions'
       partitionKey: { paths: ['/userId'], kind: 'Hash' }
       defaultTtl: 900 // 15-minute follow-up window, then gone
+    }
+  }
+}
+
+resource inboundReceiptsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'inbound-receipts'
+  properties: {
+    resource: {
+      id: 'inbound-receipts'
+      partitionKey: { paths: ['/channel'], kind: 'Hash' }
+      defaultTtl: 172800
     }
   }
 }
@@ -621,6 +648,11 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'EXECUTION_GRAPH_ENABLED', value: string(executionGraphEnabled) }
         { name: 'EXECUTION_GRAPH_WRITES_ENABLED', value: string(executionGraphWritesEnabled) }
         { name: 'GRAPH_WORKSPACE_ID', value: graphWorkspaceId }
+        { name: 'INTENT_GATEWAY_ENABLED', value: string(intentGatewayEnabled) }
+        { name: 'INTENT_SHADOW_MODE', value: string(intentShadowMode) }
+        { name: 'CLARIFICATION_ENFORCEMENT_ENABLED', value: string(clarificationEnforcementEnabled) }
+        { name: 'UNIFIED_ACTION_POLICY_ENABLED', value: string(unifiedActionPolicyEnabled) }
+        { name: 'INTENT_CONFIDENCE_THRESHOLD', value: intentConfidenceThreshold }
         { name: 'BROWSER_MCP_URL', value: 'https://${browserApp.properties.configuration.ingress.fqdn}/mcp' }
         { name: 'BROWSER_MCP_TOKEN', value: browserToken }
         { name: 'SPECTRUM_PROJECT_ID', value: spectrumProjectId }

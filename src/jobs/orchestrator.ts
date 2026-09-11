@@ -17,6 +17,8 @@ import { dueJobs, markRun, computeNextRun, Job } from "../services/scheduler";
 import { runAgent } from "../services/agent";
 import { logActivity } from "../services/activityLog";
 import { alertUser, alertAdmin } from "../services/alerts";
+import { channelPolicy } from "../channels/types";
+import { scheduledReadToolEnvelope } from "../tools/registry";
 
 const cosmos = new CosmosClient({
   endpoint: process.env.COSMOS_ENDPOINT!,
@@ -69,6 +71,9 @@ async function claim(job: Job & { _etag?: string }): Promise<Job | null> {
 
 async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Promise<void> {
   console.log(`[orchestrator] running ${job.id} (${job.name})`);
+  if (!job.allowedTools) {
+    job = { ...job, allowedTools: await scheduledReadToolEnvelope() };
+  }
   const retryCount = Number((job as unknown as Record<string, unknown>).retryCount ?? 0);
   try {
     const result = await runAgent(
@@ -78,6 +83,16 @@ async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Prom
         origin: "scheduled_job",
         channel: "internal",
         trigger: `job:${job.name}`,
+        allowedTools: job.allowedTools,
+        authorization: {
+          explicit: true,
+          confidence: 1,
+          channel: channelPolicy("teams", {
+            scope: "private",
+            identity: "canonical",
+            allowActions: false,
+          }),
+        },
       },
       `Scheduled job "${job.name}". Instruction:\n${job.prompt}\n\n` +
         `Execute it now using your tools and produce a concise result for the user.`,

@@ -9,9 +9,15 @@
  * the PMO system on a misheard voice memo.
  */
 import { CosmosClient } from "@azure/cosmos";
-import { callMcpTool } from "../tools/mcpClient";
 import { logActivity } from "./activityLog";
 import { loadConfig } from "../config";
+import { randomUUID } from "node:crypto";
+import {
+  evaluateOperation,
+  type AuthorizationContext,
+  type ChannelPolicy,
+  type OperationEffect,
+} from "./intent";
 const serversConfig = loadConfig<{ servers: { name: string; confirmTools?: string[] }[] }>("mcp.servers");
 
 const cosmos = new CosmosClient({
@@ -22,13 +28,21 @@ const pending = cosmos
   .database(process.env.COSMOS_DB ?? "taskbrain")
   .container("pending");
 
-interface PendingAction {
+export interface PendingAction {
   id: string;
   userId: string;
   tool: string;
   args: Record<string, unknown>;
   summary: string;
+  effect: OperationEffect;
+  reason: string;
+  status: "pending" | "executing" | "approved" | "denied" | "expired" | "failed";
+  idempotencyKey: string;
   createdAt: string;
+  expiresAt: string;
+  authorization?: AuthorizationContext;
+  ttl?: number;
+  _etag?: string;
 }
 
 const confirmSet: Set<string> = new Set(
@@ -41,19 +55,47 @@ export function requiresApproval(qualifiedTool: string): boolean {
   return confirmSet.has(qualifiedTool);
 }
 
+export function newPendingActionId(): string {
+  return `pa-${randomUUID().replaceAll("-", "")}`;
+}
+
+export function parseApprovalCommand(
+  text: string
+): { verb: "approve" | "deny"; id: string } | undefined {
+  const match = text.trim().match(/^(approve|deny)\s+(pa-[a-z0-9]+)$/i);
+  return match
+    ? { verb: match[1].toLowerCase() as "approve" | "deny", id: match[2] }
+    : undefined;
+}
+
 export async function parkAction(
   userId: string,
   tool: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  options: {
+    effect?: OperationEffect;
+    reason?: string;
+    summary?: string;
+    idempotencyKey?: string;
+    authorization?: AuthorizationContext;
+  } = {}
 ): Promise<string> {
-  const id = `pa-${Date.now().toString(36)}`;
+  const id = newPendingActionId();
+  const now = new Date();
   const action: PendingAction = {
     id,
     userId,
     tool,
     args,
-    summary: `${tool}(${JSON.stringify(args).slice(0, 300)})`,
-    createdAt: new Date().toISOString(),
+    summary: options.summary ?? `${tool}(${JSON.stringify(args).slice(0, 300)})`,
+    effect: options.effect ?? "shared_write",
+    reason: options.reason ?? "This operation changes an external or shared system.",
+    status: "pending",
+    idempotencyKey: options.idempotencyKey ?? `${userId}:${tool}:${JSON.stringify(args)}`,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 3600_000).toISOString(),
+    authorization: options.authorization,
+    ttl: 3600,
   };
   await pending.items.create(action);
   return id;
@@ -62,11 +104,13 @@ export async function parkAction(
 /** Returns a user-facing result, or undefined if the text isn't an approval command. */
 export async function handleApprovalCommand(
   userId: string,
-  text: string
+  text: string,
+  currentChannel: ChannelPolicy,
+  execute: (action: PendingAction, currentAuthorization: AuthorizationContext) => Promise<string>
 ): Promise<string | undefined> {
-  const m = text.trim().match(/^(approve|deny)\s+(pa-[a-z0-9]+)$/i);
-  if (!m) return undefined;
-  const [, verb, id] = m;
+  const command = parseApprovalCommand(text);
+  if (!command) return undefined;
+  const { verb, id } = command;
 
   let action: PendingAction | undefined;
   try {
@@ -75,11 +119,36 @@ export async function handleApprovalCommand(
   } catch {
     /* not found */
   }
-  if (!action) return `No pending action ${id} (it may have expired — approvals last 1 hour).`;
+  if (!action || (action.status != null && action.status !== "pending")) {
+    return `No pending action ${id} (it may have expired — approvals last 1 hour).`;
+  }
+  if (Date.parse(action.expiresAt) <= Date.now()) {
+    await pending.item(id, userId).replace({ ...action, status: "expired", ttl: 604800 });
+    return `Pending action ${id} expired. Ask me to prepare it again.`;
+  }
+  const currentAuthorization: AuthorizationContext = {
+    explicit: true,
+    confidence: 1,
+    channel: currentChannel,
+  };
+  const currentDecision = evaluateOperation(
+    {
+      name: action.tool,
+      effect: action.effect,
+      reversible: false,
+      description: action.summary,
+    },
+    currentAuthorization
+  );
+  if (currentDecision.decision === "deny" || currentDecision.decision === "clarify") {
+    return `That approval cannot be used from this channel: ${currentDecision.reason}`;
+  }
 
-  await pending.item(id, userId).delete();
-
-  if (verb.toLowerCase() === "deny") {
+  if (verb === "deny") {
+    await pending.item(id, userId).replace(
+      { ...action, status: "denied", ttl: 604800 },
+      { accessCondition: { type: "IfMatch", condition: action._etag ?? "" } }
+    );
     void logActivity({
       type: "tool_call",
       userId,
@@ -91,7 +160,29 @@ export async function handleApprovalCommand(
     return `Denied — ${action.tool} was not executed.`;
   }
 
-  const result = await callMcpTool(action.tool, action.args);
+  let result: string;
+  try {
+    const executing = { ...action, status: "executing" as const, ttl: 3600 };
+    const claimed = await pending.item(id, userId).replace(executing, {
+      accessCondition: { type: "IfMatch", condition: action._etag ?? "" },
+    });
+    const claimedAction = claimed.resource as PendingAction | undefined;
+    if (!claimedAction) throw new Error("Could not claim pending action.");
+    result = await execute(claimedAction, currentAuthorization);
+    await pending.item(id, userId).replace({
+      ...claimedAction,
+      status: "approved",
+      ttl: 604800,
+    });
+  } catch (err) {
+    try {
+      const { resource: latest } = await pending.item(id, userId).read<PendingAction>();
+      if (latest?.status === "executing") {
+        await pending.item(id, userId).replace({ ...latest, status: "failed", ttl: 604800 });
+      }
+    } catch { /* retain the claimed state if final audit write fails */ }
+    result = `Execution failed: ${(err as Error).message}`;
+  }
   void logActivity({
     type: "tool_call",
     userId,

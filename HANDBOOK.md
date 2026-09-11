@@ -34,17 +34,20 @@ flowchart TD
   end
   BOT --> P[src/pipeline.ts · processCapture]
   PH --> P
+  P --> DEDUP[(inbound receipts)]
   P -->|approve/deny| APR[approvals]
   P -->|audio| SP[Azure AI Speech]
-  P --> TR[triage · CHEAP tier]
-  TR -->|task| TODO[Microsoft To Do via Graph]
-  TR -->|idea/ref| BR[(Second brain · Blob md + Cosmos vectors)]
-  TR -->|question| BR
-  TR -->|action| AG[agent loop · profile + tools]
+  P --> INT[intent interpreter · CHEAP tier]
+  INT -->|ambiguous| CLAR[focused clarification]
+  INT --> POL[deterministic risk policy]
+  POL -->|personal capture| TODO[Microsoft To Do via Graph]
+  POL -->|personal note| BR[(Second brain · Blob md + Cosmos vectors)]
+  POL -->|read/action| AG[agent loop · profile + tools]
+  POL -->|high impact| APR
   AG --> REG[tool registry]
   REG --> NAT[native: brain · scheduler · web_search]
   REG --> MCP[MCP servers · Smartsheet · browser]
-  MCP -->|write tools| APR
+  REG -->|shared/destructive/scheduled| APR
   MCP -->|navigate/snapshot| CAPP[Container App Chromium]
   AG --> MEM[(agent-memory)]
   SCH[orchestrator · 60s poll] --> AG
@@ -52,7 +55,7 @@ flowchart TD
   DLV --> T
   DLV --> IM
   R[router · budget · token log] -.every LLM call.-> AG
-  R -.-> TR
+  R -.-> INT
   ACT[(activity log)] --> ADM[/admin dashboard]
   FN[Timer Function · meeting ingest] --> G[Graph transcripts]
   G --> SUM[Foundry structured summary]
@@ -148,13 +151,14 @@ SCHEDULER — jobs-as-data
 | Path | Responsibility |
 |---|---|
 | `src/index.ts` | restify server, adapter, alert init, orchestrator start, `/admin` + `/admin/:section`, POST meetings/org, `/healthz` |
-| `src/pipeline.ts` | **channel-agnostic capture pipeline**: approvals, transcription, triage, execute → Outbound |
+| `src/pipeline.ts` | **channel-agnostic intent gateway**: dedup, transcription, context, interpretation, policy, execute → Outbound |
 | `src/bot.ts` | Teams adapter: 1:1 and @mentions in team/group chat; Adaptive Card; Graph task hook |
 | `src/channels/teamsText.ts` | strip bot @mention markup; personal vs channel conversation |
 | `src/channels/photon.ts` | iMessage adapter via Photon spectrum-ts: stream consumer, allowlist, voice memo fetch, proactive send |
 | `src/channels/deliver.ts` | proactive delivery router (Teams or iMessage by last-used channel) |
 | `src/channels/types.ts` | channel policy, identity resolution, plain-text rendering |
-| `src/services/agent.ts` | triage (cheap tier + escalation), agent loop (profiles), question synthesis |
+| `src/services/agent.ts` | structured intent interpretation (cheap tier + escalation), agent loop (profiles), question synthesis |
+| `src/services/intent.ts` | intent contracts, validation, ambiguity threshold, and deterministic operation policy |
 | `src/services/router.ts` | task-class → deployment mapping, escalation, **daily token budget guard**, per-call usage logging |
 | `src/services/brain.ts` | user's second brain: markdown → Blob, metadata+embedding → Cosmos, vector recall |
 | `src/services/agentMemory.ts` | agent's own lessons: store, prompt injection, cap-40 consolidation |
@@ -162,8 +166,9 @@ SCHEDULER — jobs-as-data
 | `src/jobs/orchestrator.ts` | 60s poller, etag claiming, retries, proactive delivery |
 | `src/services/transcription.ts` | Azure AI Speech fast transcription REST |
 | `src/services/graphTasks.ts` | Microsoft To Do via Graph (Bot Service OAuth connection) |
-| `src/services/session.ts` | 5-turn follow-up buffer (Cosmos TTL 900s) |
-| `src/services/approvals.ts` | write-tool parking, `approve/deny <id>` handling |
+| `src/services/session.ts` | conversation-scoped structured turns and pending clarification state |
+| `src/services/inboundReceipts.ts` | durable Teams/iMessage event idempotency |
+| `src/services/approvals.ts` | immutable high-impact action previews, audited states, `approve/deny <id>` |
 | `src/services/conversations.ts` | per-user, per-channel references (`{user}:teams`, `{user}:imessage`, `{user}:latest`) |
 | `src/services/alerts.ts` | proactive alerts to users and admin |
 | `src/services/activityLog.ts` | event spine: captures, triage, tool/model calls (+tokens), job runs, errors |
@@ -193,12 +198,13 @@ SCHEDULER — jobs-as-data
 | Container | PK | TTL | Contents |
 |---|---|---|---|
 | `notes` | `/userId` | — | note metadata + 1536-dim embedding (diskANN, cosine). Canonical note body also lives as markdown in Blob `notes/{userId}/{yyyy-mm}/{id}.md` |
-| `sessions` | `/userId` | 900s | rolling 5-turn follow-up buffer |
-| `jobs` | `/userId` | — | scheduled jobs: cron/runOnce, prompt, nextRun, conversationRef, retryCount, last* |
+| `sessions` | `/userId` | 900s | conversation-scoped structured turns plus pending clarification |
+| `inbound-receipts` | `/channel` | 2d | hashed source event receipts preventing duplicate execution |
+| `jobs` | `/userId` | — | scheduled jobs plus immutable read-only tool envelope |
 | `activity` | `/day` | 30d | event stream incl. model calls with token counts |
 | `agent-memory` | `/userId` | — | agent lessons (≤40/user, auto-consolidated) |
 | `conversations` | `/userId` | — | per-channel references: Teams conversationRef or iMessage phone/space; `:latest` pointer |
-| `pending` | `/userId` | 3600s | parked write actions awaiting approve/deny |
+| `pending` | `/userId` | 1h pending / 7d terminal | parked high-impact action plans and audit state |
 | `meetings` | `/organizerId` | 90d | one compact summary + one 1536-dim embedding per meeting. No raw VTT. |
 | `commitments` | `/ownerKey` | 180d (14d after done) | tiny follow-through records (no embeddings) |
 | `meeting-checkpoints` | `/organizerId` | — | Graph deltaLink per organizer + ingest health (`latest` / `_system`) |
@@ -310,19 +316,23 @@ park write operations until an explicit `approve pa-x`; channel parity does
 not bypass write approval. Unknown numbers remain silently rejected.
 
 Both interactive adapters immediately send `thinking about response` before
-processing. Triage explicitly separates conversation from capture: greetings,
-thanks, casual chat, and general questions receive a natural response and do
-not create markdown. Only clear tasks, ideas, and references persist. Invalid
-or unknown triage output fails safe to conversation rather than creating a
-note.
+processing. The shared intent interpreter resolves recent references, splits
+genuinely separate requests, records explicitness and confidence, and asks one
+focused question when a mutation is ambiguous. Invalid output fails closed to
+clarification. Clear reversible personal captures proceed; shared, destructive,
+scheduled, costly, or broad operations are parked with a preview for approval.
+Production starts with `INTENT_SHADOW_MODE=true` and enforcement flags false;
+the Usage page exposes shadow mismatches and clarification candidates. Promote
+repository variables in order: unified policy, clarification enforcement, then
+set shadow false after reviewing real traffic.
 
 ### Context-rot policy (why the bot stays fast forever)
 
-The model never sees the Teams thread. Per call it sees: system prompt (+
-lessons for agent calls) + at most 5 recent turns (15-min TTL) + the single
-new message + explicitly retrieved notes. Memory lives in stores, not chat.
-Any change that starts feeding conversation history into prompts violates the
-core design.
+The model never sees the whole Teams thread. Per call it sees: system prompt
+(+ lessons for agent calls) + at most 5 conversation-scoped structured turns
+(15-min TTL) + the new message + explicitly retrieved notes. Stored outcomes
+and references make follow-ups useful without unbounded history. Memory lives
+in stores, not chat.
 
 ## 3. Configuration surfaces
 
@@ -364,6 +374,10 @@ patched by bootstrap.sh) supplies the same names.
 | `EXECUTION_GRAPH_ENABLED` | expose graph projection, recall, API, and admin view | Bicep `true` |
 | `EXECUTION_GRAPH_WRITES_ENABLED` | expose human/agent project-task mutations | GitHub repository variable, default `false` |
 | `GRAPH_WORKSPACE_ID` | shared Cosmos partition / workspace identity | Bicep `org` |
+| `INTENT_GATEWAY_ENABLED` / `INTENT_SHADOW_MODE` | structured interpretation and non-enforcing comparison mode | repo variables; defaults `true` / `true` |
+| `CLARIFICATION_ENFORCEMENT_ENABLED` | persist and ask before uncertain mutations | repo variable; staged default `false` |
+| `UNIFIED_ACTION_POLICY_ENABLED` | risk-policy gate across native and MCP operations | repo variable; staged default `false` |
+| `INTENT_CONFIDENCE_THRESHOLD` | minimum confidence before mutation | Bicep `0.72` |
 | `MEETING_TTL_DAYS` / `COMMITMENT_TTL_DAYS` | Cosmos TTL for meeting docs / commitments | Bicep 90 / 180 |
 | `MEETING_ORGANIZERS_PER_RUN` | Function round-robin batch size | Function app setting (25) |
 | `GRAPH_CONNECTION_NAME` | Bot Service OAuth connection name | Bicep constant `graph-connection` |
@@ -563,11 +577,14 @@ logging already support it. Do not pay this tax early.
 
 ## 7. Invariants (agents: keep these true)
 
-1. Chat history never enters prompts beyond the 5-turn/15-min session buffer.
+1. Chat history never enters prompts beyond the 5-turn, conversation-scoped
+   structured session buffer; full channel threads are never ingested.
 2. Every LLM call goes through `router.route()` — no direct client calls —
    so budget, routing, and token logging stay complete.
-3. MCP write tools listed in `confirmTools` are never executed without an
-   explicit `approve` from the user.
+3. With unified policy enforcement enabled, shared, destructive, scheduled,
+   costly, or broad operations—native or MCP—require a user-visible preview
+   and explicit approval. During shadow rollout, existing MCP `confirmTools`
+   remain the live minimum. Clear reversible personal captures may execute.
 4. Notes remain plain markdown in Blob with frontmatter + wikilinks.
 5. User knowledge → `notes`; agent operational knowledge → `agent-memory`;
    never cross-filed. Lessons stay capped.
@@ -579,14 +596,15 @@ logging already support it. Do not pay this tax early.
 8. No secrets in the repo. CI authenticates via OIDC only.
 9. A capture is never silently lost: every path ends in a saved artifact or
    an explicit error message to the user.
-10. All channels feed `processCapture()`; adapters only normalize and render.
-    No capture logic lives in an adapter.
+10. All channels feed `processCapture()` with a stable event id, canonical
+    identity, conversation scope, and declared capabilities. Adapters only
+    authenticate/normalize and render; no intent logic lives in an adapter.
 11. Non-Teams senders must resolve to a canonical userId through
     `config/channels.json` before anything runs. Never auto-provision a brain
     for an unknown identity.
-12. Channel capabilities are policy (`allowActions`), not accident. Teams and
-    recognized iMessage identities currently allow actions; write-tool
-    approval remains mandatory.
+12. Channel capabilities are structured policy, not a permissive boolean.
+    Group or weak-identity traffic cannot mutate; future channels must declare
+    identity assurance, scope, write capabilities, and approval UX.
 13. Config is read only through `src/config.ts::loadConfig` (never imported
     as a module — it lives outside `rootDir`). Every `process.env` read in
     `src/` has a matching app setting written by `infra/main.bicep`.
@@ -600,6 +618,11 @@ logging already support it. Do not pay this tax early.
     projects/tasks are directly editable.
 17. Agent-inferred graph relationships remain `proposed` until a human
     accepts them. Accepted dependency edges must remain acyclic.
+18. With clarification enforcement enabled, ambiguous or inferred mutations
+    always clarify before execution. Tool descriptions and prompts are not
+    authorization boundaries.
+19. New scheduled jobs run only the read-only tool envelope captured when
+    approved; legacy jobs receive and persist the safe envelope on first run.
 
 ## 8. Known gaps / roadmap
 

@@ -15,24 +15,45 @@ import {
   answerQuestion,
   respondConversationally,
   runAgent,
+  interpretIntent,
   TriageResult,
 } from "./services/agent";
 import { saveNote, recall } from "./services/brain";
-import { getRecentTurns, appendTurn } from "./services/session";
+import {
+  getRecentTurns,
+  appendTurn,
+  getPendingClarification,
+  setPendingClarification,
+} from "./services/session";
 import { logActivity } from "./services/activityLog";
 import { handleApprovalCommand } from "./services/approvals";
 import { agentProfileFor, isPmoRequest, maybeProposeSheetUpdate } from "./services/smartsheet";
 import { Channel } from "./channels/types";
 import { graphEnabled, searchExecutionGraph } from "./graph/store";
 import { canViewMeetings } from "./meetings/access";
+import {
+  evaluateOperation,
+  planNeedsClarification,
+  type ChannelPolicy,
+  type InterpretedIntent,
+  type IntentPlan,
+} from "./services/intent";
+import { channelPolicy } from "./channels/types";
+import { executeApprovedAction } from "./tools/registry";
+import { claimInboundEvent, finishInboundEvent } from "./services/inboundReceipts";
 
 export interface CaptureInput {
   userId: string; // canonical user id (Entra object id) — channels must resolve to this
   channel: Channel;
   text?: string;
   audio?: Buffer; // raw bytes of a voice memo, if any
-  /** Channel policy: whether "action" captures (tools, scheduling) are allowed here. */
-  allowActions: boolean;
+  /** Stable source event id used for durable idempotency by channel adapters. */
+  eventId?: string;
+  /** Channel conversation/thread scope for follow-up state. */
+  conversationId?: string;
+  /** Explicit adapter capabilities. Legacy allowActions is accepted during migration. */
+  policy?: ChannelPolicy;
+  allowActions?: boolean;
   /**
    * Optional hook a channel can pass so task creation can use channel-bound
    * auth (Teams → Graph OAuth). Absent on channels without it; tasks then
@@ -52,15 +73,29 @@ export interface Outbound {
 }
 
 export async function processCapture(input: CaptureInput): Promise<Outbound> {
+  if (!input.eventId) return processCaptureCore(input);
+  if (!(await claimInboundEvent(input.channel, input.eventId, input.userId))) {
+    return {
+      title: "Already received",
+      body: "I already processed that message, so I didn't do it twice.",
+      tags: [],
+      summaryLine: "Duplicate message ignored",
+    };
+  }
+  try {
+    const out = await processCaptureCore(input);
+    await finishInboundEvent(input.channel, input.eventId, "completed");
+    return out;
+  } catch (err) {
+    await finishInboundEvent(input.channel, input.eventId, "failed");
+    throw err;
+  }
+}
+
+async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   const { userId, channel } = input;
 
-  // 0. Approval commands short-circuit everything.
-  const approval = await handleApprovalCommand(userId, input.text ?? "");
-  if (approval) {
-    return { title: "Approval", body: approval, tags: [], summaryLine: approval.slice(0, 120) };
-  }
-
-  // 1. Resolve input text (voice → transcript).
+  // 1. Resolve input text (voice → transcript) before interpreting approvals.
   let text = (input.text ?? "").trim();
   let source: "text" | "voice" = "text";
   if (input.audio) {
@@ -84,6 +119,19 @@ export async function processCapture(input: CaptureInput): Promise<Outbound> {
     };
   }
 
+  const currentPolicy =
+    input.policy ??
+    channelPolicy(input.channel, { allowActions: input.allowActions ?? false });
+  const approval = await handleApprovalCommand(
+    userId,
+    text,
+    currentPolicy,
+    executeApprovedAction
+  );
+  if (approval) {
+    return { title: "Approval", body: approval, tags: [], summaryLine: approval.slice(0, 120) };
+  }
+
   const attribution = {
     origin: "user_message" as const,
     channel,
@@ -97,7 +145,94 @@ export async function processCapture(input: CaptureInput): Promise<Outbound> {
   });
 
   // 2. Short follow-up window only (never the full thread).
-  const recent = await getRecentTurns(userId);
+  const recent = await getRecentTurns(userId, input.conversationId);
+  let pending = await getPendingClarification(userId, input.conversationId);
+  if (pending && /^(never mind|nevermind|cancel|forget (it|that))[\s.!]*$/i.test(text)) {
+    await setPendingClarification(userId, input.conversationId, undefined);
+    return {
+      title: "Cancelled",
+      body: "Got it — I dropped that unresolved request.",
+      tags: [],
+      summaryLine: "Cancelled pending clarification",
+    };
+  }
+  if (pending && Date.now() - Date.parse(pending.createdAt) > 15 * 60_000) {
+    await setPendingClarification(userId, input.conversationId, undefined);
+    pending = undefined;
+  }
+
+  const shadow = process.env.INTENT_SHADOW_MODE !== "false";
+  const enabled = process.env.INTENT_GATEWAY_ENABLED !== "false";
+  let plan: IntentPlan | undefined;
+  if (enabled || shadow) {
+    const interpretationText = pending
+      ? `Pending original request: ${pending.originalText}\nPending question: ${pending.question}\nCurrent message: ${text}`
+      : text;
+    try {
+      plan = await interpretIntent(interpretationText, recent, attribution);
+    } catch (err) {
+      if (!shadow) throw err;
+      console.error("[intent] shadow interpretation failed:", err);
+    }
+  }
+  if (plan) {
+    void logActivity({
+      type: "intent",
+      userId,
+      ...attribution,
+      trigger: shadow ? "intent_shadow" : "intent_interpretation",
+      detail: {
+        confidenceBand: plan.confidence >= 0.9 ? "high" : plan.confidence >= 0.72 ? "medium" : "low",
+        kinds: plan.intents.map((i) => i.kind),
+        ambiguous: planNeedsClarification(plan),
+        assumptions: plan.assumptions.length,
+      },
+    });
+  }
+
+  if (enabled && !shadow && plan) {
+    await appendTurn(userId, "user", text, input.conversationId, {
+      intent: plan.intents.map((i) => i.kind).join(","),
+    });
+    if (
+      planNeedsClarification(plan) &&
+      process.env.CLARIFICATION_ENFORCEMENT_ENABLED === "true"
+    ) {
+      const question =
+        plan.clarification ??
+        plan.intents.find((i) => i.question)?.question ??
+        plan.intents.find((i) => i.ambiguity)?.ambiguity ??
+        "What would you like me to do with that?";
+      await setPendingClarification(userId, input.conversationId, {
+        plan,
+        originalText:
+          pending && plan.continuesPending ? pending.originalText : text,
+        question,
+        createdAt: new Date().toISOString(),
+      });
+      await appendTurn(userId, "assistant", question, input.conversationId, {
+        intent: "clarify",
+        outcome: "waiting_for_clarification",
+      });
+      void logActivity({
+        type: "clarification",
+        userId,
+        ...attribution,
+        trigger: "intent_ambiguity",
+        detail: {
+          reason: plan.intents.find((i) => i.ambiguity)?.ambiguity ?? "low_confidence",
+        },
+      });
+      return { title: "Quick clarification", body: question, tags: [], summaryLine: question };
+    }
+    if (pending) await setPendingClarification(userId, input.conversationId, undefined);
+    const out = await executePlan(input, plan, recent, source);
+    await appendTurn(userId, "assistant", out.summaryLine, input.conversationId, {
+      intent: plan.intents.map((i) => i.kind).join(","),
+      outcome: out.summaryLine,
+    });
+    return out;
+  }
 
   // 3. Triage on the cheap tier.
   const result = await triage(text, recent, attribution);
@@ -105,12 +240,166 @@ export async function processCapture(input: CaptureInput): Promise<Outbound> {
     (result.kind === "question" || result.kind === "conversation") && isPmoRequest(text)
       ? ({ kind: "action" } as TriageResult)
       : result;
-  await appendTurn(userId, "user", text);
+  if (shadow && plan) {
+    void logActivity({
+      type: "intent",
+      userId,
+      ...attribution,
+      trigger: "intent_shadow_comparison",
+      detail: {
+        legacyKind: kind.kind,
+        proposedKinds: plan.intents.map((i) => i.kind),
+        wouldClarify: planNeedsClarification(plan),
+        mismatch: !legacyMatchesPlan(kind.kind, plan),
+      },
+    });
+  }
+  await appendTurn(userId, "user", text, input.conversationId);
 
   // 4. Execute.
   const out = await execute(input, text, source, kind, recent);
-  await appendTurn(userId, "assistant", out.summaryLine);
+  await appendTurn(userId, "assistant", out.summaryLine, input.conversationId);
   return out;
+}
+
+function legacyMatchesPlan(kind: TriageResult["kind"], plan: IntentPlan): boolean {
+  if (plan.intents.length !== 1) return false;
+  const proposed = plan.intents[0];
+  if (kind === "conversation") return proposed.kind === "respond";
+  if (kind === "question") return proposed.kind === "read";
+  if (kind === "action") return proposed.kind === "act";
+  if (kind === "followup") return proposed.kind === "clarify";
+  return proposed.kind === "capture" && proposed.captureKind === kind;
+}
+
+async function executePlan(
+  input: CaptureInput,
+  plan: IntentPlan,
+  recent: Awaited<ReturnType<typeof getRecentTurns>>,
+  source: "text" | "voice"
+): Promise<Outbound> {
+  const outputs: Outbound[] = [];
+  for (const intent of plan.intents) {
+    outputs.push(await executeIntent(input, intent, recent, source));
+  }
+  if (outputs.length === 1) return outputs[0];
+  return {
+    title: "Done",
+    body: outputs.map((o) => `**${o.title}**\n${o.body}`).join("\n\n"),
+    tags: [...new Set(outputs.flatMap((o) => o.tags))],
+    summaryLine: outputs.map((o) => o.summaryLine).join("; ").slice(0, 500),
+  };
+}
+
+async function executeIntent(
+  input: CaptureInput,
+  intent: InterpretedIntent,
+  recent: Awaited<ReturnType<typeof getRecentTurns>>,
+  source: "text" | "voice"
+): Promise<Outbound> {
+  const policy =
+    input.policy ??
+    channelPolicy(input.channel, { allowActions: input.allowActions ?? false });
+  const auth = { explicit: intent.explicit, confidence: intent.confidence, channel: policy };
+  if (intent.kind === "respond") {
+    return execute(input, intent.standalone, source, { kind: "conversation" }, recent);
+  }
+  if (intent.kind === "read") {
+    if (isPmoRequest(intent.standalone)) {
+      const result = await runAgent(
+        {
+          userId: input.userId,
+          conversationRef: input.conversationRef,
+          origin: "user_message",
+          channel: input.channel,
+          inputMode: source,
+          authorization: auth,
+        },
+        intent.standalone,
+        "pmo",
+        recent
+      );
+      return { title: "TaskBrain", body: result, tags: [], summaryLine: result.slice(0, 500) };
+    }
+    return execute(input, intent.standalone, source, { kind: "question" }, recent);
+  }
+  if (intent.kind === "capture") {
+    const decision = evaluateOperation(
+      { name: `capture_${intent.captureKind}`, effect: "personal_write", reversible: true, description: "Save personal capture" },
+      auth
+    );
+    void logActivity({
+      type: "policy",
+      userId: input.userId,
+      origin: "user_message",
+      channel: input.channel,
+      inputMode: source,
+      trigger: "capture_policy",
+      detail: {
+        effect: "personal_write",
+        decision: decision.decision,
+        confidenceBand: intent.confidence >= 0.9 ? "high" : intent.confidence >= 0.72 ? "medium" : "low",
+      },
+    });
+    if (decision.decision !== "execute") {
+      return {
+        title: "Need clarification",
+        body: decision.reason,
+        tags: [],
+        summaryLine: decision.reason,
+      };
+    }
+    const common = {
+      title: intent.title || intent.standalone.slice(0, 80),
+      detail: intent.detail ?? intent.standalone,
+      tags: intent.tags ?? [],
+    };
+    if (intent.captureKind === "task") {
+      return execute(
+        input,
+        intent.standalone,
+        source,
+        { kind: "task", ...common, due: intent.due },
+        recent,
+        false
+      );
+    }
+    return execute(input, intent.standalone, source, {
+      kind: intent.captureKind ?? "reference",
+      ...common,
+      links: intent.links ?? [],
+    }, recent);
+  }
+  if (intent.kind === "act") {
+    if (!policy.allowPersonalWrites && !policy.allowSharedWrites) {
+      return {
+        title: "Not executed",
+        body: "Actions are not enabled for this channel or conversation.",
+        tags: [],
+        summaryLine: "Action blocked by channel policy",
+      };
+    }
+    const result = await runAgent(
+      {
+        userId: input.userId,
+        conversationRef: input.conversationRef,
+        origin: "user_message",
+        channel: input.channel,
+        inputMode: source,
+        authorization: auth,
+      },
+      intent.standalone,
+      agentProfileFor("action", intent.standalone),
+      recent
+    );
+    return { title: "TaskBrain", body: result, tags: [], summaryLine: result.slice(0, 500) };
+  }
+  return {
+    title: "Quick clarification",
+    body: intent.question ?? intent.ambiguity ?? "What would you like me to do?",
+    tags: [],
+    summaryLine: "Waiting for clarification",
+  };
 }
 
 async function execute(
@@ -118,9 +407,13 @@ async function execute(
   text: string,
   source: "text" | "voice",
   r: TriageResult,
-  recent: Awaited<ReturnType<typeof getRecentTurns>>
+  recent: Awaited<ReturnType<typeof getRecentTurns>>,
+  allowInferredSheetProposal = false
 ): Promise<Outbound> {
   const { userId } = input;
+  const effectivePolicy =
+    input.policy ??
+    channelPolicy(input.channel, { allowActions: input.allowActions ?? false });
   const attribution = {
     origin: "user_message" as const,
     channel: input.channel,
@@ -145,7 +438,7 @@ async function execute(
         { kind: "task", title: r.title, body: r.detail || text, tags: r.tags, source },
         attribution
       );
-      if (input.allowActions) {
+      if (allowInferredSheetProposal && effectivePolicy.allowSharedWrites) {
         const proposed = await maybeProposeSheetUpdate(userId, {
           title: r.title,
           detail: r.detail,
@@ -204,7 +497,7 @@ async function execute(
             ),
           ].join("\n")
         : "";
-      const answer = await answerQuestion(text, hits, attribution, graphContext);
+      const answer = await answerQuestion(text, hits, attribution, graphContext, recent);
       return { title: "From your brain", body: answer, tags: [], summaryLine: answer.slice(0, 200) };
     }
 
@@ -219,7 +512,7 @@ async function execute(
     }
 
     case "action": {
-      if (!input.allowActions) {
+      if (!effectivePolicy.allowPersonalWrites && !effectivePolicy.allowSharedWrites) {
         // Governance lever: some channels are capture-only.
         await saveNote(
           userId,
@@ -240,15 +533,21 @@ async function execute(
           userId,
           conversationRef: input.conversationRef,
           ...attribution,
+          authorization: {
+            explicit: true,
+            confidence: 1,
+            channel: effectivePolicy,
+          },
         },
         text,
-        agentProfileFor("action", text)
+        agentProfileFor("action", text),
+        recent
       );
       return { title: "Done", body: result, tags: [], summaryLine: result.slice(0, 200) };
     }
 
     case "followup": {
-      const resolved = await triage(r.resolvedText, [], attribution);
+      const resolved = await triage(r.resolvedText, recent, attribution);
       if (resolved.kind === "followup") {
         return {
           title: "Need more context",
@@ -257,7 +556,7 @@ async function execute(
           summaryLine: "Follow-up unresolved",
         };
       }
-      return execute(input, r.resolvedText, source, resolved, recent);
+      return execute(input, r.resolvedText, source, resolved, recent, allowInferredSheetProposal);
     }
   }
 }

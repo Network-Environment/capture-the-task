@@ -25,6 +25,8 @@ export interface Job {
   nextRun: string; // ISO — the poller's query key
   enabled: boolean;
   conversationRef?: unknown; // where to deliver results proactively
+  /** Snapshot of read-only tools approved when the job was created. */
+  allowedTools?: string[];
   lastRun?: string;
   lastStatus?: "ok" | "error";
   lastResultPreview?: string;

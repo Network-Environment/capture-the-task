@@ -211,6 +211,10 @@ function kpiGrid(stats: DayStats): string {
     <div class="stat"><div class="label">Captures</div><div class="value">${stats.captures.toLocaleString()}</div></div>
     <div class="stat"><div class="label">Tool calls</div><div class="value">${stats.toolCalls.toLocaleString()}</div></div>
     <div class="stat"><div class="label">Job runs</div><div class="value">${stats.jobRuns.toLocaleString()}</div></div>
+    <div class="stat"><div class="label">Intent decisions</div><div class="value">${(stats.intentDecisions ?? 0).toLocaleString()}</div></div>
+    <div class="stat${(stats.clarifications ?? 0) > 0 ? " alert" : ""}"><div class="label">Clarifications</div><div class="value">${(stats.clarifications ?? 0).toLocaleString()}</div></div>
+    <div class="stat${(stats.shadowMismatches ?? 0) > 0 ? " alert" : ""}"><div class="label">Shadow mismatches</div><div class="value">${(stats.shadowMismatches ?? 0).toLocaleString()}</div></div>
+    <div class="stat"><div class="label">Approval previews</div><div class="value">${(stats.policyApprovals ?? 0).toLocaleString()}</div></div>
     <div class="stat${stats.errors > 0 ? " alert" : ""}"><div class="label">Errors</div><div class="value">${stats.errors.toLocaleString()}</div></div>
     <div class="stat"><div class="label">Tokens in</div><div class="value">${stats.inputTokens.toLocaleString()}</div></div>
     <div class="stat"><div class="label">Tokens out</div><div class="value">${stats.outputTokens.toLocaleString()}</div></div>

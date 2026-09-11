@@ -9,7 +9,7 @@ import { saveNote, recall } from "../services/brain";
 import { scheduleJob, listJobs, cancelJob } from "../services/scheduler";
 import { rememberLesson, LessonKind } from "../services/agentMemory";
 import { mcpToolDefinitions, isMcpTool, callMcpTool } from "./mcpClient";
-import { requiresApproval, parkAction } from "../services/approvals";
+import { requiresApproval, parkAction, type PendingAction } from "../services/approvals";
 import { approvalMessage } from "../services/smartsheet";
 import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
 import { lookupOrg } from "../org/store";
@@ -18,6 +18,7 @@ import type {
   ActivityInputMode,
   ActivityOrigin,
 } from "../services/activityLog";
+import { logActivity } from "../services/activityLog";
 import {
   assertPublicHttpUrl,
   consumeBrowserBudget,
@@ -40,6 +41,12 @@ import {
 import { deterministicGraphId } from "../graph/validation";
 import type { GraphEdgeType, GraphNodeStatus } from "../graph/types";
 import { canViewMeetings, denyMeetings } from "../meetings/access";
+import {
+  evaluateOperation,
+  type AuthorizationContext,
+  type OperationMetadata,
+} from "../services/intent";
+import { channelPolicy } from "../channels/types";
 
 export interface ToolContext {
   userId: string;
@@ -49,6 +56,58 @@ export interface ToolContext {
   inputMode?: ActivityInputMode;
   trigger?: string;
   research?: ResearchBudget;
+  authorization?: AuthorizationContext;
+  /** Immutable tool envelope, primarily for approved scheduled jobs. */
+  allowedTools?: string[];
+}
+
+const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversible">> = {
+  save_note: { effect: "personal_write", reversible: true },
+  recall_notes: { effect: "read", reversible: true },
+  schedule_job: { effect: "scheduled", reversible: true },
+  list_jobs: { effect: "read", reversible: true },
+  remember_lesson: { effect: "personal_write", reversible: true },
+  cancel_job: { effect: "destructive", reversible: false },
+  recall_meetings: { effect: "read", reversible: true },
+  list_commitments: { effect: "read", reversible: true },
+  complete_commitment: { effect: "shared_write", reversible: true },
+  lookup_org: { effect: "read", reversible: true },
+  web_search: { effect: "read", reversible: true },
+  search_execution_graph: { effect: "read", reversible: true },
+  create_graph_project: { effect: "shared_write", reversible: true },
+  create_graph_task: { effect: "shared_write", reversible: true },
+  update_graph_item: { effect: "shared_write", reversible: true },
+  propose_graph_relationship: { effect: "shared_write", reversible: true },
+};
+const scheduledNativeReads = new Set([
+  "recall_notes",
+  "search_execution_graph",
+  "recall_meetings",
+  "list_commitments",
+  "lookup_org",
+  "list_jobs",
+]);
+
+export function operationMetadata(name: string): OperationMetadata {
+  const native = nativeEffects[name];
+  if (native) return { name, description: name.replaceAll("_", " "), ...native };
+  const readLike = /__(get|list|search|read|lookup|query|snapshot|navigate)(_|$)/i.test(name);
+  return {
+    name,
+    description: name.replaceAll("__", " "),
+    effect: !requiresApproval(name) && readLike ? "read" : "shared_write",
+    reversible: !requiresApproval(name) && readLike,
+  };
+}
+
+export async function scheduledReadToolEnvelope(): Promise<string[]> {
+  return (await allToolDefinitions())
+    .map((tool) => tool.function.name)
+    .filter(
+      (tool) =>
+        operationMetadata(tool).effect === "read" &&
+        (scheduledNativeReads.has(tool) || tool.startsWith("smartsheet__"))
+    );
 }
 
 const nativeDefs: ChatCompletionTool[] = [
@@ -357,14 +416,79 @@ function enabledNativeDefs(): ChatCompletionTool[] {
 export async function dispatch(
   ctx: ToolContext,
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  options: { approved?: boolean } = {}
 ): Promise<string> {
   try {
+    if (ctx.allowedTools && !ctx.allowedTools.includes(name)) {
+      return `NOT_ALLOWED: ${name} is outside this job's approved tool envelope.`;
+    }
     if (isMcpTool(name)) {
-      if (requiresApproval(name)) {
-        const id = await parkAction(ctx.userId, name, args);
-        return approvalMessage(id, name, args) + " Tell the user the write is queued until they approve.";
+      const [server, ...rest] = name.split("__");
+      if (server === "browser" && !isBrowserMcpTool(server, rest.join("__"))) {
+        return "Browser tool not allowed in v1 (navigate and snapshot only).";
       }
+    }
+    if (name === "schedule_job" && !Array.isArray(args.allowedTools)) {
+      args = {
+        ...args,
+        allowedTools: await scheduledReadToolEnvelope(),
+      };
+    }
+    const operation = operationMetadata(name);
+    const authorization =
+      ctx.authorization ??
+      ({
+        explicit: false,
+        confidence: 0,
+        channel: channelPolicy(ctx.channel === "imessage" ? "imessage" : "teams", {
+          identity: "weak",
+          allowActions: false,
+        }),
+      } satisfies AuthorizationContext);
+    if (!options.approved && process.env.UNIFIED_ACTION_POLICY_ENABLED === "true") {
+      const policy = evaluateOperation(operation, authorization);
+      void logActivity({
+        type: "policy",
+        userId: ctx.userId,
+        origin: ctx.origin,
+        channel: ctx.channel,
+        inputMode: ctx.inputMode,
+        trigger: ctx.trigger ?? "operation_policy",
+        detail: {
+          tool: name,
+          effect: operation.effect,
+          decision: policy.decision,
+          explicit: authorization.explicit,
+          confidenceBand:
+            authorization.confidence >= 0.9 ? "high" : authorization.confidence >= 0.72 ? "medium" : "low",
+        },
+      });
+      if (policy.decision === "clarify") return `CLARIFY: ${policy.reason}`;
+      if (policy.decision === "deny") return `NOT_ALLOWED: ${policy.reason}`;
+      if (policy.decision === "approve") {
+        const id = await parkAction(ctx.userId, name, args, {
+          effect: operation.effect,
+          reason: policy.reason,
+          summary: `${operation.description}: ${JSON.stringify(args).slice(0, 500)}`,
+          authorization,
+        });
+        return approvalMessage(id, name, args) + ` Reason: ${policy.reason}`;
+      }
+    }
+    if (
+      !options.approved &&
+      process.env.UNIFIED_ACTION_POLICY_ENABLED !== "true" &&
+      isMcpTool(name) &&
+      requiresApproval(name)
+    ) {
+      const id = await parkAction(ctx.userId, name, args, {
+        effect: operation.effect,
+        authorization,
+      });
+      return approvalMessage(id, name, args);
+    }
+    if (isMcpTool(name)) {
       const [server, ...rest] = name.split("__");
       const tool = rest.join("__");
       if (server === "browser") {
@@ -418,6 +542,9 @@ export async function dispatch(
           runOnce: args.runOnce ? String(args.runOnce) : undefined,
           prompt: String(args.prompt),
           conversationRef: ctx.conversationRef,
+          allowedTools: (args.allowedTools as string[]).filter(
+            (tool) => operationMetadata(tool).effect === "read"
+          ),
         });
         return `Scheduled "${job.name}" — next run ${job.nextRun}.`;
       }
@@ -637,6 +764,33 @@ export async function dispatch(
     // Tool errors go back to the model as text so it can recover or report.
     return `Tool ${name} failed: ${(err as Error).message}`;
   }
+}
+
+export async function executeApprovedAction(
+  action: PendingAction,
+  currentAuthorization: AuthorizationContext
+): Promise<string> {
+  if (!action.authorization) {
+    throw new Error("This action was created before secure authorization snapshots; prepare it again.");
+  }
+  const authorization =
+    currentAuthorization;
+  const currentPolicy = evaluateOperation(operationMetadata(action.tool), authorization);
+  if (currentPolicy.decision === "deny" || currentPolicy.decision === "clarify") {
+    throw new Error(`Action is no longer authorized: ${currentPolicy.reason}`);
+  }
+  return dispatch(
+    {
+      userId: action.userId,
+      origin: "approval",
+      channel: "internal",
+      trigger: "approved_action",
+      authorization,
+    },
+    action.tool,
+    action.args,
+    { approved: true }
+  );
 }
 
 function normalizePersonGraphId(id: string): string {

@@ -1,7 +1,7 @@
 {
   "routes": {
-    "triage":    { "deployment": "CHEAP_DEPLOYMENT",   "maxTokens": 600,  "temperature": 0 },
-    "agent":     { "deployment": "STANDARD_DEPLOYMENT","maxTokens": 1500, "temperature": 0 },
+    "triage":    { "deployment": "CHEAP_DEPLOYMENT",   "maxTokens": 1500, "temperature": 0 },
+    "agent":     { "deployment": "STANDARD_DEPLOYMENT","maxTokens": 3000, "temperature": 0 },
     "synthesis": { "deployment": "STANDARD_DEPLOYMENT","maxTokens": 1200, "temperature": 0.3 },
     "digest":    { "deployment": "PREMIUM_DEPLOYMENT", "maxTokens": 2500, "temperature": 0.3 }
   },

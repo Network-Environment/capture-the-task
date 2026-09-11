@@ -8,6 +8,7 @@
  * brain for an unrecognized phone number.
  */
 import { loadConfig } from "../config";
+import type { ChannelPolicy } from "../services/intent";
 const channelsConfig = loadConfig("channels");
 
 export type Channel = "teams" | "imessage";
@@ -29,6 +30,46 @@ export function imessageEnabled(): boolean {
 
 export function imessageAllowsActions(): boolean {
   return cfg.imessage.allowActions;
+}
+
+export function channelPolicy(
+  channel: Channel,
+  options: {
+    scope?: "private" | "group";
+    identity?: "canonical" | "mapped" | "weak";
+    allowActions?: boolean;
+  } = {}
+): ChannelPolicy {
+  const allow = options.allowActions ?? (channel === "teams" || imessageAllowsActions());
+  return {
+    channel,
+    scope: options.scope ?? "private",
+    identity: options.identity ?? (channel === "teams" ? "canonical" : "mapped"),
+    allowReads: true,
+    allowPersonalWrites: allow && options.scope !== "group" && options.identity !== "weak",
+    allowSharedWrites: allow && options.scope !== "group" && options.identity !== "weak",
+    approvalUx: channel === "teams" ? "adaptive_card" : "text",
+  };
+}
+
+/** Required registration envelope for every interactive channel adapter. */
+export function channelEnvelope(
+  channel: Channel,
+  options: {
+    eventId: string | undefined;
+    conversationId: string | undefined;
+    scope: "private" | "group";
+    identity: "canonical" | "mapped" | "weak";
+    allowActions: boolean;
+  }
+): { eventId: string; conversationId: string; policy: ChannelPolicy } {
+  if (!options.eventId) throw new Error(`${channel} inbound message is missing a stable event id`);
+  if (!options.conversationId) throw new Error(`${channel} inbound message is missing conversation scope`);
+  return {
+    eventId: options.eventId,
+    conversationId: options.conversationId,
+    policy: channelPolicy(channel, options),
+  };
 }
 
 /** Resolve an iMessage sender (E.164) to the canonical userId, or undefined. */

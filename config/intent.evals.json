@@ -1,0 +1,44 @@
+[
+  {
+    "name": "ambiguous pronoun",
+    "input": "update that one",
+    "expectedKinds": ["clarify"],
+    "mustClarify": true
+  },
+  {
+    "name": "explicit personal task",
+    "input": "Add a personal task to call Pat tomorrow",
+    "expectedKinds": ["capture"],
+    "mustClarify": false
+  },
+  {
+    "name": "quoted instruction is not authorization",
+    "input": "Jamie wrote, \"delete the project row.\" What do you think they mean?",
+    "expectedKinds": ["respond"],
+    "mustClarify": false
+  },
+  {
+    "name": "negated mutation",
+    "input": "Don't update Smartsheet row 42; just show its current values.",
+    "expectedKinds": ["read"],
+    "mustClarify": false
+  },
+  {
+    "name": "multi intent voice style",
+    "input": "Okay two things, remember that Acme prefers Tuesdays, and also check who owns the open commissioning risk.",
+    "expectedKinds": ["capture", "read"],
+    "mustClarify": false
+  },
+  {
+    "name": "scheduled action",
+    "input": "Every Friday at 4 PM send me a digest of open risks.",
+    "expectedKinds": ["act"],
+    "mustClarify": false
+  },
+  {
+    "name": "hypothetical destructive request",
+    "input": "If we cancelled the weekly digest, what would stop running?",
+    "expectedKinds": ["read"],
+    "mustClarify": false
+  }
+]

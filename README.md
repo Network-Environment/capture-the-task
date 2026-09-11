@@ -5,7 +5,9 @@
 > invariants any contributor (human or agent) must preserve. This README is
 > the quick tour.
 
-Voice/text capture (Teams or iMessage via Photon) → transcription → agentic triage → Azure "second brain" with vector recall.
+Voice/text capture (Teams or iMessage via Photon) → transcription → structured
+intent interpretation → deterministic risk policy → conversation, clarification,
+capture, retrieval, or approved action.
 Path 2 build: Bot Framework + Azure AI Foundry, everything in-tenant.
 
 ```
@@ -29,9 +31,9 @@ Triage (CHEAP model tier) — classify → extract → decide
         ▼
 Adaptive Card confirmation back to Teams ("Filed as task ✓ due Friday")
 
-Scheduler: jobs-as-data. schedule_job tool → Cosmos `jobs` doc (cron/one-off)
-→ single orchestrator polls every 60s → runs the stored prompt through the
-agent (PREMIUM tier) with full tools → proactive Teams message with the result.
+Scheduler: jobs-as-data. schedule_job tool → approval preview → Cosmos `jobs`
+doc (cron/one-off + immutable read-only tool envelope) → single orchestrator
+polls every 60s → proactive message with the result.
 ```
 
 ## Modularity contracts
@@ -50,8 +52,9 @@ agent (PREMIUM tier) with full tools → proactive Teams message with the result
 
 ## Design principles (the context-rot answer, encoded)
 
-- **Stateless capture.** Each message is a closed transaction. The model sees:
-  system prompt + current message + top-K retrieved notes. Never the Teams thread.
+- **Bounded conversational context.** The model sees the current message plus at
+  most five conversation-scoped structured turns and explicitly retrieved data,
+  never the whole Teams thread. Ambiguous mutations produce one focused question.
 - **Memory = the store, not the chat.** Recall happens via vector search over
   Cosmos DB (NoSQL API vector indexing) — cheap at personal scale, upgrade path
   to Azure AI Search later without touching the bot.
@@ -186,10 +189,13 @@ speak per-agent. Don't pay the coordination tax before the workload demands it.
 
 ## Production hardening (built in)
 
-- **Write approvals.** MCP tools listed in a server's `confirmTools`
-  (Smartsheet add_rows/update_rows by default) are never executed inline. The
-  call parks as a pending action (1h TTL); the user replies `approve <id>` or
-  `deny <id>`. An LLM can't write to the PMO system off a misheard voice memo.
+- **Risk-tiered approvals.** Read-only work and clear reversible personal
+  captures can proceed immediately. Shared, destructive, scheduled, costly, or
+  broad operations—native or MCP—park as an immutable action preview (1h);
+  Teams renders Approve/Deny actions and text channels accept
+  `approve <id>` / `deny <id>`.
+  New deployments begin in measured shadow mode; repository variables stage
+  policy and clarification enforcement after mismatch review.
 - **Alerts.** Conversation references are stored per user, so the system can
   proactively message anyone: job owners get failure alerts, and
   ADMIN_AAD_OBJECT_ID gets admin alerts (budget trips, exhausted retries).

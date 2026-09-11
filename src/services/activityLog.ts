@@ -17,6 +17,10 @@ const activity = cosmos
 
 export type ActivityType =
   | "capture"
+  | "intent"
+  | "policy"
+  | "clarification"
+  | "deduplication"
   | "triage"
   | "tool_call"
   | "model_call"
@@ -115,6 +119,11 @@ export interface DayStats {
   errors: number;
   inputTokens: number;
   outputTokens: number;
+  intentDecisions?: number;
+  clarifications?: number;
+  policyApprovals?: number;
+  shadowMismatches?: number;
+  duplicates?: number;
   byModel: Record<string, { calls: number; inputTokens: number; outputTokens: number }>;
 }
 
@@ -139,6 +148,8 @@ export async function dayStats(day = new Date().toISOString().slice(0, 10)): Pro
   const stats: DayStats = {
     captures: 0, toolCalls: 0, jobRuns: 0, errors: 0,
     inputTokens: 0, outputTokens: 0, byModel: {},
+    intentDecisions: 0, clarifications: 0, policyApprovals: 0,
+    shadowMismatches: 0, duplicates: 0,
   };
   for (const e of resources) {
     const attribution = normalizeAttribution(e);
@@ -147,6 +158,16 @@ export async function dayStats(day = new Date().toISOString().slice(0, 10)): Pro
     }
     if (e.type === "tool_call") stats.toolCalls++;
     if (e.type === "job_run") stats.jobRuns++;
+    if (e.type === "intent") {
+      stats.intentDecisions = (stats.intentDecisions ?? 0) + 1;
+      if (e.detail?.mismatch === true) stats.shadowMismatches = (stats.shadowMismatches ?? 0) + 1;
+      if (e.detail?.wouldClarify === true) stats.clarifications = (stats.clarifications ?? 0) + 1;
+    }
+    if (e.type === "clarification") stats.clarifications = (stats.clarifications ?? 0) + 1;
+    if (e.type === "policy" && e.detail?.decision === "approve") {
+      stats.policyApprovals = (stats.policyApprovals ?? 0) + 1;
+    }
+    if (e.type === "deduplication") stats.duplicates = (stats.duplicates ?? 0) + 1;
     if (e.type === "error") stats.errors++;
     if (e.type === "model_call" || e.type === "embedding") {
       const d = e.detail ?? {};
@@ -197,6 +218,8 @@ export async function usageBreakdown(
     inputTokens: 0,
     outputTokens: 0,
     byModel: {},
+    intentDecisions: 0, clarifications: 0, policyApprovals: 0,
+    shadowMismatches: 0, duplicates: 0,
   };
   const byChannel: Record<string, number> = {};
   const byOrigin: Record<string, number> = {};
@@ -219,6 +242,16 @@ export async function usageBreakdown(
       bump(byTool, String(d.tool ?? "unknown"));
     }
     if (e.type === "job_run") stats.jobRuns++;
+    if (e.type === "intent") {
+      stats.intentDecisions = (stats.intentDecisions ?? 0) + 1;
+      if (d.mismatch === true) stats.shadowMismatches = (stats.shadowMismatches ?? 0) + 1;
+      if (d.wouldClarify === true) stats.clarifications = (stats.clarifications ?? 0) + 1;
+    }
+    if (e.type === "clarification") stats.clarifications = (stats.clarifications ?? 0) + 1;
+    if (e.type === "policy" && d.decision === "approve") {
+      stats.policyApprovals = (stats.policyApprovals ?? 0) + 1;
+    }
+    if (e.type === "deduplication") stats.duplicates = (stats.duplicates ?? 0) + 1;
     if (e.type === "error") stats.errors++;
     if (e.userId) bump(byUser, String(e.userId));
     if (e.type === "model_call" || e.type === "embedding") {

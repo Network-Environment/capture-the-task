@@ -8,7 +8,7 @@ import { processCapture } from "./pipeline";
 import { downloadAudio } from "./services/transcription";
 import { createTodoTask } from "./services/graphTasks";
 import { saveConversationRef } from "./services/conversations";
-import { THINKING_RESPONSE } from "./channels/types";
+import { channelEnvelope, THINKING_RESPONSE } from "./channels/types";
 import {
   botWasMentioned,
   isPersonalTeamsConversation,
@@ -39,7 +39,14 @@ export class TaskBrainBot extends ActivityHandler {
       // Proactive jobs/alerts stay on the 1:1 chat, not the channel that @mentioned us.
       if (personal) void saveConversationRef(userId, convRef);
 
-      const text = stripBotMention(context.activity.text, entities, bot);
+      const submitted = context.activity.value as
+        | { taskbrainApproval?: string; pendingActionId?: string }
+        | undefined;
+      const approvalText =
+        submitted?.taskbrainApproval && submitted.pendingActionId
+          ? `${submitted.taskbrainApproval} ${submitted.pendingActionId}`
+          : undefined;
+      const text = approvalText ?? stripBotMention(context.activity.text, entities, bot);
 
       let audio: Buffer | undefined;
       const att = (context.activity.attachments ?? []).find((a) => AUDIO_TYPES.includes(a.contentType));
@@ -57,7 +64,7 @@ export class TaskBrainBot extends ActivityHandler {
         await context.sendActivity(
           personal
             ? "Send a thought, a task, or a voice memo — or ask me what you captured."
-            : "Mention me with a task or question (or open the TaskBrain chat for a private capture)."
+            : "Mention me with a question. Open the private TaskBrain chat to save or change anything."
         );
         return next();
       }
@@ -69,7 +76,13 @@ export class TaskBrainBot extends ActivityHandler {
         channel: "teams",
         text,
         audio,
-        allowActions: true,
+        ...channelEnvelope("teams", {
+          eventId: context.activity.id,
+          conversationId: context.activity.conversation?.id,
+          scope: personal ? "private" : "group",
+          identity: context.activity.from.aadObjectId ? "canonical" : "weak",
+          allowActions: true,
+        }),
         conversationRef: personal ? convRef : undefined,
         createTask: (title, detail, due) => createTodoTask(context, title, detail, due),
       });
@@ -115,6 +128,7 @@ async function getAttachmentToken(context: TurnContext): Promise<string | undefi
 }
 
 function card(title: string, body: string, tags: string[]): Attachment {
+  const pendingId = body.match(/\b(pa-[a-z0-9]+)\b/i)?.[1];
   return CardFactory.adaptiveCard({
     $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
     type: "AdaptiveCard",
@@ -126,5 +140,21 @@ function card(title: string, body: string, tags: string[]): Attachment {
         ? [{ type: "TextBlock", text: tags.map((t) => `#${t}`).join("  "), isSubtle: true, wrap: true }]
         : []),
     ],
+    ...(pendingId
+      ? {
+          actions: [
+            {
+              type: "Action.Submit",
+              title: "Approve",
+              data: { taskbrainApproval: "approve", pendingActionId: pendingId },
+            },
+            {
+              type: "Action.Submit",
+              title: "Deny",
+              data: { taskbrainApproval: "deny", pendingActionId: pendingId },
+            },
+          ],
+        }
+      : {}),
   });
 }

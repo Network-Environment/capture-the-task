@@ -26,6 +26,7 @@ import {
   imessageAllowsActions,
   resolveIMessageUser,
   phoneForUser,
+  channelEnvelope,
   THINKING_RESPONSE,
   toPlainText,
 } from "./types";
@@ -43,15 +44,6 @@ type IMessageMessage = IMessageStream extends AsyncIterable<[unknown, infer M]> 
 
 let app: SpectrumInstance | null = null;
 let im: IMessageInstance | null = null;
-
-const seen = new Map<string, number>(); // message.id → seenAt (dedupe, 48h)
-function alreadySeen(id: string): boolean {
-  const now = Date.now();
-  for (const [k, t] of seen) if (now - t > 48 * 3600_000) seen.delete(k);
-  if (seen.has(id)) return true;
-  seen.set(id, now);
-  return false;
-}
 
 export async function startPhotonChannel(): Promise<void> {
   if (!imessageEnabled()) {
@@ -91,7 +83,6 @@ export async function startPhotonChannel(): Promise<void> {
 }
 
 async function handleInbound(space: IMessageSpace, message: IMessageMessage): Promise<void> {
-  if (alreadySeen(message.id)) return;
   if (space.type === "group") return; // DMs only for a personal capture tool
 
   const phone = message.sender?.id;
@@ -143,7 +134,13 @@ async function handleInbound(space: IMessageSpace, message: IMessageMessage): Pr
       channel: "imessage",
       text,
       audio,
-      allowActions: imessageAllowsActions(),
+      ...channelEnvelope("imessage", {
+        eventId: message.id,
+        conversationId: space.id,
+        scope: "private",
+        identity: "mapped",
+        allowActions: imessageAllowsActions(),
+      }),
       conversationRef: { channel: "imessage", phone },
     });
     await space.send(toPlainText(out.title, out.body, out.tags));
