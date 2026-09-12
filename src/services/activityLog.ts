@@ -18,6 +18,7 @@ const activity = cosmos
 export type ActivityType =
   | "capture"
   | "intent"
+  | "inbound_quality"
   | "policy"
   | "clarification"
   | "deduplication"

@@ -352,15 +352,23 @@ park write operations until an explicit `approve pa-x`; channel parity does
 not bypass write approval. Unknown numbers remain silently rejected.
 
 Both interactive adapters immediately send `thinking about response` before
-processing. The shared intent interpreter resolves recent references, splits
-genuinely separate requests, records explicitness and confidence, and asks one
-focused question when a mutation is ambiguous. Invalid output fails closed to
-clarification. Clear reversible personal captures proceed; shared, destructive,
-scheduled, costly, or broad operations are parked with a preview for approval.
-Production starts with `INTENT_SHADOW_MODE=true` and enforcement flags false;
-the Usage page exposes shadow mismatches and clarification candidates. Promote
-repository variables in order: unified policy, clarification enforcement, then
-set shadow false after reviewing real traffic.
+processing. A deterministic quality gate first handles probes (`test`, `ping`),
+repeated noise, punctuation/gibberish, and context-free single words without a
+model call or durable note. It asks one focused question, explains how to use
+TaskBrain, or refuses credential/identity/policy bypass attempts. The gate
+judges the requested operation rather than threat-related vocabulary, so
+quoted security analysis and explicit incident notes remain valid inputs.
+
+The shared intent interpreter then resolves recent references, splits
+genuinely separate requests, records explicitness and confidence, and assigns
+`proceed`, `clarify`, `help`, or `refuse` before execution. Invalid output fails
+closed to clarification. Clear reversible personal captures proceed; shared,
+destructive, scheduled, costly, or broad operations are parked with a preview
+for approval. Production enforcement is on:
+`INTENT_SHADOW_MODE=false`, `CLARIFICATION_ENFORCEMENT_ENABLED=true`, and
+`UNIFIED_ACTION_POLICY_ENABLED=true`. Set `INBOUND_QUALITY_GATE_ENABLED=false`
+only as a narrow rollback; intent and action policy remain independently
+controlled. Activity stores the disposition/reason code, never rejected text.
 
 ### Context-rot policy (why the bot stays fast forever)
 
@@ -410,10 +418,11 @@ patched by bootstrap.sh) supplies the same names.
 | `EXECUTION_GRAPH_ENABLED` | expose graph projection, recall, API, and admin view | Bicep `true` |
 | `EXECUTION_GRAPH_WRITES_ENABLED` | expose human/agent project-task mutations | GitHub repository variable, default `false` |
 | `GRAPH_WORKSPACE_ID` | shared Cosmos partition / workspace identity | Bicep `org` |
-| `INTENT_GATEWAY_ENABLED` / `INTENT_SHADOW_MODE` | structured interpretation and non-enforcing comparison mode | repo variables; defaults `true` / `true` |
-| `CLARIFICATION_ENFORCEMENT_ENABLED` | persist and ask before uncertain mutations | repo variable; staged default `false` |
-| `UNIFIED_ACTION_POLICY_ENABLED` | risk-policy gate across native and MCP operations | repo variable; staged default `false` |
+| `INTENT_GATEWAY_ENABLED` / `INTENT_SHADOW_MODE` | structured interpretation and optional non-enforcing comparison mode | repo variables; defaults `true` / `false` |
+| `CLARIFICATION_ENFORCEMENT_ENABLED` | persist and ask before uncertain mutations | repo variable; default `true` |
+| `UNIFIED_ACTION_POLICY_ENABLED` | risk-policy gate across native and MCP operations | repo variable; default `true` |
 | `INTENT_CONFIDENCE_THRESHOLD` | minimum confidence before mutation | Bicep `0.72` |
+| `INBOUND_QUALITY_GATE_ENABLED` | no-write handling for probes, fragments, noise, and safeguard bypass attempts | repo variable; default `true` |
 | `MEETING_TTL_DAYS` / `COMMITMENT_TTL_DAYS` | Cosmos TTL for meeting docs / commitments | Bicep 90 / 180 |
 | `MEETING_ORGANIZERS_PER_RUN` | Function round-robin batch size | Function app setting (25) |
 | `PLAUD_INGEST_ENABLED` | poll mapped Plaud accounts for meeting metadata | GitHub repository variable, default `false` |

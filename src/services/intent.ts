@@ -2,6 +2,17 @@ import type { Channel } from "../channels/types";
 
 export type IntentKind = "respond" | "read" | "capture" | "act" | "clarify";
 export type CaptureKind = "task" | "idea" | "reference";
+export type MessageDisposition = "proceed" | "clarify" | "help" | "refuse";
+export type IntentReason =
+  | "understood"
+  | "probe"
+  | "insufficient_context"
+  | "nonsense"
+  | "repeated"
+  | "unsafe_request"
+  | "policy_bypass"
+  | "credential_request"
+  | "identity_bypass";
 export type OperationEffect =
   | "read"
   | "personal_write"
@@ -37,6 +48,9 @@ export interface InterpretedIntent {
 }
 
 export interface IntentPlan {
+  disposition: MessageDisposition;
+  reason: IntentReason;
+  response?: string;
   intents: InterpretedIntent[];
   confidence: number;
   assumptions: string[];
@@ -105,6 +119,26 @@ export function evaluateOperation(
 export function validateIntentPlan(raw: unknown): IntentPlan | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const value = raw as Record<string, unknown>;
+  const disposition = String(value.disposition) as MessageDisposition;
+  const reason = String(value.reason) as IntentReason;
+  if (!["proceed", "clarify", "help", "refuse"].includes(disposition)) {
+    return undefined;
+  }
+  if (
+    ![
+      "understood",
+      "probe",
+      "insufficient_context",
+      "nonsense",
+      "repeated",
+      "unsafe_request",
+      "policy_bypass",
+      "credential_request",
+      "identity_bypass",
+    ].includes(reason)
+  ) {
+    return undefined;
+  }
   if (!Array.isArray(value.intents) || value.intents.length === 0 || value.intents.length > 8) {
     return undefined;
   }
@@ -153,7 +187,32 @@ export function validateIntentPlan(raw: unknown): IntentPlan | undefined {
         (Boolean(i.ambiguity) || Boolean(i.missing?.length))) ||
       ((i.kind === "capture" || i.kind === "act") && !i.explicit)
   );
+  const response =
+    typeof value.response === "string" && value.response.trim()
+      ? value.response.trim()
+      : undefined;
+  if (
+    (disposition === "help" || disposition === "refuse") &&
+    (!response || intents.some((intent) => intent.kind !== "respond"))
+  ) {
+    return undefined;
+  }
+  if (
+    disposition === "clarify" &&
+    !intents.some((intent) => intent.kind === "clarify")
+  ) {
+    return undefined;
+  }
+  if (
+    disposition === "proceed" &&
+    (reason !== "understood" || intents.some((intent) => intent.kind === "clarify"))
+  ) {
+    return undefined;
+  }
   return {
+    disposition,
+    reason,
+    response,
     intents,
     confidence: normalizeConfidence(value.confidence),
     assumptions: Array.isArray(value.assumptions) ? value.assumptions.map(String) : [],
@@ -166,7 +225,9 @@ export function validateIntentPlan(raw: unknown): IntentPlan | undefined {
 }
 
 export function planNeedsClarification(plan: IntentPlan): boolean {
+  if (plan.disposition === "help" || plan.disposition === "refuse") return false;
   return (
+    plan.disposition === "clarify" ||
     plan.confidence < INTENT_CONFIDENCE_THRESHOLD ||
     Boolean(plan.clarification) ||
     plan.intents.some(

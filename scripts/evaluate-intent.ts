@@ -7,6 +7,7 @@ interface Fixture {
   name: string;
   input: string;
   expectedKinds: string[];
+  expectedDisposition: "proceed" | "clarify" | "help" | "refuse";
   mustClarify: boolean;
 }
 
@@ -30,12 +31,13 @@ async function main(): Promise<void> {
     const clarify = planNeedsClarification(plan);
     const ok =
       JSON.stringify(kinds) === JSON.stringify(fixture.expectedKinds) &&
+      plan.disposition === fixture.expectedDisposition &&
       clarify === fixture.mustClarify;
     if (ok) passed++;
     console.log(`${ok ? "PASS" : "FAIL"} ${fixture.name}`);
     if (!ok) {
-      console.log(`  expected kinds=${fixture.expectedKinds.join(",")} clarify=${fixture.mustClarify}`);
-      console.log(`  actual   kinds=${kinds.join(",")} clarify=${clarify}`);
+      console.log(`  expected disposition=${fixture.expectedDisposition} kinds=${fixture.expectedKinds.join(",")} clarify=${fixture.mustClarify}`);
+      console.log(`  actual   disposition=${plan.disposition} kinds=${kinds.join(",")} clarify=${clarify}`);
       console.log(`  plan=${JSON.stringify(plan)}`);
     }
   }

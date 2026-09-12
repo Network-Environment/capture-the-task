@@ -81,9 +81,10 @@ jobs:
           WEB_SEARCH_API_KEY: ${{ secrets.WEB_SEARCH_API_KEY }}
           EXECUTION_GRAPH_WRITES_ENABLED: ${{ vars.EXECUTION_GRAPH_WRITES_ENABLED || 'false' }}
           INTENT_GATEWAY_ENABLED: ${{ vars.INTENT_GATEWAY_ENABLED || 'true' }}
-          INTENT_SHADOW_MODE: ${{ vars.INTENT_SHADOW_MODE || 'true' }}
-          CLARIFICATION_ENFORCEMENT_ENABLED: ${{ vars.CLARIFICATION_ENFORCEMENT_ENABLED || 'false' }}
-          UNIFIED_ACTION_POLICY_ENABLED: ${{ vars.UNIFIED_ACTION_POLICY_ENABLED || 'false' }}
+          INTENT_SHADOW_MODE: ${{ vars.INTENT_SHADOW_MODE || 'false' }}
+          CLARIFICATION_ENFORCEMENT_ENABLED: ${{ vars.CLARIFICATION_ENFORCEMENT_ENABLED || 'true' }}
+          UNIFIED_ACTION_POLICY_ENABLED: ${{ vars.UNIFIED_ACTION_POLICY_ENABLED || 'true' }}
+          INBOUND_QUALITY_GATE_ENABLED: ${{ vars.INBOUND_QUALITY_GATE_ENABLED || 'true' }}
           PLAUD_INGEST_ENABLED: ${{ vars.PLAUD_INGEST_ENABLED || 'false' }}
         run: |
           test -n "$BOT_APP_ID" -a -n "$BOT_APP_PASSWORD" -a -n "$ADMIN_APP_ID" -a -n "$ADMIN_APP_SECRET" || { echo "missing required secrets (BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_APP_ID, ADMIN_APP_SECRET) — run scripts/bootstrap.sh or scripts/setup-admin-sso.sh"; exit 1; }
@@ -118,6 +119,7 @@ jobs:
                intentShadowMode="$INTENT_SHADOW_MODE" \
                clarificationEnforcementEnabled="$CLARIFICATION_ENFORCEMENT_ENABLED" \
                unifiedActionPolicyEnabled="$UNIFIED_ACTION_POLICY_ENABLED" \
+               inboundQualityGateEnabled="$INBOUND_QUALITY_GATE_ENABLED" \
                plaudIngestEnabled="$PLAUD_INGEST_ENABLED" \
                $BROWSER_PARAM)
           echo "app-name=$(jq -r '.appName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"

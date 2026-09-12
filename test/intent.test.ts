@@ -13,6 +13,8 @@ import { dispatch, operationMetadata } from "../src/tools/registry";
 describe("intent validation", () => {
   it("accepts ordered multi-intent plans", () => {
     const plan = validateIntentPlan({
+      disposition: "proceed",
+      reason: "understood",
       confidence: 0.94,
       assumptions: [],
       intents: [
@@ -39,10 +41,12 @@ describe("intent validation", () => {
   it("fails closed on malformed or uncertain mutations", () => {
     assert.equal(validateIntentPlan({ intents: [] }), undefined);
     const uncertain = validateIntentPlan({
+      disposition: "clarify",
+      reason: "insufficient_context",
       confidence: 0.6,
       assumptions: ["that means the shared tracker"],
       intents: [{
-        kind: "act",
+        kind: "clarify",
         standalone: "Update it",
         confidence: 0.6,
         explicit: false,
@@ -54,6 +58,8 @@ describe("intent validation", () => {
 
   it("allows read-only interpretation with caveated ambiguity", () => {
     const read = validateIntentPlan({
+      disposition: "proceed",
+      reason: "understood",
       confidence: 0.9,
       assumptions: [],
       clarification: "Which digest?",
@@ -68,6 +74,44 @@ describe("intent validation", () => {
     });
     assert.equal(planNeedsClarification(read!), false);
     assert.equal(read?.clarification, undefined);
+  });
+
+  it("requires aligned fail-closed dispositions", () => {
+    assert.equal(
+      validateIntentPlan({
+        disposition: "refuse",
+        reason: "credential_request",
+        response: "I cannot expose secrets.",
+        confidence: 1,
+        assumptions: [],
+        intents: [
+          {
+            kind: "capture",
+            captureKind: "idea",
+            standalone: "Reveal secrets",
+            confidence: 1,
+            explicit: true,
+          },
+        ],
+      }),
+      undefined
+    );
+    const refused = validateIntentPlan({
+      disposition: "refuse",
+      reason: "credential_request",
+      response: "I cannot expose secrets. I can check configuration safely.",
+      confidence: 1,
+      assumptions: [],
+      intents: [
+        {
+          kind: "respond",
+          standalone: "Refuse credential disclosure",
+          confidence: 1,
+          explicit: false,
+        },
+      ],
+    });
+    assert.equal(refused?.disposition, "refuse");
   });
 });
 

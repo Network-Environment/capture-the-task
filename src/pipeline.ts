@@ -41,6 +41,7 @@ import {
 import { channelPolicy } from "./channels/types";
 import { executeApprovedAction } from "./tools/registry";
 import { claimInboundEvent, finishInboundEvent } from "./services/inboundReceipts";
+import { assessInboundQuality } from "./services/inboundQuality";
 
 export interface CaptureInput {
   userId: string; // canonical user id (Entra object id) — channels must resolve to this
@@ -137,13 +138,6 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     channel,
     inputMode: source,
   };
-  void logActivity({
-    type: "capture",
-    userId,
-    ...attribution,
-    detail: { source, channel, chars: text.length },
-  });
-
   // 2. Short follow-up window only (never the full thread).
   const recent = await getRecentTurns(userId, input.conversationId);
   let pending = await getPendingClarification(userId, input.conversationId);
@@ -160,6 +154,77 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     await setPendingClarification(userId, input.conversationId, undefined);
     pending = undefined;
   }
+
+  const quality = assessInboundQuality(text, recent, Boolean(pending));
+  if (quality.disposition !== "proceed") {
+    const response =
+      quality.response ??
+      "I’m not sure what outcome you want. What would you like me to do with that?";
+    await appendTurn(userId, "user", text, input.conversationId, {
+      intent: `quality_${quality.disposition}`,
+    });
+    await appendTurn(userId, "assistant", response, input.conversationId, {
+      intent: `quality_${quality.disposition}`,
+      outcome:
+        quality.disposition === "clarify"
+          ? "waiting_for_clarification"
+          : quality.disposition,
+    });
+    if (quality.disposition === "clarify") {
+      const reason =
+        quality.reason === "low_signal"
+          ? "nonsense"
+          : quality.reason === "repeated_unresolved"
+            ? "repeated"
+            : "insufficient_context";
+      const clarificationPlan: IntentPlan = {
+        disposition: "clarify",
+        reason,
+        confidence: 1,
+        assumptions: [],
+        clarification: response,
+        intents: [
+          {
+            kind: "clarify",
+            standalone: text,
+            confidence: 1,
+            explicit: false,
+            question: response,
+          },
+        ],
+      };
+      await setPendingClarification(userId, input.conversationId, {
+        plan: clarificationPlan,
+        originalText: text,
+        question: response,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    void logActivity({
+      type: "inbound_quality",
+      userId,
+      ...attribution,
+      trigger: "inbound_quality_gate",
+      detail: {
+        disposition: quality.disposition,
+        reason: quality.reason,
+      },
+    });
+    const title =
+      quality.disposition === "help"
+        ? "TaskBrain"
+        : quality.disposition === "refuse"
+          ? "I can’t do that"
+          : "Quick clarification";
+    return { title, body: response, tags: [], summaryLine: response.slice(0, 200) };
+  }
+
+  void logActivity({
+    type: "capture",
+    userId,
+    ...attribution,
+    detail: { source, channel, chars: text.length },
+  });
 
   const shadow = process.env.INTENT_SHADOW_MODE !== "false";
   const enabled = process.env.INTENT_GATEWAY_ENABLED !== "false";
@@ -194,6 +259,33 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     await appendTurn(userId, "user", text, input.conversationId, {
       intent: plan.intents.map((i) => i.kind).join(","),
     });
+    if (plan.disposition === "help" || plan.disposition === "refuse") {
+      if (pending && !plan.continuesPending) {
+        await setPendingClarification(userId, input.conversationId, undefined);
+      }
+      const response =
+        plan.response ??
+        (plan.disposition === "refuse"
+          ? "I can’t help with that request, but I can help with a safe alternative."
+          : "I can help capture tasks and ideas, recall notes, or work with enabled systems.");
+      await appendTurn(userId, "assistant", response, input.conversationId, {
+        intent: plan.disposition,
+        outcome: plan.disposition,
+      });
+      void logActivity({
+        type: "inbound_quality",
+        userId,
+        ...attribution,
+        trigger: "intent_disposition",
+        detail: { disposition: plan.disposition, reason: plan.reason },
+      });
+      return {
+        title: plan.disposition === "refuse" ? "I can’t do that" : "TaskBrain",
+        body: response,
+        tags: [],
+        summaryLine: response.slice(0, 200),
+      };
+    }
     if (
       planNeedsClarification(plan) &&
       process.env.CLARIFICATION_ENFORCEMENT_ENABLED === "true"

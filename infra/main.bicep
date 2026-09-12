@@ -57,16 +57,19 @@ param graphWorkspaceId string = 'org'
 param intentGatewayEnabled bool = true
 
 @description('Evaluate the intent gateway without enforcing it')
-param intentShadowMode bool = true
+param intentShadowMode bool = false
 
 @description('Ask a focused question before uncertain mutations')
-param clarificationEnforcementEnabled bool = false
+param clarificationEnforcementEnabled bool = true
 
 @description('Apply risk policy to native and MCP operations')
-param unifiedActionPolicyEnabled bool = false
+param unifiedActionPolicyEnabled bool = true
 
 @description('Minimum interpretation confidence before a mutation can proceed')
 param intentConfidenceThreshold string = '0.72'
+
+@description('Reject probes, noise, unsafe requests, and context-free fragments before persistence')
+param inboundQualityGateEnabled bool = true
 
 @description('Discover Plaud recordings with the configured OAuth tokens')
 param plaudIngestEnabled bool = false
@@ -677,6 +680,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'CLARIFICATION_ENFORCEMENT_ENABLED', value: string(clarificationEnforcementEnabled) }
         { name: 'UNIFIED_ACTION_POLICY_ENABLED', value: string(unifiedActionPolicyEnabled) }
         { name: 'INTENT_CONFIDENCE_THRESHOLD', value: intentConfidenceThreshold }
+        { name: 'INBOUND_QUALITY_GATE_ENABLED', value: string(inboundQualityGateEnabled) }
         { name: 'BROWSER_MCP_URL', value: 'https://${browserApp.properties.configuration.ingress.fqdn}/mcp' }
         { name: 'BROWSER_MCP_TOKEN', value: browserToken }
         { name: 'SPECTRUM_PROJECT_ID', value: spectrumProjectId }
