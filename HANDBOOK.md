@@ -254,6 +254,11 @@ Plaud row, the Function fetches its transcript in memory and runs the normal
 meeting summary, commitment, and graph pipeline. Audio and raw transcripts
 are never stored by TaskBrain; Plaud remains their system of record.
 
+Shipping this code is safe while waiting on the owner’s OAuth token. Deploy
+creates the Key Vault and leaves ingest **off**. Nothing talks to Plaud until
+you import the refresh token, add the account in `config/plaud-accounts.json`,
+and set repository variable `PLAUD_INGEST_ENABLED=true`.
+
 One-time setup per Plaud account:
 
 1. Add an account id and its Entra organizer mapping to

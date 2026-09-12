@@ -5,6 +5,7 @@
     "id is the key used inside the plaud-oauth-tokens Key Vault secret.",
     "organizerId is the Entra object id used by TaskBrain meeting access.",
     "Example: { \"id\": \"owner\", \"organizerId\": \"00000000-0000-0000-0000-000000000000\", \"organizerName\": \"Owner\" }",
+    "Leave accounts empty until the owner authorizes Plaud. Ingest stays off (PLAUD_INGEST_ENABLED=false) until then.",
     "This file contains identity mapping only. Never put Plaud tokens or passwords here."
   ]
 }
