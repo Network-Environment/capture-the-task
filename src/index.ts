@@ -15,6 +15,8 @@ import {
 import { startOrchestrator } from "./jobs/orchestrator";
 import { initDelivery } from "./channels/deliver";
 import { startPhotonChannel, stopPhotonChannel } from "./channels/photon";
+import { refreshMeetingViewers } from "./org/store";
+import { cosmosConfigured } from "./services/cosmos";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -78,12 +80,21 @@ server.post("/admin/meetings/summarize", queueMeetingSummaries);
 server.post("/admin/org", saveOrgDirectory);
 
 server.get("/healthz", (_req, res, next) => {
-  res.send(200, { ok: true });
+  res.send(200, {
+    ok: true,
+    cosmos: cosmosConfigured(),
+    storage: Boolean(process.env.STORAGE_CONNECTION_STRING),
+  });
   return next();
 });
 
 const port = process.env.PORT || 3978;
-server.listen(port, () => console.log(`TaskBrain listening on :${port}`));
+server.listen(port, () => {
+  console.log(`TaskBrain listening on :${port}`);
+  void refreshMeetingViewers().catch((err) =>
+    console.error("[org] meeting viewer warmup failed:", err)
+  );
+});
 
 process.on("SIGTERM", async () => {
   await stopPhotonChannel();

@@ -15,7 +15,7 @@ import {
   type DayStats,
   type UsageBreakdown,
 } from "../services/activityLog";
-import { CosmosClient } from "@azure/cosmos";
+import { cosmosContainer } from "../services/cosmos";
 import {
   listCommitmentsForDash,
   listTranscriptAvailability,
@@ -75,12 +75,6 @@ import {
   type SectionId,
   type Tone,
 } from "./markup";
-
-const cosmos = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
-const db = cosmos.database(process.env.COSMOS_DB ?? "taskbrain");
 
 const agentsConfig = loadConfig<{
   default: string;
@@ -193,12 +187,11 @@ async function renderSection(
       );
     }
     case "jobs": {
-      const jobs = await db.container("jobs").items.query("SELECT * FROM c ORDER BY c.nextRun").fetchAll();
+      const jobs = await cosmosContainer("jobs").items.query("SELECT * FROM c ORDER BY c.nextRun").fetchAll();
       return renderJobs(signedIn, jobs.resources as Record<string, unknown>[]);
     }
     case "memory": {
-      const lessons = await db
-        .container("agent-memory")
+      const lessons = await cosmosContainer("agent-memory")
         .items.query("SELECT * FROM c ORDER BY c.createdAt DESC")
         .fetchAll();
       return renderMemory(signedIn, lessons.resources as Record<string, unknown>[]);
@@ -785,7 +778,8 @@ export function renderOrg(
         <form class="form" method="post" action="/admin/org">
           ${hidden}
           <input type="hidden" name="_action" value="save">
-          <label>Title <input name="title" required maxlength="80"></label>
+          <label>Title <input name="title" required maxlength="80" placeholder="Meeting viewer"></label>
+          <p class="pad muted">Title <code>Meeting viewer</code> grants meeting/commitment recall to that person&apos;s Entra id, in addition to the bootstrap allowlist.</p>
           <label>Person ${selectHtml("personId", personOpts, undefined, "Select person")}</label>
           <label>Team ${selectHtml("unitId", unitOpts)}</label>
           <label class="span2">Mandate <textarea name="mandate" maxlength="400"></textarea></label>

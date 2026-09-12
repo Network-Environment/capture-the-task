@@ -12,19 +12,13 @@
  */
 import { CloudAdapter } from "botbuilder";
 import { deliver } from "../channels/deliver";
-import { CosmosClient } from "@azure/cosmos";
+import { cosmosContainer } from "../services/cosmos";
 import { dueJobs, markRun, computeNextRun, Job } from "../services/scheduler";
 import { runAgent } from "../services/agent";
 import { logActivity } from "../services/activityLog";
 import { alertUser, alertAdmin } from "../services/alerts";
 import { channelPolicy } from "../channels/types";
 import { scheduledReadToolEnvelope } from "../tools/registry";
-
-const cosmos = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
-const jobsContainer = cosmos.database(process.env.COSMOS_DB ?? "taskbrain").container("jobs");
 
 const POLL_MS = 60_000;
 const MAX_RETRIES = 3;
@@ -60,7 +54,7 @@ async function claim(job: Job & { _etag?: string }): Promise<Job | null> {
       nextRun: new Date(Date.now() + 10 * 60_000).toISOString(), // provisional hold
       claimedAt: new Date().toISOString(),
     };
-    await jobsContainer.item(job.id, job.userId).replace(claimedJob, {
+    await cosmosContainer("jobs").item(job.id, job.userId).replace(claimedJob, {
       accessCondition: { type: "IfMatch", condition: job._etag ?? "" },
     });
     return claimedJob;
@@ -128,7 +122,7 @@ async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Prom
 
     if (retryCount + 1 < MAX_RETRIES) {
       // reschedule the same run shortly
-      await jobsContainer.items.upsert({
+      await cosmosContainer("jobs").items.upsert({
         ...job,
         retryCount: retryCount + 1,
         nextRun: new Date(Date.now() + RETRY_DELAY_MS).toISOString(),
@@ -139,7 +133,7 @@ async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Prom
       await alertUser(job.userId, `Job "${job.name}" failed ${MAX_RETRIES} times: ${message.slice(0, 200)}`);
       await alertAdmin(`Job ${job.id} ("${job.name}") exhausted retries: ${message.slice(0, 200)}`);
       // recurring: give up on this occurrence, move to next slot; one-off: disable
-      await jobsContainer.items.upsert({
+      await cosmosContainer("jobs").items.upsert({
         ...job,
         retryCount: 0,
         enabled: !job.runOnce,

@@ -1,6 +1,7 @@
-import { CosmosClient, type Container } from "@azure/cosmos";
+import { type Container } from "@azure/cosmos";
 import { randomUUID } from "node:crypto";
 import { embed } from "../services/router";
+import { cosmosContainer } from "../services/cosmos";
 import type { ActivityAttribution } from "../services/activityLog";
 import type {
   CreateGraphEdge,
@@ -28,13 +29,12 @@ import {
   visibleTo,
 } from "./validation";
 
-const cosmos = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
-const db = cosmos.database(process.env.COSMOS_DB ?? "taskbrain");
-const nodes = db.container("graph-nodes");
-const edges = db.container("graph-edges");
+function nodes() {
+  return cosmosContainer("graph-nodes");
+}
+function edges() {
+  return cosmosContainer("graph-edges");
+}
 
 export function graphEnabled(): boolean {
   return /^true$/i.test(process.env.EXECUTION_GRAPH_ENABLED ?? "");
@@ -122,11 +122,11 @@ export async function putGraphNode(
         : await embed(nodeText(draft), { ...attribution, trigger: "graph_index" }));
   const node: GraphNode = { ...draft, embedding };
   if (existing) {
-    await nodes.item(id, workspaceId).replace(node, {
+    await nodes().item(id, workspaceId).replace(node, {
       accessCondition: { type: "IfMatch", condition: existing._etag ?? "" },
     });
   } else {
-    await nodes.items.create(node);
+    await nodes().items.create(node);
   }
   return node;
 }
@@ -154,7 +154,7 @@ export async function patchGraphNode(
 
 async function readNodeRaw(id: string): Promise<GraphNode | undefined> {
   try {
-    const { resource } = await nodes.item(id, graphWorkspaceId()).read<GraphNode>();
+    const { resource } = await nodes().item(id, graphWorkspaceId()).read<GraphNode>();
     return resource;
   } catch (err) {
     if ((err as { code?: number }).code === 404) return undefined;
@@ -170,7 +170,7 @@ export async function getGraphNode(id: string, userId: string): Promise<GraphNod
 
 async function edgeList(reviewStates: GraphReviewState[] = ["accepted"]): Promise<GraphEdge[]> {
   const placeholders = reviewStates.map((_, i) => `@review${i}`);
-  const { resources } = await edges.items
+  const { resources } = await edges().items
     .query<GraphEdge>({
       query: `SELECT * FROM c WHERE c.workspaceId = @workspaceId
         AND c.reviewState IN (${placeholders.join(",")})`,
@@ -203,7 +203,7 @@ export async function putGraphEdge(input: CreateGraphEdge, actorId: string): Pro
   const id = input.id ?? deterministicEdgeId(input.fromId, input.type, input.toId);
   let existing: GraphEdge | undefined;
   try {
-    existing = (await edges.item(id, graphWorkspaceId()).read<GraphEdge>()).resource;
+    existing = (await edges().item(id, graphWorkspaceId()).read<GraphEdge>()).resource;
   } catch (err) {
     if ((err as { code?: number }).code !== 404) throw err;
   }
@@ -237,11 +237,11 @@ export async function putGraphEdge(input: CreateGraphEdge, actorId: string): Pro
     return existing;
   }
   if (existing) {
-    await edges.item(id, graphWorkspaceId()).replace(edge, {
+    await edges().item(id, graphWorkspaceId()).replace(edge, {
       accessCondition: { type: "IfMatch", condition: existing._etag ?? "" },
     });
   } else {
-    await edges.items.create(edge);
+    await edges().items.create(edge);
   }
   return edge;
 }
@@ -253,7 +253,7 @@ export async function reviewGraphEdge(
   expectedVersion?: number
 ): Promise<GraphEdge> {
   requireEnabled();
-  const { resource } = await edges.item(id, graphWorkspaceId()).read<GraphEdge>();
+  const { resource } = await edges().item(id, graphWorkspaceId()).read<GraphEdge>();
   if (!resource) throw new Error(`Graph edge not found: ${id}`);
   if (expectedVersion !== undefined && resource.version !== expectedVersion) {
     throw new Error(`Graph edge changed since it was loaded (current version ${resource.version}).`);
@@ -268,7 +268,7 @@ export async function reviewGraphEdge(
     version: resource.version + 1,
     reviewedBy: actorId,
   };
-  await edges.item(id, graphWorkspaceId()).replace(updated, {
+  await edges().item(id, graphWorkspaceId()).replace(updated, {
     accessCondition: { type: "IfMatch", condition: resource._etag ?? "" },
   });
   return updated;
@@ -291,7 +291,7 @@ export async function setGraphSingleRelationship(
   const now = new Date().toISOString();
   for (const edge of current) {
     if (edge.toId === toId && edge.reviewState === "accepted") continue;
-    await edges.item(edge.id, graphWorkspaceId()).replace({
+    await edges().item(edge.id, graphWorkspaceId()).replace({
       ...edge,
       reviewState: "rejected",
       updatedAt: now,
@@ -382,7 +382,7 @@ export async function searchExecutionGraph(
   const limit = clampGraphLimit(options.limit);
   if (!query.trim()) return listExecutionGraph(userId, { limit, includeProposed: options.includeProposed });
   const qv = await embed(query, { ...attribution, trigger: "graph_recall" });
-  const { resources } = await nodes.items
+  const { resources } = await nodes().items
     .query<GraphNode>({
       query: `SELECT TOP @limit * FROM c
         WHERE c.workspaceId = @workspaceId AND IS_DEFINED(c.embedding)
@@ -447,7 +447,7 @@ export async function listExecutionGraph(
       { name: "@cursorId", value: cursor.id }
     );
   }
-  const { resources } = await nodes.items
+  const { resources } = await nodes().items
     .query<GraphNode>({
       query: `SELECT TOP @limit * FROM c WHERE ${clauses.join(
         " AND "
@@ -476,7 +476,7 @@ export async function listExecutionGraph(
 
 export async function executionGraphStats(userId: string): Promise<GraphStats> {
   requireEnabled();
-  const { resources: nodeRows } = await nodes.items
+  const { resources: nodeRows } = await nodes().items
     .query<Pick<GraphNode, "id" | "visibility" | "privateOwnerId" | "type" | "status" | "due">>({
       query:
         "SELECT c.id, c.visibility, c.privateOwnerId, c.type, c.status, c.due FROM c WHERE c.workspaceId = @workspaceId",
@@ -512,7 +512,7 @@ export async function executionGraphStats(userId: string): Promise<GraphStats> {
 }
 
 export function graphContainers(): { nodes: Container; edges: Container } {
-  return { nodes, edges };
+  return { nodes: nodes(), edges: edges() };
 }
 
 function decodeCursor(value?: string): { updatedAt: string; id: string } | undefined {

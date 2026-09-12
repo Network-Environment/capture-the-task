@@ -1,0 +1,45 @@
+name: intent-eval
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: intent-eval
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: rg-taskbrain
+  NODE_VERSION: "22"
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Load Foundry settings from App Service
+        run: |
+          APP=$(az webapp list -g "$RESOURCE_GROUP" --query "[0].name" -o tsv)
+          SETTINGS=$(az webapp config appsettings list -g "$RESOURCE_GROUP" -n "$APP" -o json)
+          for KEY in FOUNDRY_ENDPOINT FOUNDRY_API_KEY CHEAP_DEPLOYMENT STANDARD_DEPLOYMENT PREMIUM_DEPLOYMENT EMBED_DEPLOYMENT COSMOS_ENDPOINT COSMOS_KEY COSMOS_DB; do
+            VAL=$(jq -r --arg k "$KEY" '.[] | select(.name==$k) | .value' <<<"$SETTINGS")
+            [ -n "$VAL" ] && [ "$VAL" != "null" ] && printf '%s=%s\n' "$KEY" "$VAL" >> "$GITHUB_ENV"
+          done
+      - name: Evaluate intent fixtures
+        run: npm run intent:evaluate

@@ -4,22 +4,24 @@
  *   YAML frontmatter + [[wikilinks]]). Portable forever.
  * - Index: Cosmos DB NoSQL with a diskANN vector index on /embedding.
  * - Recall: cosine vector search scoped to the user.
+ *
+ * Writes embed first (no durable side effects), then Blob, then Cosmos.
+ * A Cosmos failure deletes the blob so recall and files do not diverge.
  */
 import { BlobServiceClient } from "@azure/storage-blob";
-import { CosmosClient } from "@azure/cosmos";
 import { embed } from "./router";
+import { cosmosContainer } from "./cosmos";
 import type { ActivityAttribution } from "./activityLog";
 
-const blobSvc = BlobServiceClient.fromConnectionString(
-  process.env.STORAGE_CONNECTION_STRING!
-);
-const notesBlob = blobSvc.getContainerClient(process.env.NOTES_CONTAINER ?? "notes");
+function notesBlob() {
+  return BlobServiceClient.fromConnectionString(
+    process.env.STORAGE_CONNECTION_STRING!
+  ).getContainerClient(process.env.NOTES_CONTAINER ?? "notes");
+}
 
-const cosmos = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
-const notes = cosmos.database(process.env.COSMOS_DB ?? "taskbrain").container("notes");
+function notes() {
+  return cosmosContainer("notes");
+}
 
 export interface NoteInput {
   kind: "task" | "idea" | "reference";
@@ -47,33 +49,56 @@ export async function saveNote(
   const now = new Date();
   const id = `${now.getTime()}-${slug(n.title).slice(0, 40)}`;
   const path = `${userId}/${now.toISOString().slice(0, 7)}/${id}.md`;
-
   const md = renderMarkdown(n, now);
-  await notesBlob
-    .getBlockBlobClient(path)
-    .upload(md, Buffer.byteLength(md), {
-      blobHTTPHeaders: { blobContentType: "text/markdown" },
-    });
-
   const vector = await embed(`${n.title}\n${n.body}\n${n.tags.join(" ")}`, {
     ...attribution,
     trigger: "note_index",
   });
-  await notes.items.create({
-    id,
-    userId,
-    kind: n.kind,
-    title: n.title,
-    body: n.body,
-    tags: n.tags,
-    links: n.links ?? [],
-    source: n.source,
-    path,
-    createdAt: now.toISOString(),
-    embedding: vector,
+
+  const blob = notesBlob().getBlockBlobClient(path);
+  await blob.upload(md, Buffer.byteLength(md), {
+    blobHTTPHeaders: { blobContentType: "text/markdown" },
   });
 
+  try {
+    await notes().items.create({
+      id,
+      userId,
+      kind: n.kind,
+      title: n.title,
+      body: n.body,
+      tags: n.tags,
+      links: n.links ?? [],
+      source: n.source,
+      path,
+      createdAt: now.toISOString(),
+      embedding: vector,
+    });
+  } catch (err) {
+    await blob.deleteIfExists().catch((cleanupErr) => {
+      console.error("[brain] failed to compensate blob after index error:", cleanupErr);
+    });
+    throw err;
+  }
+
   return { id, path };
+}
+
+export async function deleteNote(userId: string, id: string, path: string): Promise<boolean> {
+  let removed = false;
+  try {
+    await notes().item(id, userId).delete();
+    removed = true;
+  } catch (err) {
+    if ((err as { code?: number }).code !== 404) throw err;
+  }
+  try {
+    const deleted = await notesBlob().getBlockBlobClient(path).deleteIfExists();
+    if (deleted) removed = true;
+  } catch (err) {
+    console.error("[brain] blob delete failed (index already removed):", err);
+  }
+  return removed;
 }
 
 export async function recall(
@@ -83,8 +108,8 @@ export async function recall(
   attribution: Partial<ActivityAttribution> = {}
 ): Promise<RecallHit[]> {
   const qv = await embed(query, { ...attribution, trigger: "note_recall" });
-  const { resources } = await notes.items
-    .query({
+  const { resources } = await notes()
+    .items.query({
       query: `
         SELECT TOP @k c.title, c.body, c.kind, c.createdAt, c.path,
                VectorDistance(c.embedding, @qv) AS score

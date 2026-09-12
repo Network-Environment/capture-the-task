@@ -1,6 +1,6 @@
-import { CosmosClient } from "@azure/cosmos";
 import { BlobServiceClient } from "@azure/storage-blob";
 import { createHash } from "node:crypto";
+import { cosmosContainer } from "../services/cosmos";
 import type {
   CheckpointDoc,
   CommitmentDoc,
@@ -10,15 +10,18 @@ import type {
   TranscriptAvailabilityStatus,
 } from "./types";
 
-const cosmos = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
-const db = cosmos.database(process.env.COSMOS_DB ?? "taskbrain");
-const meetings = db.container("meetings");
-const commitments = db.container("commitments");
-const checkpoints = db.container("meeting-checkpoints");
-const availability = db.container("transcript-availability");
+function meetingsCol() {
+  return cosmosContainer("meetings");
+}
+function commitmentsCol() {
+  return cosmosContainer("commitments");
+}
+function checkpointsCol() {
+  return cosmosContainer("meeting-checkpoints");
+}
+function availabilityCol() {
+  return cosmosContainer("transcript-availability");
+}
 
 function meetingBlobs() {
   return BlobServiceClient.fromConnectionString(process.env.STORAGE_CONNECTION_STRING!).getContainerClient(
@@ -35,7 +38,7 @@ export function commitmentTtlSeconds(): number {
 }
 
 export async function meetingExists(transcriptId: string): Promise<boolean> {
-  const { resources } = await meetings.items
+  const { resources } = await meetingsCol().items
     .query({
       query: "SELECT VALUE COUNT(1) FROM c WHERE c.transcriptId = @id",
       parameters: [{ name: "@id", value: transcriptId }],
@@ -45,7 +48,7 @@ export async function meetingExists(transcriptId: string): Promise<boolean> {
 }
 
 export async function upsertMeeting(doc: MeetingDoc): Promise<void> {
-  await meetings.items.upsert(doc);
+  await meetingsCol().items.upsert(doc);
 }
 
 /**
@@ -79,7 +82,7 @@ export async function getTranscriptAvailability(
   id: string
 ): Promise<TranscriptAvailabilityDoc | undefined> {
   try {
-    const { resource } = await availability
+    const { resource } = await availabilityCol()
       .item(id, organizerId)
       .read<TranscriptAvailabilityDoc>();
     return resource;
@@ -96,7 +99,7 @@ export async function recordTranscriptAvailability(
   const id = transcriptAvailabilityId(input.transcriptId);
   const existing = await getTranscriptAvailability(input.organizerId, id);
   if (existing) {
-    await availability.items.upsert({
+    await availabilityCol().items.upsert({
       ...existing,
       source: input.source ?? existing.source,
       organizerName: input.organizerName ?? existing.organizerName,
@@ -111,7 +114,7 @@ export async function recordTranscriptAvailability(
     return "existing";
   }
   const now = new Date().toISOString();
-  await availability.items.create({
+  await availabilityCol().items.create({
     ...input,
     id,
     discoveredAt: now,
@@ -122,7 +125,7 @@ export async function recordTranscriptAvailability(
 }
 
 export async function listTranscriptAvailability(limit = 100): Promise<TranscriptAvailabilityDoc[]> {
-  const { resources } = await availability.items
+  const { resources } = await availabilityCol().items
     .query<TranscriptAvailabilityDoc>({
       query:
         "SELECT TOP @n * FROM c ORDER BY c.createdDateTime DESC",
@@ -151,7 +154,7 @@ export async function queueTranscriptSelections(
     }
     const now = new Date().toISOString();
     try {
-      await availability.item(doc.id, doc.organizerId).replace(
+      await availabilityCol().item(doc.id, doc.organizerId).replace(
         {
           ...doc,
           status: "queued",
@@ -172,7 +175,7 @@ export async function queueTranscriptSelections(
 
 export async function claimQueuedTranscripts(limit = 2): Promise<TranscriptAvailabilityDoc[]> {
   const staleBefore = new Date(Date.now() - 15 * 60_000).toISOString();
-  const { resources } = await availability.items
+  const { resources } = await availabilityCol().items
     .query<TranscriptAvailabilityDoc>({
       query:
         "SELECT TOP @n * FROM c WHERE c.status = 'queued' OR (c.status = 'processing' AND c.processingAt < @stale) ORDER BY c.requestedAt",
@@ -191,7 +194,7 @@ export async function claimQueuedTranscripts(limit = 2): Promise<TranscriptAvail
       updatedAt: new Date().toISOString(),
     };
     try {
-      await availability.item(doc.id, doc.organizerId).replace(next, {
+      await availabilityCol().item(doc.id, doc.organizerId).replace(next, {
         accessCondition: { type: "IfMatch", condition: doc._etag ?? "" },
       });
       claimed.push(next);
@@ -207,7 +210,7 @@ export async function setTranscriptAvailabilityStatus(
   status: TranscriptAvailabilityStatus,
   patch: Partial<TranscriptAvailabilityDoc> = {}
 ): Promise<void> {
-  await availability.items.upsert({
+  await availabilityCol().items.upsert({
     ...doc,
     ...patch,
     status,
@@ -223,7 +226,7 @@ export async function writeMeetingMarkdown(path: string, md: string): Promise<vo
 
 export async function getCheckpoint(organizerId: string): Promise<CheckpointDoc | undefined> {
   try {
-    const { resource } = await checkpoints.item(organizerId, organizerId).read<CheckpointDoc>();
+    const { resource } = await checkpointsCol().item(organizerId, organizerId).read<CheckpointDoc>();
     return resource;
   } catch {
     return undefined;
@@ -231,16 +234,16 @@ export async function getCheckpoint(organizerId: string): Promise<CheckpointDoc 
 }
 
 export async function saveCheckpoint(doc: CheckpointDoc): Promise<void> {
-  await checkpoints.items.upsert(doc);
+  await checkpointsCol().items.upsert(doc);
 }
 
 export async function saveHealth(doc: IngestHealthDoc): Promise<void> {
-  await checkpoints.items.upsert(doc);
+  await checkpointsCol().items.upsert(doc);
 }
 
 export async function readHealth(): Promise<IngestHealthDoc | undefined> {
   try {
-    const { resource } = await checkpoints.item("latest", "_system").read<IngestHealthDoc>();
+    const { resource } = await checkpointsCol().item("latest", "_system").read<IngestHealthDoc>();
     return resource;
   } catch {
     return undefined;
@@ -254,17 +257,17 @@ export async function listOpenCommitments(ownerKey?: string): Promise<Commitment
         parameters: [{ name: "@o", value: ownerKey }],
       }
     : { query: "SELECT * FROM c WHERE c.status = 'open'" };
-  const { resources } = await commitments.items.query<CommitmentDoc>(query).fetchAll();
+  const { resources } = await commitmentsCol().items.query<CommitmentDoc>(query).fetchAll();
   return resources;
 }
 
 export async function upsertCommitment(doc: CommitmentDoc): Promise<void> {
-  await commitments.items.upsert(doc);
+  await commitmentsCol().items.upsert(doc);
 }
 
 export async function getCommitment(id: string, ownerKey: string): Promise<CommitmentDoc | undefined> {
   try {
-    const { resource } = await commitments.item(id, ownerKey).read<CommitmentDoc>();
+    const { resource } = await commitmentsCol().item(id, ownerKey).read<CommitmentDoc>();
     return resource;
   } catch {
     return undefined;
@@ -272,7 +275,7 @@ export async function getCommitment(id: string, ownerKey: string): Promise<Commi
 }
 
 export async function searchMeetings(queryEmbedding: number[], k = 8): Promise<MeetingDoc[]> {
-  const { resources } = await meetings.items
+  const { resources } = await meetingsCol().items
     .query({
       query: `
         SELECT TOP @k c.id, c.organizerId, c.organizerName, c.title, c.summary,
@@ -291,7 +294,7 @@ export async function searchMeetings(queryEmbedding: number[], k = 8): Promise<M
 }
 
 export async function recentMeetings(limit = 25): Promise<MeetingDoc[]> {
-  const { resources } = await meetings.items
+  const { resources } = await meetingsCol().items
     .query({
       query: "SELECT TOP @n c.id, c.title, c.organizerName, c.organizerId, c.startAt, c.createdAt, c.categories, c.summary FROM c ORDER BY c.createdAt DESC",
       parameters: [{ name: "@n", value: limit }],
@@ -301,7 +304,7 @@ export async function recentMeetings(limit = 25): Promise<MeetingDoc[]> {
 }
 
 export async function listCommitmentsForDash(limit = 40): Promise<CommitmentDoc[]> {
-  const { resources } = await commitments.items
+  const { resources } = await commitmentsCol().items
     .query({
       query: "SELECT TOP @n * FROM c ORDER BY c.status, c.due",
       parameters: [{ name: "@n", value: limit }],
@@ -311,14 +314,14 @@ export async function listCommitmentsForDash(limit = 40): Promise<CommitmentDoc[
 }
 
 export async function listAllMeetings(): Promise<MeetingDoc[]> {
-  const { resources } = await meetings.items
+  const { resources } = await meetingsCol().items
     .query<MeetingDoc>({ query: "SELECT * FROM c" })
     .fetchAll();
   return resources;
 }
 
 export async function listAllCommitments(): Promise<CommitmentDoc[]> {
-  const { resources } = await commitments.items
+  const { resources } = await commitmentsCol().items
     .query<CommitmentDoc>({ query: "SELECT * FROM c" })
     .fetchAll();
   return resources;

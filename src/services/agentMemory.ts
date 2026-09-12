@@ -14,18 +14,14 @@
  * agent system prompt, so each one costs tokens forever. Cap + consolidation
  * keep it from becoming its own context-rot problem.
  */
-import { CosmosClient } from "@azure/cosmos";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { route } from "./router";
 import { canViewMeetings } from "../meetings/access";
+import { cosmosContainer } from "./cosmos";
 
-const cosmos = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
-const mem = cosmos
-  .database(process.env.COSMOS_DB ?? "taskbrain")
-  .container("agent-memory");
+function mem() {
+  return cosmosContainer("agent-memory");
+}
 
 const MAX_LESSONS_PER_USER = 40; // beyond this, consolidate
 
@@ -53,7 +49,7 @@ export async function rememberLesson(
     createdAt: new Date().toISOString(),
     hits: 0,
   };
-  await mem.items.create(lesson);
+  await mem().items.create(lesson);
 
   const count = (await getLessons(userId)).length;
   if (count > MAX_LESSONS_PER_USER) await consolidate(userId);
@@ -65,7 +61,7 @@ export async function getLessons(userId: string): Promise<Lesson[]> {
   const query = includeOrg
     ? "SELECT * FROM c WHERE c.userId = @u OR c.userId = 'global' OR c.userId = 'org' ORDER BY c.createdAt DESC"
     : "SELECT * FROM c WHERE c.userId = @u OR c.userId = 'global' ORDER BY c.createdAt DESC";
-  const { resources } = await mem.items
+  const { resources } = await mem().items
     .query({
       query,
       parameters: [{ name: "@u", value: userId }],
@@ -108,9 +104,9 @@ async function consolidate(userId: string): Promise<void> {
     };
     if (!parsed.lessons?.length) return;
 
-    for (const l of lessons) await mem.item(l.id, l.userId).delete();
+    for (const l of lessons) await mem().item(l.id, l.userId).delete();
     for (const l of parsed.lessons) {
-      await mem.items.create({
+      await mem().items.create({
         id: `lsn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         userId,
         kind: l.kind,

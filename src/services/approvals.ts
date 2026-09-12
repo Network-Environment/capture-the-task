@@ -8,10 +8,10 @@
  * replies "approve <id>" or "deny <id>". This keeps an LLM from writing to
  * the PMO system on a misheard voice memo.
  */
-import { CosmosClient } from "@azure/cosmos";
 import { logActivity } from "./activityLog";
 import { loadConfig } from "../config";
 import { randomUUID } from "node:crypto";
+import { cosmosContainer } from "./cosmos";
 import {
   evaluateOperation,
   type AuthorizationContext,
@@ -20,13 +20,9 @@ import {
 } from "./intent";
 const serversConfig = loadConfig<{ servers: { name: string; confirmTools?: string[] }[] }>("mcp.servers");
 
-const cosmos = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
-const pending = cosmos
-  .database(process.env.COSMOS_DB ?? "taskbrain")
-  .container("pending");
+function pending() {
+  return cosmosContainer("pending");
+}
 
 export interface PendingAction {
   id: string;
@@ -97,7 +93,7 @@ export async function parkAction(
     authorization: options.authorization,
     ttl: 3600,
   };
-  await pending.items.create(action);
+  await pending().items.create(action);
   return id;
 }
 
@@ -114,7 +110,7 @@ export async function handleApprovalCommand(
 
   let action: PendingAction | undefined;
   try {
-    const { resource } = await pending.item(id, userId).read<PendingAction>();
+    const { resource } = await pending().item(id, userId).read<PendingAction>();
     action = resource ?? undefined;
   } catch {
     /* not found */
@@ -123,7 +119,7 @@ export async function handleApprovalCommand(
     return `No pending action ${id} (it may have expired — approvals last 1 hour).`;
   }
   if (Date.parse(action.expiresAt) <= Date.now()) {
-    await pending.item(id, userId).replace({ ...action, status: "expired", ttl: 604800 });
+    await pending().item(id, userId).replace({ ...action, status: "expired", ttl: 604800 });
     return `Pending action ${id} expired. Ask me to prepare it again.`;
   }
   const currentAuthorization: AuthorizationContext = {
@@ -145,7 +141,7 @@ export async function handleApprovalCommand(
   }
 
   if (verb === "deny") {
-    await pending.item(id, userId).replace(
+    await pending().item(id, userId).replace(
       { ...action, status: "denied", ttl: 604800 },
       { accessCondition: { type: "IfMatch", condition: action._etag ?? "" } }
     );
@@ -163,22 +159,22 @@ export async function handleApprovalCommand(
   let result: string;
   try {
     const executing = { ...action, status: "executing" as const, ttl: 3600 };
-    const claimed = await pending.item(id, userId).replace(executing, {
+    const claimed = await pending().item(id, userId).replace(executing, {
       accessCondition: { type: "IfMatch", condition: action._etag ?? "" },
     });
     const claimedAction = claimed.resource as PendingAction | undefined;
     if (!claimedAction) throw new Error("Could not claim pending action.");
     result = await execute(claimedAction, currentAuthorization);
-    await pending.item(id, userId).replace({
+    await pending().item(id, userId).replace({
       ...claimedAction,
       status: "approved",
       ttl: 604800,
     });
   } catch (err) {
     try {
-      const { resource: latest } = await pending.item(id, userId).read<PendingAction>();
+      const { resource: latest } = await pending().item(id, userId).read<PendingAction>();
       if (latest?.status === "executing") {
-        await pending.item(id, userId).replace({ ...latest, status: "failed", ttl: 604800 });
+        await pending().item(id, userId).replace({ ...latest, status: "failed", ttl: 604800 });
       }
     } catch { /* retain the claimed state if final audit write fails */ }
     result = `Execution failed: ${(err as Error).message}`;

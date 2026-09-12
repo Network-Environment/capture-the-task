@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: deploy-production
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   id-token: write   # OIDC federation to Azure — no stored secrets/credentials
@@ -47,15 +47,15 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Compile Bicep
         run: az bicep build --file infra/main.bicep --stdout >/dev/null
-      # Container Apps rejects a revision whose image tag is absent from the
-      # registry, so this image must exist before the Bicep deploy references
-      # it. On a first-ever deploy there is no registry yet; Bicep then creates
-      # the app on its placeholder image and the deploy job swaps it.
-      - name: Build browser image (when the registry already exists)
+      # App Service and Container Apps both fail if Bicep points at a tag that
+      # is not in ACR yet. Build both images (when the registry exists) before
+      # the Bicep deploy. On a first-ever deploy there is no registry yet;
+      # Bicep then uses placeholders and the deploy job builds + retags.
+      - name: Build images (when the registry already exists)
         run: |
           ACR=$(az acr list -g "$RESOURCE_GROUP" --query "[0].name" -o tsv 2>/dev/null || true)
           if [ -z "$ACR" ]; then
-            echo "no registry yet — Bicep will use the placeholder image"
+            echo "no registry yet — Bicep will use placeholder images"
             exit 0
           fi
           az acr build \
@@ -64,7 +64,14 @@ jobs:
             --image "taskbrain-browser:latest" \
             --file services/browser/Dockerfile \
             services/browser
+          az acr build \
+            --registry "$ACR" \
+            --image "taskbrain:${GITHUB_SHA}" \
+            --image "taskbrain:latest" \
+            --file Dockerfile \
+            .
           echo "BROWSER_IMAGE=$ACR.azurecr.io/taskbrain-browser:${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "APP_IMAGE_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
       - name: Deploy Bicep (infra + runtime settings + container registry)
         id: deploy
         env:
@@ -91,6 +98,17 @@ jobs:
           # Omitted on a first deploy so Bicep keeps its placeholder default.
           BROWSER_PARAM=""
           [ -n "${BROWSER_IMAGE:-}" ] && BROWSER_PARAM="browserImage=$BROWSER_IMAGE"
+          IMAGE_PARAM=""
+          if [ -n "${APP_IMAGE_TAG:-}" ]; then
+            IMAGE_PARAM="containerImageTag=$APP_IMAGE_TAG"
+          else
+            EXISTING=$(az webapp list -g "$RESOURCE_GROUP" --query "[0].name" -o tsv 2>/dev/null || true)
+            if [ -n "$EXISTING" ]; then
+              FX=$(az webapp config show -g "$RESOURCE_GROUP" -n "$EXISTING" --query linuxFxVersion -o tsv)
+              TAG="${FX##*:}"
+              [ -n "$TAG" ] && IMAGE_PARAM="containerImageTag=$TAG"
+            fi
+          fi
           OUTPUTS=$(az deployment group create \
             -g $RESOURCE_GROUP \
             -f infra/main.bicep \
@@ -100,7 +118,6 @@ jobs:
             -p appName=taskbrain \
                planSku=B1 \
                appLocation=centralus \
-               containerImageTag="${GITHUB_SHA}" \
                cheapModelName=gpt-4.1-mini \
                cheapModelVersion=2025-04-14 \
                standardModelName=gpt-5-mini \
@@ -121,7 +138,8 @@ jobs:
                unifiedActionPolicyEnabled="$UNIFIED_ACTION_POLICY_ENABLED" \
                inboundQualityGateEnabled="$INBOUND_QUALITY_GATE_ENABLED" \
                plaudIngestEnabled="$PLAUD_INGEST_ENABLED" \
-               $BROWSER_PARAM)
+               $BROWSER_PARAM \
+               $IMAGE_PARAM)
           echo "app-name=$(jq -r '.appName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "registry-name=$(jq -r '.registryName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "function-app-name=$(jq -r '.functionAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
@@ -170,8 +188,14 @@ jobs:
             -g "$RESOURCE_GROUP" \
             -n "${{ needs.infra.outputs.browser-app-name }}" \
             --image "$TARGET"
-      - name: Restart App Service onto the new image
-        run: az webapp restart -g "$RESOURCE_GROUP" -n "${{ needs.infra.outputs.app-name }}"
+      - name: Point App Service at this commit's image
+        run: |
+          IMAGE="${{ needs.infra.outputs.registry-name }}.azurecr.io/taskbrain:${GITHUB_SHA}"
+          az webapp config set \
+            -g "$RESOURCE_GROUP" \
+            -n "${{ needs.infra.outputs.app-name }}" \
+            --linux-fx-version "DOCKER|$IMAGE"
+          az webapp restart -g "$RESOURCE_GROUP" -n "${{ needs.infra.outputs.app-name }}"
       - name: Smoke test (retries while App Service pulls the image)
         run: |
           for i in $(seq 1 30); do

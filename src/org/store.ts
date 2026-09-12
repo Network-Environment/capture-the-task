@@ -1,18 +1,16 @@
-import { CosmosClient } from "@azure/cosmos";
-import { canViewMeetings, denyMeetings } from "../meetings/access";
+import { canViewMeetings, denyMeetings, syncMeetingViewersFromDirectory } from "../meetings/access";
 import { listOpenCommitments } from "../meetings/store";
 import { compactOrgPrompt, newOrgId, resolvePerson, searchOrgDirectory } from "./resolve";
 import type { OrgDirectory, OrgDoc, OrgKind, OrgPerson, OrgRole, OrgUnit } from "./types";
 import { projectPerson } from "../graph/project";
+import { cosmosContainer } from "../services/cosmos";
 
-const cosmos = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
-const org = cosmos.database(process.env.COSMOS_DB ?? "taskbrain").container("org");
+function org() {
+  return cosmosContainer("org");
+}
 
 export async function listOrgByKind<T extends OrgDoc>(kind: OrgKind): Promise<T[]> {
-  const { resources } = await org.items
+  const { resources } = await org().items
     .query<T>({
       query: "SELECT * FROM c WHERE c.kind = @k ORDER BY c.name, c.displayName, c.title",
       parameters: [{ name: "@k", value: kind }],
@@ -27,12 +25,18 @@ export async function listOrgDirectory(): Promise<OrgDirectory> {
     listOrgByKind<OrgPerson>("person"),
     listOrgByKind<OrgRole>("role"),
   ]);
-  return { units, people, roles };
+  const dir = { units, people, roles };
+  syncMeetingViewersFromDirectory(dir);
+  return dir;
+}
+
+export async function refreshMeetingViewers(): Promise<void> {
+  await listOrgDirectory();
 }
 
 export async function getOrgDoc<T extends OrgDoc>(id: string, kind: OrgKind): Promise<T | undefined> {
   try {
-    const { resource } = await org.item(id, kind).read<T>();
+    const { resource } = await org().item(id, kind).read<T>();
     return resource;
   } catch {
     return undefined;
@@ -40,7 +44,7 @@ export async function getOrgDoc<T extends OrgDoc>(id: string, kind: OrgKind): Pr
 }
 
 export async function upsertOrgDoc<T extends OrgDoc>(doc: T): Promise<T> {
-  const { resource } = await org.items.upsert(doc);
+  const { resource } = await org().items.upsert(doc);
   return resource as unknown as T;
 }
 
@@ -96,6 +100,9 @@ export async function savePerson(input: {
   const saved = await upsertOrgDoc(doc);
   const projected = await projectPerson(saved);
   if (projected.errors.length) console.error("[graph] person projection failed:", projected.errors);
+  await refreshMeetingViewers().catch((err) =>
+    console.error("[org] meeting viewer refresh failed:", err)
+  );
   return saved;
 }
 
@@ -120,7 +127,11 @@ export async function saveRole(input: {
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
-  return upsertOrgDoc(doc);
+  const saved = await upsertOrgDoc(doc);
+  await refreshMeetingViewers().catch((err) =>
+    console.error("[org] meeting viewer refresh failed:", err)
+  );
+  return saved;
 }
 
 export async function orgCounts(): Promise<{ people: number; units: number; roles: number }> {

@@ -18,12 +18,15 @@ import {
   interpretIntent,
   TriageResult,
 } from "./services/agent";
-import { saveNote, recall } from "./services/brain";
+import { saveNote, recall, deleteNote } from "./services/brain";
 import {
   getRecentTurns,
   appendTurn,
   getPendingClarification,
   setPendingClarification,
+  isUndoCommand,
+  getLastCapture,
+  setLastCapture,
 } from "./services/session";
 import { logActivity } from "./services/activityLog";
 import { handleApprovalCommand } from "./services/approvals";
@@ -131,6 +134,33 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   );
   if (approval) {
     return { title: "Approval", body: approval, tags: [], summaryLine: approval.slice(0, 120) };
+  }
+
+  if (isUndoCommand(text)) {
+    const capture = await getLastCapture(userId, input.conversationId);
+    if (!capture) {
+      return {
+        title: "Nothing to undo",
+        body: "I don’t have a recent capture in this chat to undo. Say it again if you want it filed.",
+        tags: [],
+        summaryLine: "Undo with no last capture",
+      };
+    }
+    const removed = await deleteNote(userId, capture.id, capture.path);
+    await setLastCapture(userId, input.conversationId, undefined);
+    const body = removed
+      ? `Removed **${capture.title}** from your brain. Microsoft To Do items are not reversed from chat.`
+      : `I couldn’t find **${capture.title}** in the brain anymore, so there was nothing left to delete.`;
+    void logActivity({
+      type: "capture",
+      userId,
+      origin: "user_message",
+      channel,
+      inputMode: source,
+      trigger: "undo_capture",
+      detail: { noteId: capture.id, removed },
+    });
+    return { title: "Undone", body, tags: [], summaryLine: `Undid capture: ${capture.title}` };
   }
 
   const attribution = {
@@ -253,6 +283,19 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
         assumptions: plan.assumptions.length,
       },
     });
+    if (plan.disposition === "help" || plan.disposition === "refuse") {
+      void logActivity({
+        type: "inbound_quality",
+        userId,
+        ...attribution,
+        trigger: "quality_intent_disagreement",
+        detail: {
+          quality: "proceed",
+          intent: plan.disposition,
+          reason: plan.reason,
+        },
+      });
+    }
   }
 
   if (enabled && !shadow && plan) {
@@ -347,6 +390,32 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     });
   }
   await appendTurn(userId, "user", text, input.conversationId);
+
+  const captureKinds = new Set(["task", "idea", "reference"]);
+  if (
+    process.env.LEGACY_TRIAGE_WRITES_ENABLED !== "true" &&
+    (captureKinds.has(kind.kind) || kind.kind === "followup")
+  ) {
+    const body =
+      "I didn’t save that automatically. Tell me if this is a task, an idea, or a question — or prefix it with `task:` / `idea:`.";
+    await appendTurn(userId, "assistant", body, input.conversationId, {
+      intent: "clarify",
+      outcome: "legacy_triage_write_blocked",
+    });
+    void logActivity({
+      type: "triage",
+      userId,
+      ...attribution,
+      trigger: "legacy_triage_write_blocked",
+      detail: { kind: kind.kind },
+    });
+    return {
+      title: "Quick clarification",
+      body,
+      tags: [],
+      summaryLine: body,
+    };
+  }
 
   // 4. Execute.
   const out = await execute(input, text, source, kind, recent);
@@ -525,10 +594,17 @@ async function execute(
       } else {
         line += "\n✓ Saved to the brain (To Do available from Teams)";
       }
-      await saveNote(
+        await saveNote(
         userId,
         { kind: "task", title: r.title, body: r.detail || text, tags: r.tags, source },
         attribution
+      ).then((saved) =>
+        setLastCapture(userId, input.conversationId, {
+          id: saved.id,
+          path: saved.path,
+          title: r.title,
+          createdAt: new Date().toISOString(),
+        })
       );
       if (allowInferredSheetProposal && effectivePolicy.allowSharedWrites) {
         const proposed = await maybeProposeSheetUpdate(userId, {
@@ -543,7 +619,7 @@ async function execute(
 
     case "idea":
     case "reference": {
-      const { path } = await saveNote(
+      const { path, id } = await saveNote(
         userId,
         {
           kind: r.kind,
@@ -555,6 +631,12 @@ async function execute(
         },
         attribution
       );
+      await setLastCapture(userId, input.conversationId, {
+        id,
+        path,
+        title: r.title,
+        createdAt: new Date().toISOString(),
+      });
       const links = r.links.length ? `\nLinked: ${r.links.map((l) => `[[${l}]]`).join(", ")}` : "";
       return {
         title: r.kind === "idea" ? "Idea filed" : "Reference filed",
@@ -605,17 +687,11 @@ async function execute(
 
     case "action": {
       if (!effectivePolicy.allowPersonalWrites && !effectivePolicy.allowSharedWrites) {
-        // Governance lever: some channels are capture-only.
-        await saveNote(
-          userId,
-          { kind: "reference", title: text.slice(0, 60), body: text, tags: ["pending-action"], source },
-          attribution
-        );
         return {
-          title: "Saved, not executed",
+          title: "Not executed",
           body:
             "Actions (Smartsheet, scheduling, tools) aren't enabled on this channel. " +
-            "I saved the request to your brain — run it from Teams to execute.",
+            "I did not save a pending-action note. Run it from Teams to execute.",
           tags: ["pending-action"],
           summaryLine: "Action deferred (channel policy)",
         };

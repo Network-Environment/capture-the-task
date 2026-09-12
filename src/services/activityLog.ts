@@ -5,15 +5,11 @@
  * dashboard reads this; nothing else in the system depends on it, so logging
  * failures never break the pipeline.
  */
-import { CosmosClient } from "@azure/cosmos";
+import { cosmosContainer } from "./cosmos";
 
-const cosmos = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
-const activity = cosmos
-  .database(process.env.COSMOS_DB ?? "taskbrain")
-  .container("activity");
+function activity() {
+  return cosmosContainer("activity");
+}
 
 export type ActivityType =
   | "capture"
@@ -94,7 +90,7 @@ export async function logActivity(e: ActivityEvent): Promise<void> {
   try {
     const day = new Date().toISOString().slice(0, 10);
     const attribution = normalizeAttribution(e);
-    await activity.items.create({
+    await activity().items.create({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       day, // partition key: efficient "today" queries, natural retention unit
       at: new Date().toISOString(),
@@ -129,7 +125,7 @@ export interface DayStats {
 }
 
 export async function recentEvents(limit = 100): Promise<Record<string, unknown>[]> {
-  const { resources } = await activity.items
+  const { resources } = await activity().items
     .query({
       query: "SELECT TOP @n * FROM c ORDER BY c.at DESC",
       parameters: [{ name: "@n", value: limit }],
@@ -139,7 +135,7 @@ export async function recentEvents(limit = 100): Promise<Record<string, unknown>
 }
 
 export async function dayStats(day = new Date().toISOString().slice(0, 10)): Promise<DayStats> {
-  const { resources } = await activity.items
+  const { resources } = await activity().items
     .query({
       query: "SELECT * FROM c WHERE c.day = @day",
       parameters: [{ name: "@day", value: day }],
@@ -204,7 +200,7 @@ function bump(map: Record<string, number>, key: string): void {
 export async function usageBreakdown(
   day = new Date().toISOString().slice(0, 10)
 ): Promise<UsageBreakdown> {
-  const { resources } = await activity.items
+  const { resources } = await activity().items
     .query({
       query: "SELECT * FROM c WHERE c.day = @day",
       parameters: [{ name: "@day", value: day }],

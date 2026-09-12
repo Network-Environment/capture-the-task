@@ -1,7 +1,7 @@
 import "./setup";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { canViewMeetings, denyMeetings } from "../src/meetings/access";
+import { canViewMeetings, denyMeetings, syncMeetingViewersFromDirectory } from "../src/meetings/access";
 import {
   mergeDiscoveryItems,
   sliceOrganizers,
@@ -225,5 +225,40 @@ describe("authorization", () => {
     assert.equal(canViewMeetings(VAL.toUpperCase()), true);
     assert.equal(canViewMeetings("00000000-0000-0000-0000-000000000000"), false);
     assert.match(denyMeetings(), /designated org operators/);
+  });
+
+  it("grants meeting access from an org Meeting viewer role", () => {
+    const extra = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    syncMeetingViewersFromDirectory({
+      people: [
+        {
+          id: "per-extra",
+          kind: "person",
+          displayName: "Pat",
+          entraId: extra,
+          aliases: [],
+          mandate: "",
+          status: "active",
+          createdAt: "2026-09-12T00:00:00Z",
+          updatedAt: "2026-09-12T00:00:00Z",
+        },
+      ],
+      roles: [
+        {
+          id: "rol-mv",
+          kind: "role",
+          personId: "per-extra",
+          title: "Meeting viewer",
+          mandate: "",
+          status: "active",
+          createdAt: "2026-09-12T00:00:00Z",
+          updatedAt: "2026-09-12T00:00:00Z",
+        },
+      ],
+    });
+    assert.equal(canViewMeetings(extra), true);
+    assert.equal(canViewMeetings(ADAM), true);
+    syncMeetingViewersFromDirectory({ people: [], roles: [] });
+    assert.equal(canViewMeetings(extra), false);
   });
 });

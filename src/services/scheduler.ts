@@ -4,14 +4,12 @@
  * polls for due jobs. No dynamic Azure resource creation, fully auditable,
  * pausable, and listable from chat via the schedule_job / list_jobs tools.
  */
-import { CosmosClient } from "@azure/cosmos";
 import { CronExpressionParser } from "cron-parser";
+import { cosmosContainer } from "./cosmos";
 
-const cosmos = new CosmosClient({
-  endpoint: process.env.COSMOS_ENDPOINT!,
-  key: process.env.COSMOS_KEY!,
-});
-const jobs = cosmos.database(process.env.COSMOS_DB ?? "taskbrain").container("jobs");
+function jobs() {
+  return cosmosContainer("jobs");
+}
 
 const TZ = process.env.JOBS_TIMEZONE ?? "America/Chicago";
 
@@ -52,12 +50,12 @@ export async function scheduleJob(
     nextRun: computeNextRun(j.cron, j.runOnce),
     ...j,
   };
-  await jobs.items.create(job);
+  await jobs().items.create(job);
   return job;
 }
 
 export async function listJobs(userId: string): Promise<Job[]> {
-  const { resources } = await jobs.items
+  const { resources } = await jobs().items
     .query({
       query: "SELECT * FROM c WHERE c.userId = @u ORDER BY c.nextRun",
       parameters: [{ name: "@u", value: userId }],
@@ -70,13 +68,13 @@ export async function cancelJob(userId: string, idOrName: string): Promise<strin
   const all = await listJobs(userId);
   const job = all.find((j) => j.id === idOrName || j.name === idOrName);
   if (!job) return `No job matching "${idOrName}".`;
-  await jobs.item(job.id, userId).delete();
+  await jobs().item(job.id, userId).delete();
   return `Cancelled "${job.name}".`;
 }
 
 /** Poller queries: due, enabled jobs across all users. */
 export async function dueJobs(now = new Date()): Promise<Job[]> {
-  const { resources } = await jobs.items
+  const { resources } = await jobs().items
     .query({
       query: "SELECT * FROM c WHERE c.enabled = true AND c.nextRun <= @now",
       parameters: [{ name: "@now", value: now.toISOString() }],
@@ -99,5 +97,5 @@ export async function markRun(
     enabled: job.runOnce ? false : job.enabled,
     nextRun: job.runOnce ? job.nextRun : computeNextRun(job.cron, undefined),
   };
-  await jobs.items.upsert(updated);
+  await jobs().items.upsert(updated);
 }

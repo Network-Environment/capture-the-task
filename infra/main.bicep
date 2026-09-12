@@ -71,6 +71,9 @@ param intentConfidenceThreshold string = '0.72'
 @description('Reject probes, noise, unsafe requests, and context-free fragments before persistence')
 param inboundQualityGateEnabled bool = true
 
+@description('Allow the pre-intent triage path to persist notes. Off in production; rollback only.')
+param legacyTriageWritesEnabled bool = false
+
 @description('Discover Plaud recordings with the configured OAuth tokens')
 param plaudIngestEnabled bool = false
 
@@ -680,6 +683,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'UNIFIED_ACTION_POLICY_ENABLED', value: string(unifiedActionPolicyEnabled) }
         { name: 'INTENT_CONFIDENCE_THRESHOLD', value: intentConfidenceThreshold }
         { name: 'INBOUND_QUALITY_GATE_ENABLED', value: string(inboundQualityGateEnabled) }
+        { name: 'LEGACY_TRIAGE_WRITES_ENABLED', value: string(legacyTriageWritesEnabled) }
         { name: 'BROWSER_MCP_URL', value: 'https://${browserApp.properties.configuration.ingress.fqdn}/mcp' }
         { name: 'BROWSER_MCP_TOKEN', value: browserToken }
         { name: 'SPECTRUM_PROJECT_ID', value: spectrumProjectId }

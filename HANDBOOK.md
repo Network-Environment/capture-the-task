@@ -35,10 +35,13 @@ flowchart TD
   BOT --> P[src/pipeline.ts · processCapture]
   PH --> P
   P --> DEDUP[(inbound receipts)]
-  P -->|approve/deny| APR[approvals]
+  P -->|approve/deny/undo| APR[approvals + last capture]
   P -->|audio| SP[Azure AI Speech]
-  P --> INT[intent interpreter · CHEAP tier]
+  P --> QG[inbound quality gate]
+  QG -->|help/clarify/refuse| OUT[Outbound · no writes]
+  QG --> INT[intent interpreter · CHEAP tier]
   INT -->|ambiguous| CLAR[focused clarification]
+  INT -->|help/refuse| OUT
   INT --> POL[deterministic risk policy]
   POL -->|personal capture| TODO[Microsoft To Do via Graph]
   POL -->|personal note| BR[(Second brain · Blob md + Cosmos vectors)]
@@ -91,10 +94,10 @@ scripts/bootstrap.sh (once, out of band)
   │       └─ WRITES ALL APP SETTINGS: keys via listKeys() (Cosmos, Storage,
   │          Speech, Foundry), endpoints, deployment names, and the secrets
   │          above → the code's process.env is fully populated
-  ├─ az acr build → taskbrain-browser:<git-sha> BEFORE the Bicep deploy
-  │  (Container Apps refuses a revision whose tag is missing from the registry)
-  ├─ az acr build → taskbrain:<git-sha>
-  ├─ App Service pulls the immutable image through managed identity
+  ├─ az acr build → taskbrain-browser:<git-sha> AND taskbrain:<git-sha> BEFORE the Bicep deploy
+  │  (App Service and Container Apps refuse tags missing from the registry)
+  ├─ Bicep only retags App Service after that image exists (or keeps the current tag)
+  ├─ az acr build → taskbrain:<git-sha> again in the deploy job (idempotent) then linuxFxVersion + restart
   ├─ zip-deploy Flex Consumption Function (meeting ingest timer)
   └─ smoke test /healthz (retries)
                                                                 ▼
@@ -115,18 +118,28 @@ PIPELINE — processCapture()  (channel-agnostic)
         │
         ├── approval command? ("approve pa-x" / "deny pa-x")
         │        └─► approvals.ts executes/discards the parked write. STOP.
+        ├── undo command? ("undo" / "undo that" / "delete that")
+        │        └─► deletes the last brain note in this 15-min session. STOP.
         ├── audio bytes ──► Azure AI Speech fast transcription
         ▼
-TRIAGE  (cheap model tier)  — agent.ts::triage
-   one message → {conversation | task | idea | reference | question | action | followup}
+QUALITY GATE  (no model)  — inboundQuality.ts
+        probes / fragments / gibberish / credential-bypass → help | clarify | refuse
+        never saveNote. Reason codes only in the activity log.
+        ▼
+INTENT  (cheap model tier)  — agent.ts::interpretIntent
+        one message → IntentPlan {disposition, intents[]}
+        help / refuse / clarify STOP. Else risk policy, then execute.
+        Legacy triage() may still classify reads/conversation if the gateway is
+        off; it cannot persist notes unless LEGACY_TRIAGE_WRITES_ENABLED=true.
         │
         ├── conversation → natural response; nothing persisted or executed
         ├── task       → Graph → Microsoft To Do (fallback: brain) + note
-        ├── idea/ref   → brain.ts: markdown → Blob, metadata+vector → Cosmos
+        ├── idea/ref   → brain.ts: embed → Blob markdown → Cosmos index
+        │                (Cosmos failure deletes the blob)
         ├── question   → brain.ts::recall (vector) → synthesis tier answer
         ├── action     → AGENT LOOP; PMO/Smartsheet wording uses the pmo profile
         │                (live MCP reads). Writes park for approve pa-x.
-        └── followup   → resolvedText re-triaged once (5-turn/15-min window)
+        └── followup   → resolved against the 5-turn/15-min window
         ▼
 Outbound {title, body, tags} → adapter renders (Adaptive Card / plain text)
 
@@ -160,13 +173,15 @@ SCHEDULER — jobs-as-data
 | `src/services/agent.ts` | structured intent interpretation (cheap tier + escalation), agent loop (profiles), question synthesis |
 | `src/services/intent.ts` | intent contracts, validation, ambiguity threshold, and deterministic operation policy |
 | `src/services/router.ts` | task-class → deployment mapping, escalation, **daily token budget guard**, per-call usage logging |
-| `src/services/brain.ts` | user's second brain: markdown → Blob, metadata+embedding → Cosmos, vector recall |
+| `src/services/brain.ts` | user's second brain: embed, markdown → Blob, metadata+embedding → Cosmos (compensating delete), vector recall, undo delete |
+| `src/services/cosmos.ts` | lazy shared Cosmos client; containers constructed on first use |
 | `src/services/agentMemory.ts` | agent's own lessons: store, prompt injection, cap-40 consolidation |
 | `src/services/scheduler.ts` | job CRUD, cron next-run (cron-parser, `JOBS_TIMEZONE`), due-job query |
 | `src/jobs/orchestrator.ts` | 60s poller, etag claiming, retries, proactive delivery |
 | `src/services/transcription.ts` | Azure AI Speech fast transcription REST |
 | `src/services/graphTasks.ts` | Microsoft To Do via Graph (Bot Service OAuth connection) |
-| `src/services/session.ts` | conversation-scoped structured turns and pending clarification state |
+| `src/services/session.ts` | conversation-scoped structured turns, pending clarification, last capture for undo |
+| `src/services/inboundQuality.ts` | deterministic proceed/help/clarify/refuse before any model or persistence |
 | `src/services/inboundReceipts.ts` | durable Teams/iMessage event idempotency |
 | `src/services/approvals.ts` | immutable high-impact action previews, audited states, `approve/deny <id>` |
 | `src/services/conversations.ts` | per-user, per-channel references (`{user}:teams`, `{user}:imessage`, `{user}:latest`) |
@@ -190,7 +205,8 @@ SCHEDULER — jobs-as-data
 | `Dockerfile` | multi-stage production image (Node 22, non-root runtime) |
 | `scripts/bootstrap.sh` | one-time Entra/M365 setup (idempotent) |
 | `scripts/backfill-graph.ts` | dry-run-by-default shared-source graph migration |
-| `.github/workflows/deploy.yml` | CI/CD via OIDC |
+| `.github/workflows/deploy.yml` | CI/CD via OIDC; builds images before Bicep retags App Service |
+| `.github/workflows/intent-eval.yml` | nightly live intent fixtures against production Foundry settings |
 | `teams-app/manifest.json` | Teams app package (needs color.png 192², outline.png 32²) |
 
 ### Data model (Cosmos DB `taskbrain`, serverless)
@@ -214,7 +230,7 @@ SCHEDULER — jobs-as-data
 
 Blob `meetings/{yyyy-mm}/{id}.md` holds the same structured summary (Cool tier after 1 day, delete after 90). Teams/Graph remains the system of record for transcripts; the agent does not keep VTT. Open commitments can outlive the meeting TTL because they are small JSON, not vectors.
 
-Org-level lessons are written into `agent-memory` with `userId: "org"`, still capped and consolidated. They are injected into agent prompts only for Adam and Val (`MEETING_VIEWERS`).
+Org-level lessons are written into `agent-memory` with `userId: "org"`, still capped and consolidated. They are injected into agent prompts only for designated meeting viewers (`MEETING_VIEWERS` plus anyone with an org role titled `Meeting viewer`).
 
 ### Meeting intelligence (org awareness, not a transcript archive)
 
@@ -236,7 +252,7 @@ new/updated commitment rows. Raw VTT is never stored. Queue states are
 stale processing claims recover after 15 minutes. Later meetings that restate
 the same owner + work mark the prior commitment done.
 
-Chat tools `recall_meetings`, `list_commitments`, `complete_commitment`, and `lookup_org` are org-wide but **viewer-gated** to Adam (`bceb24c5-ef85-4301-9ab2-073805d535aa`) and Valerie (`4f323599-0df8-47f7-aa01-46dbb211894c`) unless `MEETING_VIEWERS` is overridden. Other TaskBrain users get a deny string. Personal notes stay user-scoped.
+Chat tools `recall_meetings`, `list_commitments`, `complete_commitment`, and `lookup_org` are org-wide but **viewer-gated**. Access is the union of the Bicep `MEETING_VIEWERS` bootstrap list (Adam and Valerie) and active org people who hold a role titled `Meeting viewer` (or whose person title is that string) and have an Entra object id. Other TaskBrain users get a deny string. Personal notes stay user-scoped.
 
 Tenant setup that Bicep cannot do: `./scripts/setup-meeting-ingest.sh` assigns Graph application roles on the Function managed identity. A Teams admin must then grant a tenant-wide application access policy and set `EnableGraphTranscriptAccess` / `EnableAttributedTranscripts` (MicrosoftTeams PowerShell **7.9.0+**, or Teams admin center → Meetings → Meeting settings → Transcript API access). Existing meeting transcription does **not** enable Graph export.
 
@@ -366,7 +382,8 @@ closed to clarification. Clear reversible personal captures proceed; shared,
 destructive, scheduled, costly, or broad operations are parked with a preview
 for approval. Production enforcement is on:
 `INTENT_SHADOW_MODE=false`, `CLARIFICATION_ENFORCEMENT_ENABLED=true`, and
-`UNIFIED_ACTION_POLICY_ENABLED=true`. Set `INBOUND_QUALITY_GATE_ENABLED=false`
+`UNIFIED_ACTION_POLICY_ENABLED=true`. `LEGACY_TRIAGE_WRITES_ENABLED` stays
+false so a shadow-mode rollback cannot persist ideas. Set `INBOUND_QUALITY_GATE_ENABLED=false`
 only as a narrow rollback; intent and action policy remain independently
 controlled. Activity stores the disposition/reason code, never rejected text.
 
@@ -414,7 +431,8 @@ patched by bootstrap.sh) supplies the same names.
 | `SPEECH_REGION` / `SPEECH_KEY` | Azure AI Speech | Bicep + `listKeys()` |
 | `STORAGE_CONNECTION_STRING` / `NOTES_CONTAINER` / `MEETINGS_CONTAINER` | Blob notes + meeting summaries | Bicep + `listKeys()` |
 | `COSMOS_ENDPOINT` / `COSMOS_KEY` / `COSMOS_DB` | Cosmos DB | Bicep + `listKeys()` |
-| `MEETING_VIEWERS` | Entra object ids allowed to query meetings/commitments | Bicep default Adam+Val |
+| `MEETING_VIEWERS` | bootstrap Entra ids allowed to query meetings/commitments | Bicep default Adam+Val; also anyone with org role `Meeting viewer` |
+| `LEGACY_TRIAGE_WRITES_ENABLED` | let pre-intent triage persist notes | Bicep default `false`; rollback only |
 | `EXECUTION_GRAPH_ENABLED` | expose graph projection, recall, API, and admin view | Bicep `true` |
 | `EXECUTION_GRAPH_WRITES_ENABLED` | expose human/agent project-task mutations | GitHub repository variable, default `false` |
 | `GRAPH_WORKSPACE_ID` | shared Cosmos partition / workspace identity | Bicep `org` |
