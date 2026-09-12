@@ -19,6 +19,7 @@ import {
   listOpenCommitments,
   meetingExists,
   meetingTtlSeconds,
+  readHealth,
   recordTranscriptAvailability,
   renderMeetingMarkdown,
   saveCheckpoint,
@@ -29,6 +30,14 @@ import {
   upsertMeeting,
   writeMeetingMarkdown,
 } from "./store";
+import {
+  hasPlaudTranscript,
+  listPlaudAccounts,
+  parsePlaudTranscriptId,
+  PlaudClient,
+  plaudTranscriptId,
+  recentPlaudFiles,
+} from "./plaud";
 import { summarizeTranscript } from "./summarize";
 import type {
   IngestResult,
@@ -80,8 +89,28 @@ export async function processAvailableTranscript(
     return { status: "duplicate", matched: 0 };
   }
 
-  const vtt = await downloadVtt(item.organizerId, item.meetingId, item.transcriptId);
-  const spoken = capTranscript(parseVtt(vtt));
+  const source = item.source ?? "teams";
+  let spoken: string;
+  let startAt = item.createdDateTime;
+  let titleHint = item.titleHint;
+  if (source === "plaud") {
+    const parsed = parsePlaudTranscriptId(item.transcriptId);
+    if (!parsed) throw new Error("Invalid Plaud transcript id.");
+    spoken = capTranscript(
+      await new PlaudClient(parsed.accountId).getTranscript(parsed.recordingId)
+    );
+  } else {
+    if (!item.meetingId) throw new Error("Teams meeting id is missing.");
+    const vtt = await downloadVtt(
+      item.organizerId,
+      item.meetingId,
+      item.transcriptId
+    );
+    spoken = capTranscript(parseVtt(vtt));
+    const meta = await getMeetingMeta(item.organizerId, item.meetingId);
+    startAt = meta?.startDateTime ?? startAt;
+    titleHint = meta?.subject ?? titleHint;
+  }
   if (isTooShort(spoken)) {
     await setTranscriptAvailabilityStatus(item, "skipped_short", {
       completedAt: new Date().toISOString(),
@@ -90,17 +119,18 @@ export async function processAvailableTranscript(
     return { status: "skipped_short", matched: 0 };
   }
 
-  const meta = await getMeetingMeta(item.organizerId, item.meetingId);
   const summary = await summarizeTranscript({
     transcript: spoken,
-    titleHint: meta?.subject ?? item.titleHint,
+    titleHint,
     organizerName: item.organizerName,
   });
 
   const now = new Date().toISOString();
   const id =
-    item.transcriptId.replace(/[^a-zA-Z0-9-_]/g, "").slice(0, 64) ||
-    `mtg-${Date.now()}`;
+    source === "plaud"
+      ? `plaud-${transcriptAvailabilityId(item.transcriptId).slice(-57)}`
+      : item.transcriptId.replace(/[^a-zA-Z0-9-_]/g, "").slice(0, 64) ||
+        `mtg-${Date.now()}`;
   const path = `${now.slice(0, 7)}/${id}.md`;
   const ttl = meetingTtlSeconds();
   const embedText = `${summary.title}\n${summary.summary}\n${summary.decisions.join(" ")}\n${summary.actions.map((a) => a.text).join(" ")}`;
@@ -112,11 +142,12 @@ export async function processAvailableTranscript(
 
   const doc: MeetingDoc = {
     id,
+    source,
     organizerId: item.organizerId,
     organizerName: item.organizerName,
     transcriptId: item.transcriptId,
     meetingId: item.meetingId,
-    startAt: meta?.startDateTime ?? item.createdDateTime,
+    startAt,
     title: summary.title,
     categories: summary.categories,
     summary: summary.summary,
@@ -176,6 +207,7 @@ export async function processAvailableTranscript(
       matched,
       actions: summary.actions.length,
       requestedBy: item.requestedBy,
+      source,
     },
   });
 
@@ -368,6 +400,115 @@ export async function runMeetingIngest(
   });
   log.info?.(
     `[meeting-discovery] scanned=${result.scanned} discovered=${result.discovered} existing=${result.skipped} unresolved=${result.unresolved} errors=${result.errors.length}`
+  );
+  return result;
+}
+
+export async function runPlaudDiscovery(
+  log: { info?: (...a: unknown[]) => void } = console
+): Promise<IngestResult> {
+  const result: IngestResult = {
+    scanned: 0,
+    ingested: 0,
+    skipped: 0,
+    matched: 0,
+    discovered: 0,
+    errors: [],
+  };
+  const accounts = listPlaudAccounts();
+  if (!accounts.length) return result;
+  const minDuration = Number(process.env.PLAUD_MIN_DURATION_MS ?? 60_000);
+
+  for (const account of accounts) {
+    result.scanned++;
+    try {
+      const client = new PlaudClient(account.id);
+      const files = recentPlaudFiles(await client.listRecentFiles());
+      for (const listed of files) {
+        try {
+          const transcriptId = plaudTranscriptId(account.id, listed.id);
+          const availabilityId = transcriptAvailabilityId(transcriptId);
+          if (
+            await getTranscriptAvailability(
+              account.organizerId,
+              availabilityId
+            )
+          ) {
+            result.skipped++;
+            continue;
+          }
+          if (Number(listed.duration ?? 0) < minDuration) {
+            result.skipped++;
+            continue;
+          }
+          const file = await client.getFile(listed.id);
+          if (!hasPlaudTranscript(file)) {
+            result.skipped++;
+            continue;
+          }
+          const summarized = await meetingExists(transcriptId);
+          const status = await recordTranscriptAvailability(
+            {
+              source: "plaud",
+              organizerId: account.organizerId,
+              organizerName: account.organizerName,
+              transcriptId,
+              createdDateTime:
+                file.start_at ?? file.created_at ?? listed.created_at,
+              titleHint: file.name ?? listed.name,
+              durationMs: file.duration ?? listed.duration,
+              deviceSerial: file.serial_number,
+            },
+            summarized
+          );
+          if (status === "created") result.discovered!++;
+          else result.skipped++;
+        } catch (err) {
+          result.errors.push(
+            `${account.organizerName ?? account.id}: ${(err as Error).message}`.slice(
+              0,
+              180
+            )
+          );
+        }
+      }
+      await saveCheckpoint({
+        id: `plaud:${account.id}`,
+        organizerId: `plaud:${account.id}`,
+        lastOkAt: new Date().toISOString(),
+        lastError: undefined,
+      });
+    } catch (err) {
+      const message = (err as Error).message;
+      result.errors.push(
+        `${account.organizerName ?? account.id}: ${message}`.slice(0, 180)
+      );
+      await saveCheckpoint({
+        id: `plaud:${account.id}`,
+        organizerId: `plaud:${account.id}`,
+        lastError: message.slice(0, 300),
+      });
+    }
+  }
+
+  const prior = await readHealth();
+  await saveHealth({
+    id: "latest",
+    organizerId: "_system",
+    lastRunAt: new Date().toISOString(),
+    scanned: prior?.scanned ?? 0,
+    ingested: prior?.ingested ?? 0,
+    skipped: prior?.skipped ?? 0,
+    matched: prior?.matched ?? 0,
+    discovered: prior?.discovered,
+    unresolved: prior?.unresolved,
+    plaudScanned: result.scanned,
+    plaudDiscovered: result.discovered,
+    plaudError: result.errors[0],
+    errors: [...(prior?.errors ?? []), ...result.errors].slice(0, 12),
+  });
+  log.info?.(
+    `[plaud-discovery] accounts=${result.scanned} discovered=${result.discovered} skipped=${result.skipped} errors=${result.errors.length}`
   );
   return result;
 }

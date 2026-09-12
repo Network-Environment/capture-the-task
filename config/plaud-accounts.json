@@ -1,0 +1,10 @@
+{
+  "accounts": [],
+  "_notes": [
+    "Add one entry per Plaud cloud account after its OAuth token is imported.",
+    "id is the key used inside the plaud-oauth-tokens Key Vault secret.",
+    "organizerId is the Entra object id used by TaskBrain meeting access.",
+    "Example: { \"id\": \"owner\", \"organizerId\": \"00000000-0000-0000-0000-000000000000\", \"organizerName\": \"Owner\" }",
+    "This file contains identity mapping only. Never put Plaud tokens or passwords here."
+  ]
+}

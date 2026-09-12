@@ -68,6 +68,9 @@ param unifiedActionPolicyEnabled bool = false
 @description('Minimum interpretation confidence before a mutation can proceed')
 param intentConfidenceThreshold string = '0.72'
 
+@description('Discover Plaud recordings with the configured OAuth tokens')
+param plaudIngestEnabled bool = false
+
 @secure()
 @description('Shared bearer between App Service and the browser Container App. Empty = generated per RG.')
 param browserMcpToken string = ''
@@ -110,6 +113,27 @@ var acrPullRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 )
+var keyVaultSecretsOfficerRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
+)
+
+resource plaudVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+  name: 'kv-${appName}-${suffix}'
+  location: location
+  properties: {
+    tenantId: tenant().tenantId
+    enableRbacAuthorization: true
+    enableSoftDelete: true
+    softDeleteRetentionInDays: 7
+    enablePurgeProtection: false
+    publicNetworkAccess: 'Enabled'
+    sku: {
+      family: 'A'
+      name: 'standard'
+    }
+  }
+}
 
 // ---------- Container registry ----------
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
@@ -771,6 +795,9 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'COMMITMENT_TTL_DAYS', value: '180' }
         { name: 'MEETING_ORGANIZERS_PER_RUN', value: '25' }
         { name: 'MEETING_VIEWERS', value: 'bceb24c5-ef85-4301-9ab2-073805d535aa,4f323599-0df8-47f7-aa01-46dbb211894c' }
+        { name: 'PLAUD_INGEST_ENABLED', value: string(plaudIngestEnabled) }
+        { name: 'PLAUD_KEY_VAULT_URL', value: plaudVault.properties.vaultUri }
+        { name: 'PLAUD_TOKEN_SECRET_NAME', value: 'plaud-oauth-tokens' }
       ]
     }
     functionAppConfig: {
@@ -817,6 +844,26 @@ resource functionBlobOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' 
     roleDefinitionId: storageBlobDataOwnerRoleId
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionPlaudSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(plaudVault.id, functionApp.id, keyVaultSecretsOfficerRoleId)
+  scope: plaudVault
+  properties: {
+    roleDefinitionId: keyVaultSecretsOfficerRoleId
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource plaudAdminSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(adminAadObjectId)) {
+  name: guid(plaudVault.id, adminAadObjectId, keyVaultSecretsOfficerRoleId)
+  scope: plaudVault
+  properties: {
+    roleDefinitionId: keyVaultSecretsOfficerRoleId
+    principalId: adminAadObjectId
+    principalType: 'User'
   }
 }
 

@@ -1014,6 +1014,7 @@ export function renderMeetings(
       return (
         `<tr><td>${canSelect ? `<input type="checkbox" name="selection" value="${esc(key)}" aria-label="Select ${esc(t.titleHint ?? t.transcriptId)}">` : ""}</td>` +
         `<td class="mono muted">${esc((t.createdDateTime ?? t.discoveredAt).slice(0, 16).replace("T", " "))}</td>` +
+        `<td>${pill((t.source ?? "teams") === "plaud" ? "Plaud" : "Teams", "idle")}</td>` +
         `<td class="strong">${esc(t.titleHint ?? "Untitled meeting")}</td>` +
         `<td class="muted">${esc(t.organizerName ?? t.organizerId)}</td>` +
         `<td>${pill(t.status.replace("_", " "), tone)}</td>` +
@@ -1067,11 +1068,11 @@ export function renderMeetings(
     <h2>Transcript availability</h2>
     ${noticeHtml}
     <div class="grid" style="margin:1rem 1.15rem">${transcriptStats}</div>
-    <p class="pad muted">Teams creates the transcript. TaskBrain only downloads and summarizes selected meetings; raw VTT is never stored.</p>
+    <p class="pad muted">Teams or Plaud creates the transcript. TaskBrain fetches and summarizes only selected meetings; raw transcript text and audio are never stored.</p>
     <form method="post" action="/admin/meetings/summarize">
       <input type="hidden" name="_scope" value="${esc(scope)}">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
-      ${table(["Select", "Date", "Meeting", "Organizer", "Status", "Error"], transcriptRows, "No transcripts discovered in the last 30 days.")}
+      ${table(["Select", "Date", "Source", "Meeting", "Organizer", "Status", "Error"], transcriptRows, "No transcripts discovered in the last 30 days.")}
       <div class="pad"><button type="submit"${selectable.length ? "" : " disabled"}>Summarize selected</button></div>
     </form>
   </section>
@@ -1482,11 +1483,14 @@ function ingestHealthPanel(h?: IngestHealthDoc): string {
       <div class="stat"><div class="label">Last run</div><div class="value" style="font-size:1rem">${esc(h.lastRunAt.slice(0, 19).replace("T", " "))}Z</div></div>
       <div class="stat"><div class="label">Organizers</div><div class="value">${h.scanned}</div></div>
       <div class="stat"><div class="label">Discovered</div><div class="value">${h.discovered ?? 0}</div></div>
+      <div class="stat"><div class="label">Plaud accounts</div><div class="value">${h.plaudScanned ?? 0}</div></div>
+      <div class="stat"><div class="label">Plaud discovered</div><div class="value">${h.plaudDiscovered ?? 0}</div></div>
       <div class="stat"><div class="label">Existing</div><div class="value">${h.skipped}</div></div>
       <div class="stat${h.unresolved ? " alert" : ""}"><div class="label">No meeting id</div><div class="value">${h.unresolved ?? 0}</div></div>
       <div class="stat${h.errors.length ? " alert" : ""}"><div class="label">Errors</div><div class="value">${h.errors.length}</div></div>
     </div>
     ${h.unresolved ? `<p class="muted pad">${h.unresolved} transcript(s) were returned by Graph without a resolvable meeting id and could not be indexed.</p>` : ""}
+    ${h.plaudError ? `<p class="pad">${pill("Plaud error", "err")} ${esc(h.plaudError)}</p>` : ""}
     ${err}
   </section>`;
 }

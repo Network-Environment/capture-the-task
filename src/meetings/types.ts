@@ -18,6 +18,7 @@ export interface MeetingSummary {
 
 export interface MeetingDoc {
   id: string;
+  source?: "teams" | "plaud";
   organizerId: string;
   organizerName?: string;
   transcriptId: string;
@@ -74,12 +75,15 @@ export type TranscriptAvailabilityStatus =
 
 export interface TranscriptAvailabilityDoc {
   id: string;
+  source?: "teams" | "plaud";
   organizerId: string;
   organizerName?: string;
   transcriptId: string;
-  meetingId: string;
+  meetingId?: string;
   createdDateTime?: string;
   titleHint?: string;
+  durationMs?: number;
+  deviceSerial?: string;
   discoveredAt: string;
   updatedAt: string;
   status: TranscriptAvailabilityStatus;
@@ -106,6 +110,9 @@ export interface IngestHealthDoc {
   processed?: number;
   /** Transcripts returned by Graph that carried no resolvable meeting id. */
   unresolved?: number;
+  plaudScanned?: number;
+  plaudDiscovered?: number;
+  plaudError?: string;
   errors: string[];
 }
 

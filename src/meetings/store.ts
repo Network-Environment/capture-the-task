@@ -98,10 +98,13 @@ export async function recordTranscriptAvailability(
   if (existing) {
     await availability.items.upsert({
       ...existing,
+      source: input.source ?? existing.source,
       organizerName: input.organizerName ?? existing.organizerName,
       meetingId: input.meetingId || existing.meetingId,
       createdDateTime: input.createdDateTime ?? existing.createdDateTime,
       titleHint: input.titleHint ?? existing.titleHint,
+      durationMs: input.durationMs ?? existing.durationMs,
+      deviceSerial: input.deviceSerial ?? existing.deviceSerial,
       status: alreadySummarized ? "summarized" : existing.status,
       updatedAt: new Date().toISOString(),
     });

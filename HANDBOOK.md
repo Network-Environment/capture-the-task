@@ -243,6 +243,37 @@ Tenant setup that Bicep cannot do: `./scripts/setup-meeting-ingest.sh` assigns G
 Discovery repeats are deduped by transcript ID. Existing meeting summaries
 are recognized and marked summarized without another model call.
 
+### Plaud recordings
+
+Plaud is an optional second discovery source for the same org meeting queue.
+It is disabled by default (`PLAUD_INGEST_ENABLED=false`) and does not use
+Zapier. The five-minute Function uses Plaud's official third-party OAuth
+endpoints (the same endpoints used by `@plaud-ai/cli`) to list recordings.
+Only metadata is written to `transcript-availability`. When an admin queues a
+Plaud row, the Function fetches its transcript in memory and runs the normal
+meeting summary, commitment, and graph pipeline. Audio and raw transcripts
+are never stored by TaskBrain; Plaud remains their system of record.
+
+One-time setup per Plaud account:
+
+1. Add an account id and its Entra organizer mapping to
+   `config/plaud-accounts.json`.
+2. On a trusted machine, install the official CLI and have the account owner
+   authorize it: `npm i -g @plaud-ai/cli && plaud login`.
+3. Sign in to Azure (`az login`), get the vault URL with
+   `az keyvault list -g rg-taskbrain --query "[0].properties.vaultUri" -o tsv`,
+   then run
+   `npm run plaud:import-token -- <account-id> <vault-url>`.
+   This imports `~/.plaud/tokens.json`; it never reads or stores the owner's
+   password.
+4. Set repository variable `PLAUD_INGEST_ENABLED=true` and deploy.
+
+The Function identity can read and update vault secrets through Azure RBAC,
+allowing it to persist a rotated Plaud refresh token. A persistent
+authentication failure appears in the admin meeting health panel as
+`Plaud re-login required`; repeat steps 2–3. Never commit a token or place one
+in `config/plaud-accounts.json`.
+
 ### Smartsheet (live PMO, not a second archive)
 
 Smartsheet is the PMO system of record. TaskBrain does **not** copy sheet rows
@@ -380,6 +411,8 @@ patched by bootstrap.sh) supplies the same names.
 | `INTENT_CONFIDENCE_THRESHOLD` | minimum confidence before mutation | Bicep `0.72` |
 | `MEETING_TTL_DAYS` / `COMMITMENT_TTL_DAYS` | Cosmos TTL for meeting docs / commitments | Bicep 90 / 180 |
 | `MEETING_ORGANIZERS_PER_RUN` | Function round-robin batch size | Function app setting (25) |
+| `PLAUD_INGEST_ENABLED` | poll mapped Plaud accounts for meeting metadata | GitHub repository variable, default `false` |
+| `PLAUD_KEY_VAULT_URL` / `PLAUD_TOKEN_SECRET_NAME` | OAuth token map read and rotated by the Function | Bicep Key Vault; secret populated by `plaud:import-token` |
 | `GRAPH_CONNECTION_NAME` | Bot Service OAuth connection name | Bicep constant `graph-connection` |
 | `SMARTSHEET_API_TOKEN` | bearer for mcp.smartsheet.com | GitHub **repo** secret (already set); Bicep copies it to App Service. Do not re-run bootstrap. |
 | `WEB_SEARCH_API_KEY` / `WEB_SEARCH_ENGINE` | native `web_search` (Tavily default; Brave or Bing) | GitHub secret (optional) + Bicep `webSearchEngine` default `tavily` |

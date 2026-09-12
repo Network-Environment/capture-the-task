@@ -84,6 +84,7 @@ jobs:
           INTENT_SHADOW_MODE: ${{ vars.INTENT_SHADOW_MODE || 'true' }}
           CLARIFICATION_ENFORCEMENT_ENABLED: ${{ vars.CLARIFICATION_ENFORCEMENT_ENABLED || 'false' }}
           UNIFIED_ACTION_POLICY_ENABLED: ${{ vars.UNIFIED_ACTION_POLICY_ENABLED || 'false' }}
+          PLAUD_INGEST_ENABLED: ${{ vars.PLAUD_INGEST_ENABLED || 'false' }}
         run: |
           test -n "$BOT_APP_ID" -a -n "$BOT_APP_PASSWORD" -a -n "$ADMIN_APP_ID" -a -n "$ADMIN_APP_SECRET" || { echo "missing required secrets (BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_APP_ID, ADMIN_APP_SECRET) — run scripts/bootstrap.sh or scripts/setup-admin-sso.sh"; exit 1; }
           # Omitted on a first deploy so Bicep keeps its placeholder default.
@@ -117,6 +118,7 @@ jobs:
                intentShadowMode="$INTENT_SHADOW_MODE" \
                clarificationEnforcementEnabled="$CLARIFICATION_ENFORCEMENT_ENABLED" \
                unifiedActionPolicyEnabled="$UNIFIED_ACTION_POLICY_ENABLED" \
+               plaudIngestEnabled="$PLAUD_INGEST_ENABLED" \
                $BROWSER_PARAM)
           echo "app-name=$(jq -r '.appName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "registry-name=$(jq -r '.registryName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
