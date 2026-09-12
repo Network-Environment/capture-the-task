@@ -122,7 +122,7 @@ var keyVaultSecretsOfficerRoleId = subscriptionResourceId(
 )
 
 resource plaudVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
-  name: 'kv-${appName}-${suffix}'
+  name: 'kv-${take(appName, 8)}-${take(suffix, 10)}'
   location: location
   properties: {
     tenantId: tenant().tenantId
