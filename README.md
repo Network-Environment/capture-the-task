@@ -151,10 +151,12 @@ Every component writes events to the `activity` container (30-day TTL):
 captures, triage decisions, tool calls, model calls **with token counts per
 deployment and origin**, job runs, meeting discovery/summary, errors.
 Origin, channel, and text/voice input mode are recorded separately.
-`/admin` is gated by Entra Easy Auth: share
-the URL; only people assigned to the **TaskBrain Admin** enterprise app can
-sign in. Teams transcript metadata is discovered automatically, but an admin
-selects which meetings consume tokens for summary/embedding. The page shows
+`/admin` is gated by Entra Easy Auth and app roles. **Admin** can read and
+mutate the portal; **Reader** can view every section but cannot queue meeting
+summaries, edit the org directory, or mutate the execution graph. Initial
+assignments are Adam (Admin), Valerie (Reader), and Joseph Ryan (Reader).
+Teams transcript metadata is discovered automatically, but an Admin selects
+which meetings consume tokens for summary/embedding. The page shows
 today's stats, token spend by model/origin, scheduled jobs, agent memory, and
 the live event stream (auto-refresh 60s). **Execution graph** is the
 interactive project/task relationship map (no forced refresh). **Org** is the maintainable

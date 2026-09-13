@@ -303,6 +303,8 @@ if [[ -n "$ADMIN_OID" ]]; then
       --headers "Content-Type=application/json" >/dev/null || true
   fi
 fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "${SCRIPT_DIR}/configure-admin-roles.sh" "$ADMIN_APP_ID"
 HOST=$(az webapp list -g "$RG" --query "[?starts_with(name, 'app-taskbrain')].defaultHostName | [0]" -o tsv 2>/dev/null || echo "")
 if [[ -n "$HOST" ]]; then
   az ad app update --id "$ADMIN_APP_ID" \
@@ -321,7 +323,6 @@ echo "admin Easy Auth app ok ($ADMIN_APP_ID)"
 # -----------------------------------------------------------------------------
 echo
 echo "== Patching local files =="
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 
 if [[ -f "$ROOT/teams-app/manifest.json" ]]; then

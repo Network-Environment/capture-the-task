@@ -17,6 +17,7 @@ import {
   renderExecutionGraph,
   readExecutionGraphApi,
   mutateExecutionGraphApi,
+  dashboardPrincipal,
 } from "../src/admin/dashboard";
 import type { DayStats, UsageBreakdown } from "../src/services/activityLog";
 import type { CommitmentDoc, MeetingDoc } from "../src/meetings/types";
@@ -58,6 +59,34 @@ function responseRecorder(): {
 }
 
 describe("admin portal", () => {
+  it("reads Admin and Reader roles from the Easy Auth principal", () => {
+    const encoded = Buffer.from(
+      JSON.stringify({
+        claims: [
+          { typ: "name", val: "Adam McCurry" },
+          { typ: "roles", val: "Admin" },
+          {
+            typ: "http://schemas.microsoft.com/ws/2008/06/identity/claims/role",
+            val: "Reader",
+          },
+        ],
+      })
+    ).toString("base64");
+    const principal = dashboardPrincipal({
+      header: (name: string) =>
+        name === "x-ms-client-principal-id"
+          ? "user-1"
+          : name === "x-ms-client-principal"
+            ? encoded
+            : undefined,
+    } as never);
+    assert.deepEqual(principal, {
+      id: "user-1",
+      name: "Adam McCurry",
+      roles: ["Admin", "Reader"],
+    });
+  });
+
   it("renders the execution graph without destructive page refresh", () => {
     const prior = process.env.EXECUTION_GRAPH_ENABLED;
     const priorWrites = process.env.EXECUTION_GRAPH_WRITES_ENABLED;
@@ -96,6 +125,24 @@ describe("admin portal", () => {
         unauth.res as never
       );
       assert.equal(unauth.status(), 401);
+
+      const reader = responseRecorder();
+      const readerPrincipal = Buffer.from(
+        JSON.stringify({ claims: [{ typ: "roles", val: "Reader" }] })
+      ).toString("base64");
+      await mutateExecutionGraphApi(
+        {
+          header: (name: string) =>
+            name === "x-ms-client-principal-id"
+              ? "reader-1"
+              : name === "x-ms-client-principal"
+                ? readerPrincipal
+                : undefined,
+          body: {},
+        } as never,
+        reader.res as never
+      );
+      assert.equal(reader.status(), 403);
 
       delete process.env.WEBSITE_INSTANCE_ID;
       const crossOrigin = responseRecorder();
@@ -377,6 +424,14 @@ describe("admin portal", () => {
     assert.match(teams, /Save team/);
     const roles = renderOrg("local", "roles", { units: [], people: [], roles: [] });
     assert.match(roles, /Save role/);
+    const reader = renderOrg(
+      "reader",
+      "roles",
+      { units: [], people: [], roles: [] },
+      "",
+      false
+    );
+    assert.doesNotMatch(reader, /Save role|action="\/admin\/org"/);
     const scope = meetingCsrfScope(["org:people", "per-val"]);
     assert.equal(verifyMeetingCsrf(meetingCsrfToken(scope), scope), true);
   });

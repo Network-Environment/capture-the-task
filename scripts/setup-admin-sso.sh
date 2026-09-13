@@ -5,8 +5,8 @@
 #
 # What it does:
 #   1. App registration "TaskBrain Admin" (single-tenant) + client secret
-#   2. User assignment required on the enterprise app
-#   3. Assigns the signed-in user (so you are not locked out)
+#   2. Admin/Reader app roles + required enterprise-app assignment
+#   3. Adam → Admin; Valerie/Joseph Ryan → Reader
 #   4. Easy Auth redirect URI for the App Service hostname, if the app exists
 #   5. Sets GitHub secrets ADMIN_APP_ID / ADMIN_APP_SECRET when `gh` is logged in
 #
@@ -74,6 +74,9 @@ if [[ -n "$ADMIN_OID" ]]; then
   fi
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "${SCRIPT_DIR}/configure-admin-roles.sh" "$app_id"
+
 HOST=$(az webapp list -g "$RG" --query "[?starts_with(name, 'app-taskbrain')].defaultHostName | [0]" -o tsv 2>/dev/null || echo "")
 if [[ -n "$HOST" ]]; then
   az ad app update --id "$app_id" \
@@ -105,9 +108,12 @@ cat << SUMMARY
 
 Share https://${HOST:-<app-hostname>}/admin — Entra login, no key in the URL.
 
-Add more viewers:
+Manage access:
   Entra admin center → Enterprise applications → ${ADMIN_APP_NAME}
-  → Users and groups → Add user/group
+  → Users and groups → Add user/group → select Admin or Reader
+
+Reader can view every dashboard section but cannot queue meeting summaries,
+change the org directory, or mutate the execution graph.
 
 This is a separate app from TaskBrain Bot, so assignment here does not
 block Teams chat or Microsoft To Do OAuth.

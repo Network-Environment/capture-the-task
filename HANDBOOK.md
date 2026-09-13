@@ -88,8 +88,8 @@ scripts/bootstrap.sh (once, out of band)
   │     infra/main.bicep
   │       ├─ creates every resource + 3 Foundry models + Basic ACR
   │       ├─ Container Apps env + always-warm Playwright MCP (browser)
-  │       ├─ Easy Auth on the web app (TaskBrain Admin Entra app;
-  │       │  /api/messages and /healthz excluded)
+  │       ├─ Easy Auth + Admin/Reader app roles on the web app
+  │       │  (TaskBrain Admin Entra app; /api/messages and /healthz excluded)
   │       ├─ gives the App Service system identity AcrPull on ACR
   │       └─ WRITES ALL APP SETTINGS: keys via listKeys() (Cosmos, Storage,
   │          Speech, Foundry), endpoints, deployment names, and the secrets
@@ -475,7 +475,7 @@ repo, org permission to upload Teams apps.
    admin consent, OAuth redirect), the CI app with GitHub OIDC federation and
    Contributor + RBAC Administrator on the RG, required resource providers,
    the resource group, and the TaskBrain Admin Entra app (assignment-required
-   Easy Auth for `/admin`). Patches
+   Easy Auth for `/admin`; Adam = Admin, Valerie/Joseph Ryan = Reader). Patches
    `teams-app/manifest.json` and `.env`. If `gh` is authenticated it sets all
    required GitHub secrets and creates the `production` environment; otherwise
    it prints them for you to paste. Idempotent; re-runs mint a new bot secret
@@ -753,7 +753,11 @@ logging already support it. Do not pay this tax early.
   token totals vs `DAILY_TOKEN_BUDGET`. Usage → Tokens by origin identifies
   chat, scheduled, and admin-triggered meeting-summary consumption.
 - **Dashboard login AADSTS50105:** the user is not assigned to **TaskBrain
-  Admin**. Entra → Enterprise applications → Users and groups → Add.
+  Admin**. Entra → Enterprise applications → Users and groups → Add, then
+  choose the **Admin** or **Reader** role. Admin can mutate; Reader is read-only.
+- **Dashboard returns 403 after sign-in:** the enterprise-app assignment is
+  missing an Admin/Reader role (old default-access assignments do not qualify).
+  Re-run `scripts/configure-admin-roles.sh`.
 - **Dashboard sign-in returns an HTTP error after authenticating:** the
   registration must issue ID tokens — Easy Auth uses
   `response_type=code+id_token`. Entra → App registrations → TaskBrain Admin →

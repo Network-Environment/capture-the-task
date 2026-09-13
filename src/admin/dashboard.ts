@@ -30,7 +30,6 @@ import type {
   MeetingDoc,
   TranscriptAvailabilityDoc,
 } from "../meetings/types";
-import { canViewMeetings } from "../meetings/access";
 import { loadConfig } from "../config";
 import { nativeToolCatalog } from "../tools/registry";
 import { mcpServerCatalog, mcpServerHealth, mcpToolDefinitions, type McpServerHealth } from "../tools/mcpClient";
@@ -94,15 +93,56 @@ export function queryOf(req: Pick<Request, "getQuery">): URLSearchParams {
   return new URLSearchParams(req.getQuery());
 }
 
+export type DashboardRole = "Admin" | "Reader";
+
+export interface DashboardPrincipal {
+  id: string;
+  name: string;
+  roles: DashboardRole[];
+}
+
+function isDashboardRole(value: string): value is DashboardRole {
+  return value === "Admin" || value === "Reader";
+}
+
+export function dashboardPrincipal(
+  req: Pick<Request, "header">
+): DashboardPrincipal | undefined {
+  const id = req.header("x-ms-client-principal-id");
+  if (!id) return undefined;
+  const name =
+    req.header("x-ms-client-principal-name") ??
+    claim(req, "preferred_username") ??
+    claim(req, "name") ??
+    id;
+  const roles = [
+    ...new Set([...claims(req, "roles"), ...claims(req, "role")].filter(isDashboardRole)),
+  ];
+  return { id, name, roles };
+}
+
+function canReadDashboard(principal: DashboardPrincipal): boolean {
+  return principal.roles.includes("Admin") || principal.roles.includes("Reader");
+}
+
+function canAdminDashboard(principal: DashboardPrincipal): boolean {
+  return principal.roles.includes("Admin");
+}
+
 export async function adminPage(req: Request, res: Response): Promise<void> {
-  const principal = easyAuthPrincipal(req);
+  const principal = dashboardPrincipal(req);
   if (process.env.WEBSITE_INSTANCE_ID && !principal) {
     res.send(401, "sign in required");
+    return;
+  }
+  if (process.env.WEBSITE_INSTANCE_ID && principal && !canReadDashboard(principal)) {
+    res.send(403, "TaskBrain Admin requires the Admin or Reader app role.");
     return;
   }
 
   const raw = String(req.params.section ?? "overview").toLowerCase();
   const signedIn = principal?.name ?? "local";
+  const canWrite = !process.env.WEBSITE_INSTANCE_ID || Boolean(principal && canAdminDashboard(principal));
   const query = queryOf(req);
   const tab = query.get("tab") ?? "";
 
@@ -119,11 +159,7 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
   }
 
   const section: SectionId = isSection(raw) ? raw : "overview";
-  if (section === "graph" && principal && !canViewMeetings(principal.id)) {
-    res.send(403, "execution graph is limited to designated org operators");
-    return;
-  }
-  const html = await renderSection(section, signedIn, tab, query.get("notice") ?? "");
+  const html = await renderSection(section, signedIn, tab, query.get("notice") ?? "", canWrite);
   res.sendRaw(200, html, { "Content-Type": "text/html" });
 }
 
@@ -131,7 +167,8 @@ async function renderSection(
   section: SectionId,
   signedIn: string,
   tab: string,
-  notice: string
+  notice: string,
+  canWrite: boolean
 ): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
   switch (section) {
@@ -160,13 +197,13 @@ async function renderSection(
       return renderUsage(signedIn, usage, events);
     }
     case "graph":
-      return renderExecutionGraph(signedIn);
+      return renderExecutionGraph(signedIn, canWrite);
     case "org": {
       const dir = await listOrgDirectory().catch(
         () => ({ units: [], people: [], roles: [] }) as OrgDirectory
       );
       const orgTab = tab === "teams" || tab === "roles" ? tab : "people";
-      return renderOrg(signedIn, orgTab, dir, notice);
+      return renderOrg(signedIn, orgTab, dir, notice, canWrite);
     }
     case "meetings": {
       const [health, meetings, commitments, transcripts] = await Promise.all([
@@ -183,7 +220,8 @@ async function renderSection(
         meetings,
         commitments,
         transcripts,
-        notice
+        notice,
+        canWrite
       );
     }
     case "jobs": {
@@ -593,11 +631,8 @@ export async function queueMeetingSummaries(
   req: Request,
   res: Response
 ): Promise<void> {
-  const principal = easyAuthPrincipal(req);
-  if (process.env.WEBSITE_INSTANCE_ID && !principal) {
-    res.send(401, "sign in required");
-    return;
-  }
+  const who = requireAdminPrincipal(req, res);
+  if (!who) return;
   const origin = req.header("origin");
   const host = req.header("host");
   if (origin && host) {
@@ -632,11 +667,11 @@ export async function queueMeetingSummaries(
   try {
     const result = await queueTranscriptSelections(
       selected,
-      principal?.id ?? "local"
+      who === "local" ? "local" : who.id
     );
     void logActivity({
       type: "meeting_summary",
-      userId: principal?.id,
+      userId: who === "local" ? undefined : who.id,
       origin: "admin_summary",
       channel: "internal",
       trigger: "admin_queue",
@@ -697,7 +732,8 @@ export function renderOrg(
   signedIn: string,
   tab: OrgTab,
   dir: OrgDirectory,
-  notice = ""
+  notice = "",
+  canWrite = true
 ): string {
   const tabBar = tabs("/admin/org", [
     { id: "people", label: "People" },
@@ -725,16 +761,18 @@ export function renderOrg(
           `<td class="muted">${esc(u.parentId ? unitName(u.parentId) : "—")}</td>` +
           `<td class="muted clip">${esc(u.purpose || "—")}</td>` +
           `<td>${pill(u.status, u.status === "active" ? "ok" : "idle")}</td>` +
-          `<td><form method="post" action="/admin/org">${rowHidden}` +
+          (canWrite ? `<td><form method="post" action="/admin/org">${rowHidden}` +
           `<input type="hidden" name="id" value="${esc(u.id)}">` +
           `<input type="hidden" name="name" value="${esc(u.name)}">` +
           `<input type="hidden" name="parentId" value="${esc(u.parentId ?? "")}">` +
           `<input type="hidden" name="purpose" value="${esc(u.purpose)}">` +
-          `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td></tr>`
+          `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td>` : "<td></td>") +
+          `</tr>`
         );
       })
       .join("");
     inner = `${orgNoticeHtml(notice)}
+      ${canWrite ? `
       <section class="panel">
         <h2>Add team</h2>
         <form class="form" method="post" action="/admin/org">
@@ -745,7 +783,7 @@ export function renderOrg(
           <label class="span2">Purpose / mandate <textarea name="purpose" maxlength="400"></textarea></label>
           <div class="actions"><button type="submit">Save team</button></div>
         </form>
-      </section>
+      </section>` : ""}
       <section class="panel">
         <h2>Teams</h2>
         ${table(["Name", "Parent", "Purpose", "Status", ""], rows, "No teams yet.")}
@@ -762,17 +800,19 @@ export function renderOrg(
           `<td class="muted">${esc(r.unitId ? unitName(r.unitId) : "—")}</td>` +
           `<td class="muted clip">${esc(r.mandate || "—")}</td>` +
           `<td>${pill(r.status, r.status === "active" ? "ok" : "idle")}</td>` +
-          `<td><form method="post" action="/admin/org">${rowHidden}` +
+          (canWrite ? `<td><form method="post" action="/admin/org">${rowHidden}` +
           `<input type="hidden" name="id" value="${esc(r.id)}">` +
           `<input type="hidden" name="personId" value="${esc(r.personId)}">` +
           `<input type="hidden" name="title" value="${esc(r.title)}">` +
           `<input type="hidden" name="unitId" value="${esc(r.unitId ?? "")}">` +
           `<input type="hidden" name="mandate" value="${esc(r.mandate)}">` +
-          `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td></tr>`
+          `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td>` : "<td></td>") +
+          `</tr>`
         );
       })
       .join("");
     inner = `${orgNoticeHtml(notice)}
+      ${canWrite ? `
       <section class="panel">
         <h2>Add role</h2>
         <form class="form" method="post" action="/admin/org">
@@ -785,7 +825,7 @@ export function renderOrg(
           <label class="span2">Mandate <textarea name="mandate" maxlength="400"></textarea></label>
           <div class="actions"><button type="submit">Save role</button></div>
         </form>
-      </section>
+      </section>` : ""}
       <section class="panel">
         <h2>Roles</h2>
         ${table(["Title", "Person", "Team", "Mandate", "Status", ""], rows, "No named roles yet.")}
@@ -808,7 +848,7 @@ export function renderOrg(
           `<td class="muted clip">${esc(p.mandate || "—")}</td>` +
           `<td class="muted clip">${esc(hats || "—")}</td>` +
           `<td>${pill(p.status, p.status === "active" ? "ok" : "idle")}</td>` +
-          `<td><form method="post" action="/admin/org">${rowHidden}` +
+          (canWrite ? `<td><form method="post" action="/admin/org">${rowHidden}` +
           `<input type="hidden" name="id" value="${esc(p.id)}">` +
           `<input type="hidden" name="displayName" value="${esc(p.displayName)}">` +
           `<input type="hidden" name="entraId" value="${esc(p.entraId ?? "")}">` +
@@ -817,11 +857,13 @@ export function renderOrg(
           `<input type="hidden" name="managerPersonId" value="${esc(p.managerPersonId ?? "")}">` +
           `<input type="hidden" name="unitId" value="${esc(p.unitId ?? "")}">` +
           `<input type="hidden" name="mandate" value="${esc(p.mandate)}">` +
-          `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td></tr>`
+          `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td>` : "<td></td>") +
+          `</tr>`
         );
       })
       .join("");
     inner = `${orgNoticeHtml(notice)}
+      ${canWrite ? `
       <section class="panel">
         <h2>Add or update person</h2>
         <p class="pad muted">Optional Entra object id ties Teams/iMessage identity. Aliases (comma-separated) match meeting owners like "Val".</p>
@@ -837,7 +879,7 @@ export function renderOrg(
           <label class="span2">Mandate (what they should be doing) <textarea name="mandate" maxlength="400"></textarea></label>
           <div class="actions"><button type="submit">Save person</button></div>
         </form>
-      </section>
+      </section>` : ""}
       <section class="panel">
         <h2>People</h2>
         ${table(["Name", "Title", "Team", "Manager", "Mandate", "Roles", "Status", ""], rows, "No people in the directory yet.")}
@@ -853,10 +895,14 @@ export function renderOrg(
   });
 }
 
-function requireAdminPrincipal(req: Request, res: Response): { id: string; name: string } | "local" | undefined {
-  const principal = easyAuthPrincipal(req);
+function requireAdminPrincipal(req: Request, res: Response): DashboardPrincipal | "local" | undefined {
+  const principal = dashboardPrincipal(req);
   if (process.env.WEBSITE_INSTANCE_ID && !principal) {
     res.send(401, "sign in required");
+    return undefined;
+  }
+  if (process.env.WEBSITE_INSTANCE_ID && principal && !canAdminDashboard(principal)) {
+    res.send(403, "TaskBrain Admin role required");
     return undefined;
   }
   const origin = req.header("origin");
@@ -962,7 +1008,8 @@ export function renderMeetings(
   meetings: MeetingDoc[] = [],
   commitments: CommitmentDoc[] = [],
   transcripts: TranscriptAvailabilityDoc[] = [],
-  notice = ""
+  notice = "",
+  canWrite = true
 ): string {
   const selectable = transcripts.filter(
     (t) => t.status === "available" || t.status === "failed"
@@ -994,7 +1041,7 @@ export function renderMeetings(
   const transcriptRows = transcripts
     .map((t) => {
       const key = transcriptSelectionKey(t.organizerId, t.transcriptId);
-      const canSelect = t.status === "available" || t.status === "failed";
+      const canSelect = canWrite && (t.status === "available" || t.status === "failed");
       const tone: Tone =
         t.status === "summarized"
           ? "ok"
@@ -1063,12 +1110,12 @@ export function renderMeetings(
     ${noticeHtml}
     <div class="grid" style="margin:1rem 1.15rem">${transcriptStats}</div>
     <p class="pad muted">Teams or Plaud creates the transcript. TaskBrain fetches and summarizes only selected meetings; raw transcript text and audio are never stored.</p>
-    <form method="post" action="/admin/meetings/summarize">
+    ${canWrite ? `<form method="post" action="/admin/meetings/summarize">
       <input type="hidden" name="_scope" value="${esc(scope)}">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
       ${table(["Select", "Date", "Source", "Meeting", "Organizer", "Status", "Error"], transcriptRows, "No transcripts discovered in the last 30 days.")}
       <div class="pad"><button type="submit"${selectable.length ? "" : " disabled"}>Summarize selected</button></div>
-    </form>
+    </form>` : table(["", "Date", "Source", "Meeting", "Organizer", "Status", "Error"], transcriptRows, "No transcripts discovered in the last 30 days.")}
   </section>
   <section class="panel">
     <h2>Open / overdue commitments</h2>
@@ -1090,9 +1137,9 @@ export function renderMeetings(
 
 const GRAPH_CSRF_SCOPE = "graph:mutate";
 
-export function renderExecutionGraph(signedIn: string): string {
+export function renderExecutionGraph(signedIn: string, canWrite = true): string {
   const csrf = meetingCsrfToken(GRAPH_CSRF_SCOPE);
-  const writesEnabled = graphWritesEnabled();
+  const writesEnabled = canWrite && graphWritesEnabled();
   const body = graphEnabled()
     ? `<div class="graph-toolbar" aria-label="Execution graph filters">
         <input id="graph-search" type="search" placeholder="Search projects, tasks, people, meetings…" aria-label="Search execution graph">
@@ -1158,17 +1205,17 @@ export function renderExecutionGraph(signedIn: string): string {
 }
 
 export async function readExecutionGraphApi(req: Request, res: Response): Promise<void> {
-  const principal = easyAuthPrincipal(req);
+  const principal = dashboardPrincipal(req);
   if (process.env.WEBSITE_INSTANCE_ID && !principal) {
     res.send(401, { error: "sign in required" });
     return;
   }
-  if (!graphEnabled()) {
-    res.send(503, { error: "execution graph disabled" });
+  if (process.env.WEBSITE_INSTANCE_ID && principal && !canReadDashboard(principal)) {
+    res.send(403, { error: "Admin or Reader app role required" });
     return;
   }
-  if (principal && !canViewMeetings(principal.id)) {
-    res.send(403, { error: "execution graph is limited to designated org operators" });
+  if (!graphEnabled()) {
+    res.send(503, { error: "execution graph disabled" });
     return;
   }
   const query = queryOf(req);
@@ -1218,10 +1265,6 @@ export async function mutateExecutionGraphApi(req: Request, res: Response): Prom
   if (!who) return;
   if (!graphEnabled()) {
     res.send(503, { error: "execution graph disabled" });
-    return;
-  }
-  if (who !== "local" && !canViewMeetings(who.id)) {
-    res.send(403, { error: "execution graph is limited to designated org operators" });
     return;
   }
   if (!graphWritesEnabled()) {
@@ -1489,28 +1532,23 @@ function ingestHealthPanel(h?: IngestHealthDoc): string {
   </section>`;
 }
 
-function easyAuthPrincipal(req: Request): { id: string; name: string } | undefined {
-  const id = req.header("x-ms-client-principal-id");
-  if (!id) return undefined;
-  const name =
-    req.header("x-ms-client-principal-name") ??
-    claim(req, "preferred_username") ??
-    claim(req, "name") ??
-    id;
-  return { id, name };
-}
-
-function claim(req: Request, typ: string): string | undefined {
+function claims(req: Pick<Request, "header">, typ: string): string[] {
   const raw = req.header("x-ms-client-principal");
-  if (!raw) return undefined;
+  if (!raw) return [];
   try {
     const parsed = JSON.parse(Buffer.from(raw, "base64").toString("utf8")) as {
       claims?: { typ: string; val: string }[];
     };
-    return parsed.claims?.find((c) => c.typ === typ || c.typ.endsWith(`/${typ}`))?.val;
+    return (parsed.claims ?? [])
+      .filter((c) => c.typ === typ || c.typ.endsWith(`/${typ}`))
+      .map((c) => c.val);
   } catch {
-    return undefined;
+    return [];
   }
+}
+
+function claim(req: Pick<Request, "header">, typ: string): string | undefined {
+  return claims(req, typ)[0];
 }
 
 function statusTone(status: string): Tone {
