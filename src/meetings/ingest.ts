@@ -47,6 +47,7 @@ import type {
 } from "./types";
 import { capTranscript, isTooShort, parseVtt } from "./vtt";
 import { projectCommitment, projectMeeting, projectPerson } from "../graph/project";
+import { retainFromMeeting } from "../memory/retain";
 
 const ORGANIZERS_PER_RUN = Number(process.env.MEETING_ORGANIZERS_PER_RUN ?? 25);
 const BACKFILL_DAYS = 30;
@@ -194,6 +195,16 @@ export async function processAvailableTranscript(
   } catch (err) {
     console.error("[graph] meeting projection failed (non-fatal):", err);
   }
+
+  void retainFromMeeting({
+    meetingId: id,
+    title: summary.title,
+    summary: summary.summary,
+    decisions: summary.decisions,
+    actions: summary.actions,
+    risks: summary.risks,
+    startAt,
+  });
 
   for (const text of orgLessonTexts(summary, matched)) {
     await rememberLesson(ORG_LESSON_USER, "self", text);

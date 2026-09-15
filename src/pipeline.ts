@@ -19,6 +19,8 @@ import {
   TriageResult,
 } from "./services/agent";
 import { saveNote, recall, deleteNote } from "./services/brain";
+import { retainFromCapture } from "./memory/retain";
+import { recallMemory, recallPromptBlock } from "./memory/recall";
 import {
   getRecentTurns,
   appendTurn,
@@ -598,14 +600,15 @@ async function execute(
         userId,
         { kind: "task", title: r.title, body: r.detail || text, tags: r.tags, source },
         attribution
-      ).then((saved) =>
-        setLastCapture(userId, input.conversationId, {
+      ).then((saved) => {
+        void retainFromCapture(userId, `${r.title}\n${r.detail || text}`, saved.id, attribution);
+        return setLastCapture(userId, input.conversationId, {
           id: saved.id,
           path: saved.path,
           title: r.title,
           createdAt: new Date().toISOString(),
-        })
-      );
+        });
+      });
       if (allowInferredSheetProposal && effectivePolicy.allowSharedWrites) {
         const proposed = await maybeProposeSheetUpdate(userId, {
           title: r.title,
@@ -631,6 +634,7 @@ async function execute(
         },
         attribution
       );
+      void retainFromCapture(userId, `${r.title}\n${r.detail || text}`, id, attribution);
       await setLastCapture(userId, input.conversationId, {
         id,
         path,
@@ -647,7 +651,7 @@ async function execute(
     }
 
     case "question": {
-      const [hits, graph] = await Promise.all([
+      const [hits, graph, memory] = await Promise.all([
         recall(userId, text, 8, attribution),
         graphEnabled() && canViewMeetings(userId)
           ? searchExecutionGraph(text, userId, { limit: 24, depth: 1 }, attribution).catch(
@@ -657,6 +661,10 @@ async function execute(
               }
             )
           : undefined,
+        recallMemory(userId, text, attribution).catch((err) => {
+          console.error("[memory] question recall failed (non-fatal):", err);
+          return undefined;
+        }),
       ]);
       const graphContext = graph?.nodes.length
         ? [
@@ -671,7 +679,8 @@ async function execute(
             ),
           ].join("\n")
         : "";
-      const answer = await answerQuestion(text, hits, attribution, graphContext, recent);
+      const memoryContext = memory ? recallPromptBlock(memory) : "";
+      const answer = await answerQuestion(text, hits, attribution, graphContext, recent, memoryContext);
       return { title: "From your brain", body: answer, tags: [], summaryLine: answer.slice(0, 200) };
     }
 

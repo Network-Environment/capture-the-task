@@ -62,6 +62,13 @@ let debounce: ReturnType<typeof setTimeout> | undefined;
 
 restoreControls();
 void load();
+void loadFacts();
+document.getElementById("memory-network")?.addEventListener("change", () => void loadFacts());
+document.getElementById("memory-bank")?.addEventListener("change", () => void loadFacts());
+document.getElementById("memory-fact-q")?.addEventListener("input", () => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => void loadFacts(), 250);
+});
 
 for (const control of [typeFilter, statusFilter, ownerFilter, proposals]) {
   control.addEventListener("change", () => void load());
@@ -100,6 +107,48 @@ async function load(cursor?: string): Promise<void> {
   } catch (err) {
     message.textContent = (err as Error).message;
     message.classList.add("graph-error");
+  }
+}
+
+async function loadFacts(): Promise<void> {
+  const host = document.getElementById("memory-facts");
+  if (!host) return;
+  const params = new URLSearchParams({ limit: "40" });
+  const q = (document.getElementById("memory-fact-q") as HTMLInputElement | null)?.value.trim();
+  const network = (document.getElementById("memory-network") as HTMLSelectElement | null)?.value;
+  const bank = (document.getElementById("memory-bank") as HTMLSelectElement | null)?.value;
+  if (q) params.set("q", q);
+  if (network) params.set("network", network);
+  if (bank) params.set("bank", bank);
+  try {
+    const response = await fetch(`/admin/api/memory-facts?${params}`, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+    const result = (await response.json()) as {
+      facts?: Array<{
+        network: string;
+        bankId: string;
+        text: string;
+        source: string;
+        sourceId: string;
+      }>;
+      error?: string;
+    };
+    if (!response.ok) throw new Error(result.error ?? "Could not load memory facts");
+    const facts = result.facts ?? [];
+    host.innerHTML = facts.length
+      ? `<table><thead><tr><th>Network</th><th>Bank</th><th>Fact</th><th>Source</th></tr></thead><tbody>${facts
+          .map(
+            (fact) =>
+              `<tr><td>${escapeHtml(fact.network)}</td><td class="mono">${escapeHtml(fact.bankId)}</td>` +
+              `<td>${escapeHtml(fact.text)}</td>` +
+              `<td class="mono muted">${escapeHtml(fact.source)}:${escapeHtml(fact.sourceId)}</td></tr>`
+          )
+          .join("")}</tbody></table>`
+      : "No retained facts match these filters.";
+  } catch (err) {
+    host.textContent = (err as Error).message;
   }
 }
 

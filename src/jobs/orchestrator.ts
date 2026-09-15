@@ -20,6 +20,7 @@ import { alertUser, alertAdmin } from "../services/alerts";
 import { channelPolicy } from "../channels/types";
 import { scheduledReadToolEnvelope } from "../tools/registry";
 import { nudgeOverdueWork } from "../work/assign";
+import { maybeConsolidateObservations } from "../memory/observe";
 
 const POLL_MS = 60_000;
 const MAX_RETRIES = 3;
@@ -41,6 +42,7 @@ export async function tick(adapter: CloudAdapter, botAppId: string): Promise<voi
       await runJob(adapter, botAppId, claimed);
     }
     await maybeNudgeOverdueWork();
+    await maybeConsolidateObservations();
   } catch (err) {
     console.error("[orchestrator] tick failed:", err);
   } finally {

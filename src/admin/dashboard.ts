@@ -59,6 +59,8 @@ import {
   reviewGraphEdge,
   setGraphSingleRelationship,
 } from "../graph/store";
+import { listMemoryFacts, memoryFactsEnabled } from "../memory/store";
+import type { MemoryFact, MemoryNetwork } from "../memory/types";
 import type {
   GraphEdgeType,
   GraphNodeStatus,
@@ -160,7 +162,7 @@ export async function adminPage(req: Request, res: Response): Promise<void> {
   }
 
   const section: SectionId = isSection(raw) ? raw : "overview";
-  const html = await renderSection(section, signedIn, tab, query.get("notice") ?? "", canWrite);
+  const html = await renderSection(section, signedIn, tab, query.get("notice") ?? "", canWrite, query);
   res.sendRaw(200, html, { "Content-Type": "text/html" });
 }
 
@@ -169,7 +171,8 @@ async function renderSection(
   signedIn: string,
   tab: string,
   notice: string,
-  canWrite: boolean
+  canWrite: boolean,
+  params: URLSearchParams = new URLSearchParams()
 ): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
   switch (section) {
@@ -233,7 +236,17 @@ async function renderSection(
       const lessons = await cosmosContainer("agent-memory")
         .items.query("SELECT * FROM c ORDER BY c.createdAt DESC")
         .fetchAll();
-      return renderMemory(signedIn, lessons.resources as Record<string, unknown>[]);
+      const facts = memoryFactsEnabled()
+        ? await listMemoryFacts({
+            bankId: params.get("bank") || undefined,
+            network: isMemoryNetwork(params.get("network") ?? "")
+              ? (params.get("network") as "world" | "experience" | "opinion" | "observation")
+              : undefined,
+            query: params.get("q") || undefined,
+            limit: 50,
+          }).catch(() => [])
+        : [];
+      return renderMemory(signedIn, lessons.resources as Record<string, unknown>[], facts, params);
     }
   }
 }
@@ -1215,6 +1228,24 @@ export function renderExecutionGraph(signedIn: string, canWrite = true): string 
         <h2>Accessible execution list</h2>
         <div id="graph-list" class="pad muted">Loading…</div>
       </section>
+      <section class="panel">
+        <h2>Memory facts</h2>
+        <div class="graph-toolbar" aria-label="Memory fact filters">
+          <input id="memory-fact-q" type="search" placeholder="Search retained facts" aria-label="Search memory facts">
+          <select id="memory-network" aria-label="Filter by network">
+            <option value="">All networks</option>
+            <option value="world">World</option>
+            <option value="experience">Experience</option>
+            <option value="opinion">Opinion</option>
+            <option value="observation">Observation</option>
+          </select>
+          <select id="memory-bank" aria-label="Filter by bank">
+            <option value="">All banks</option>
+            <option value="org">org</option>
+          </select>
+        </div>
+        <div id="memory-facts" class="pad muted">Loading facts…</div>
+      </section>
       <dialog id="graph-dialog" aria-labelledby="graph-dialog-title"><form id="graph-form" method="dialog" class="form">
         <input type="hidden" name="id"><input type="hidden" name="version">
         <h2 class="span2" id="graph-dialog-title">Execution item</h2>
@@ -1519,7 +1550,12 @@ export function renderJobs(signedIn: string, jobs: Record<string, unknown>[]): s
   return renderShell({ section: "jobs", signedIn, title: "Jobs", subtitle: "scheduled agent work", body });
 }
 
-export function renderMemory(signedIn: string, lessons: Record<string, unknown>[]): string {
+export function renderMemory(
+  signedIn: string,
+  lessons: Record<string, unknown>[],
+  facts: MemoryFact[] = [],
+  params: URLSearchParams = new URLSearchParams()
+): string {
   const orgLessonRows = lessons
     .filter((l) => l.userId === "org")
     .map(
@@ -1538,7 +1574,38 @@ export function renderMemory(signedIn: string, lessons: Record<string, unknown>[
         `<td class="mono muted">${String(l.createdAt).slice(0, 10)}</td></tr>`
     )
     .join("");
+  const factRows = facts
+    .map(
+      (fact) =>
+        `<tr><td>${pill(fact.network, fact.network === "opinion" ? "warn" : "accent")}</td>` +
+        `<td class="mono muted">${esc(fact.bankId)}</td>` +
+        `<td>${esc(fact.text)}</td>` +
+        `<td class="mono muted">${esc(fact.source)}:${esc(fact.sourceId)}</td>` +
+        `<td class="mono muted">${fact.mentionedAt.slice(0, 10)}</td></tr>`
+    )
+    .join("");
+  const bank = params.get("bank") ?? "";
+  const network = params.get("network") ?? "";
+  const q = params.get("q") ?? "";
   const body = `<section class="panel">
+    <h2>Epistemic facts</h2>
+    <form class="graph-toolbar" method="get" action="/admin/memory" aria-label="Memory fact filters">
+      <input type="search" name="q" value="${esc(q)}" placeholder="Search facts">
+      <select name="network">
+        <option value="">All networks</option>
+        ${["world", "experience", "opinion", "observation"]
+          .map(
+            (value) =>
+              `<option value="${value}"${network === value ? " selected" : ""}>${value}</option>`
+          )
+          .join("")}
+      </select>
+      <input name="bank" value="${esc(bank)}" placeholder="bank (org or user:…)">
+      <button type="submit">Filter</button>
+    </form>
+    ${table(["Network", "Bank", "Fact", "Source", "Mentioned"], factRows, "No retained facts yet.")}
+  </section>
+  <section class="panel">
     <h2>Org lessons</h2>
     ${table(["Kind", "Lesson", "Added"], orgLessonRows, "No org lessons yet.")}
   </section>
@@ -1546,7 +1613,60 @@ export function renderMemory(signedIn: string, lessons: Record<string, unknown>[
     <h2>Agent memory</h2>
     ${table(["Kind", "Lesson", "Added"], lessonRows, "No lessons learned yet.")}
   </section>`;
-  return renderShell({ section: "memory", signedIn, title: "Memory", subtitle: "agent and org lessons", body });
+  return renderShell({
+    section: "memory",
+    signedIn,
+    title: "Memory",
+    subtitle: "facts, agent lessons, and org lessons — separate stores",
+    body,
+  });
+}
+
+export async function readMemoryFactsApi(req: Request, res: Response): Promise<void> {
+  const principal = dashboardPrincipal(req);
+  if (process.env.WEBSITE_INSTANCE_ID && !principal) {
+    res.send(401, { error: "sign in required" });
+    return;
+  }
+  if (process.env.WEBSITE_INSTANCE_ID && principal && !canReadDashboard(principal)) {
+    res.send(403, { error: "Admin or Reader app role required" });
+    return;
+  }
+  if (!memoryFactsEnabled()) {
+    res.send(200, { facts: [] });
+    return;
+  }
+  const query = queryOf(req);
+  try {
+    const facts = await listMemoryFacts({
+      bankId: query.get("bank") || undefined,
+      network: isMemoryNetwork(query.get("network") ?? "")
+        ? (query.get("network") as MemoryNetwork)
+        : undefined,
+      query: query.get("q") || undefined,
+      limit: Number(query.get("limit") ?? 40),
+    });
+    res.header("Cache-Control", "private, no-store");
+    res.send(200, {
+      facts: facts.map((fact) => ({
+        id: fact.id,
+        bankId: fact.bankId,
+        network: fact.network,
+        text: fact.text,
+        source: fact.source,
+        sourceId: fact.sourceId,
+        mentionedAt: fact.mentionedAt,
+        entityIds: fact.entityIds,
+      })),
+    });
+  } catch (err) {
+    console.error("[admin] memory facts read failed:", err);
+    res.send(500, { error: "could not load memory facts" });
+  }
+}
+
+function isMemoryNetwork(value: string): value is MemoryNetwork {
+  return value === "world" || value === "experience" || value === "opinion" || value === "observation";
 }
 
 function ingestHealthPanel(h?: IngestHealthDoc): string {

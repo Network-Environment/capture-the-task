@@ -392,16 +392,20 @@ export async function answerQuestion(
   hits: RecallHit[],
   attribution: Partial<ActivityAttribution> = {},
   graphContext = "",
-  recent: SessionTurn[] = []
+  recent: SessionTurn[] = [],
+  memoryContext = ""
 ): Promise<string> {
-  if (!hits.length && !graphContext) return "Nothing in the brain or execution graph matches that yet.";
+  if (!hits.length && !graphContext && !memoryContext) {
+    return "Nothing in the brain, memory facts, or execution graph matches that yet.";
+  }
   const res = await route("synthesis", [
     {
       role: "system",
       content:
-        "Answer strictly from the provided private notes and shared execution graph. " +
-        "Cite note titles in **bold** and graph items by title. Distinguish planned, open, " +
-        "blocked, and done work. If the sources don't answer it, say so. Be concise.",
+        "Answer strictly from the provided private notes, retained memory facts, and shared execution graph. " +
+        "Cite note titles in **bold**, memory facts by source:sourceId, and graph items by title. Distinguish planned, open, " +
+        "blocked, and done work. Treat memory facts as dated claims, not as a replacement for execution-graph status. " +
+        "If the sources don't answer it, say so. Be concise.",
     },
     ...recent.map((t) => ({ role: t.role, content: t.text }) as ChatCompletionMessageParam),
     {
@@ -411,7 +415,7 @@ export async function answerQuestion(
           hits
             .map((h) => `[${h.kind}] ${h.title} (${h.createdAt.slice(0, 10)}):\n${h.body}`)
             .join("\n---\n") || "none"
-        }\n\nSHARED EXECUTION GRAPH:\n${graphContext || "none"}\n\nQuestion: ${question}`,
+        }\n\nMEMORY FACTS:\n${memoryContext || "none"}\n\nSHARED EXECUTION GRAPH:\n${graphContext || "none"}\n\nQuestion: ${question}`,
     },
   ], { attribution: { ...attribution, trigger: "answer_knowledge" } });
   return res.choices[0]?.message?.content ?? "No answer generated.";

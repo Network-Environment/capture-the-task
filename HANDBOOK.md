@@ -48,7 +48,7 @@ flowchart TD
   POL -->|read/action| AG[agent loop · profile + tools]
   POL -->|high impact| APR
   AG --> REG[tool registry]
-  REG --> NAT[native: brain · scheduler · web_search]
+  REG --> NAT[native: brain · scheduler · web_search · memory]
   REG --> MCP[MCP servers · Smartsheet · browser]
   REG -->|shared/destructive/scheduled| APR
   MCP -->|navigate/snapshot| CAPP[Container App Chromium]
@@ -227,6 +227,7 @@ SCHEDULER — jobs-as-data
 | `org` | `/kind` | — | org directory: teams (`unit`), people, named roles. Mandates only; no transcript or Smartsheet copies. |
 | `graph-nodes` | `/workspaceId` | source-derived only | shared projects/tasks plus projected people, meetings, and evidence; 1536-dim embedding for hybrid recall |
 | `graph-edges` | `/workspaceId` | source-derived only | typed relationships and review state (`accepted`, `proposed`, `rejected`) |
+| `memory-facts` | `/bankId` | — | Hindsight-style facts (`world`, `experience`, `opinion`, `observation`) plus TEMPR entity edges; 1536-dim embedding. Banks: `user:{entraId}` and `org`. |
 
 Blob `meetings/{yyyy-mm}/{id}.md` holds the same structured summary (Cool tier after 1 day, delete after 90). Teams/Graph remains the system of record for transcripts; the agent does not keep VTT. Open commitments can outlive the meeting TTL because they are small JSON, not vectors.
 
@@ -311,7 +312,7 @@ matches are mentioned, not written. Token: GitHub repo secret
 `SMARTSHEET_API_TOKEN` → App Service; if tools are missing, check the app
 setting, do not mint a new token or re-run bootstrap.
 
-### The four stores (do not merge them)
+### The stores (do not merge them)
 
 The **second brain** (`notes` + Blob) is the user's knowledge — retrieved on
 demand, never injected wholesale. **Agent self-memory** (`agent-memory`) is
@@ -323,7 +324,8 @@ someone *should* be doing). Admins maintain it on `/admin/org`. Meeting
 commitments remain what people *are* doing. A compact snapshot is injected
 only for meeting viewers; everyone else uses `lookup_org` (same viewer
 gate). New features that "remember" something must pick the store: user
-knowledge, agent operating knowledge, org structure, or shared execution?
+knowledge, agent operating knowledge, org structure, shared execution, or
+dated memory facts?
 
 The **execution graph** (`graph-nodes` + `graph-edges`) is shared operational
 state: projects, tasks, owners, dependencies, source meetings, and evidence.
@@ -333,6 +335,16 @@ stores and are projected with deterministic IDs (`org-person:*`, `meeting:*`,
 `commitment:*`). A normal personal task capture remains a private note/To Do
 item; it is never silently published into the shared graph. Create a shared
 graph task explicitly through the agent or Execution graph admin page.
+
+**Memory facts** (`memory-facts`) sit beside those stores, not inside them.
+Retain extracts 2–5 narrative facts after capture (user bank) and meeting
+ingest (org bank, from the summary — never raw VTT). Recall fuses vector,
+keyword, entity-hop, and temporal overlap with a token budget. Reflect
+answers with citations and may update a **private** opinion; there is no
+org-wide opinion network about people. World facts may propose
+`supports` / `related_to` execution-graph edges for review. Tools:
+`retain_memory`, `recall_memory`, `reflect_memory`. Admins inspect networks
+and banks on `/admin/memory` and `/admin/graph`.
 
 Edges are typed: `part_of`, `assigned_to`, `depends_on`, `originated_from`,
 `supports`, and `related_to`. Explicit structural links and source projections
@@ -652,7 +664,8 @@ logging already support it. Do not pay this tax early.
    remain the live minimum. Clear reversible personal captures may execute.
 4. Notes remain plain markdown in Blob with frontmatter + wikilinks.
 5. User knowledge → `notes`; agent operational knowledge → `agent-memory`;
-   never cross-filed. Lessons stay capped.
+   org structure → `org`; shared work → execution graph; dated epistemic
+   facts → `memory-facts`. Never cross-filed. Lessons stay capped.
 6. The App Service orchestrator is the only scheduler for chat jobs; jobs
    are data; claims are etag-conditioned. Meeting ingest is a separate
    Functions timer (Graph polling), not a chat job.

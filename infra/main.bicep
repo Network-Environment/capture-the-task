@@ -50,6 +50,9 @@ param executionGraphEnabled bool = true
 @description('Allow human and agent graph mutations after read-only rollout validation')
 param executionGraphWritesEnabled bool = false
 
+@description('Enable Hindsight-style memory facts (retain/recall/reflect)')
+param memoryFactsEnabled bool = true
+
 @description('Stable partition key for the shared execution graph')
 param graphWorkspaceId string = 'org'
 
@@ -561,6 +564,35 @@ resource graphEdgesColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/cont
   }
 }
 
+resource memoryFactsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'memory-facts'
+  properties: {
+    resource: {
+      id: 'memory-facts'
+      partitionKey: { paths: ['/bankId'], kind: 'Hash' }
+      defaultTtl: -1
+      vectorEmbeddingPolicy: {
+        vectorEmbeddings: [
+          {
+            path: '/embedding'
+            dataType: 'float32'
+            distanceFunction: 'cosine'
+            dimensions: 1536
+          }
+        ]
+      }
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        automatic: true
+        includedPaths: [ { path: '/*' } ]
+        excludedPaths: [ { path: '/embedding/*' }, { path: '/"_etag"/?' } ]
+        vectorIndexes: [ { path: '/embedding', type: 'diskANN' } ]
+      }
+    }
+  }
+}
+
 resource meetingCheckpointsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
   parent: cosmosDb
   name: 'meeting-checkpoints'
@@ -703,6 +735,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'WEB_SEARCH_ENGINE', value: webSearchEngine }
         { name: 'EXECUTION_GRAPH_ENABLED', value: string(executionGraphEnabled) }
         { name: 'EXECUTION_GRAPH_WRITES_ENABLED', value: string(executionGraphWritesEnabled) }
+        { name: 'MEMORY_FACTS_ENABLED', value: string(memoryFactsEnabled) }
         { name: 'GRAPH_WORKSPACE_ID', value: graphWorkspaceId }
         { name: 'INTENT_GATEWAY_ENABLED', value: string(intentGatewayEnabled) }
         { name: 'INTENT_SHADOW_MODE', value: string(intentShadowMode) }
@@ -736,7 +769,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
     }
   }
   identity: { type: 'SystemAssigned' }
-  dependsOn: [ graphNodesColl, graphEdgesColl, workColl ]
+  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, workColl ]
 }
 
 // App Service pulls from ACR without registry credentials or stored secrets.
@@ -874,6 +907,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     meetingCheckpointsColl
     graphNodesColl
     graphEdgesColl
+    memoryFactsColl
   ]
 }
 

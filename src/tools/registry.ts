@@ -13,6 +13,11 @@ import { requiresApproval, parkAction, type PendingAction } from "../services/ap
 import { approvalMessage } from "../services/smartsheet";
 import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
 import { lookupOrg, rememberOrgPreference } from "../org/store";
+import { retainFromText } from "../memory/retain";
+import { recallMemory, recallPromptBlock } from "../memory/recall";
+import { reflectMemory } from "../memory/reflect";
+import { upsertMemoryProfile, memoryFactsEnabled } from "../memory/store";
+import { canWriteOrgBank, userBankId } from "../memory/banks";
 import type {
   ActivityChannel,
   ActivityInputMode,
@@ -78,6 +83,9 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   complete_work: { effect: "personal_write", reversible: true },
   remember_org_preference: { effect: "shared_write", reversible: true },
   web_search: { effect: "read", reversible: true },
+  retain_memory: { effect: "personal_write", reversible: true },
+  recall_memory: { effect: "read", reversible: true },
+  reflect_memory: { effect: "personal_write", reversible: true },
   search_execution_graph: { effect: "read", reversible: true },
   create_graph_project: { effect: "shared_write", reversible: true },
   create_graph_task: { effect: "shared_write", reversible: true },
@@ -87,6 +95,7 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
 const scheduledNativeReads = new Set([
   "recall_notes",
   "search_execution_graph",
+  "recall_memory",
   "recall_meetings",
   "list_commitments",
   "lookup_org",
@@ -342,6 +351,55 @@ const nativeDefs: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "retain_memory",
+      description:
+        "Extract and store self-contained memory facts in the speaker's personal bank (or org bank if you are a meeting viewer and the facts are shared world events). Do not use this to create execution-graph tasks.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Source text to retain from" },
+          bank: { type: "string", enum: ["user", "org"], description: "Default user" },
+          sourceId: { type: "string" },
+        },
+        required: ["text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "recall_memory",
+      description:
+        "Retrieve dated world/experience/opinion/observation facts with citations. Use together with search_execution_graph for status questions — memory does not replace the PMO graph.",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reflect_memory",
+      description:
+        "Answer from recalled memory facts with citations. Optionally update a private opinion (never an org-wide judgment about a person).",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string" },
+          updateOpinion: { type: "boolean" },
+          skepticism: { type: "number", description: "1-5 private disposition knob" },
+          literalism: { type: "number" },
+          empathy: { type: "number" },
+        },
+        required: ["question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "web_search",
       description:
         "Search the public web for current information. Returns titles, URLs, and short snippets only. " +
@@ -472,6 +530,7 @@ export async function allToolDefinitions(): Promise<ChatCompletionTool[]> {
 }
 
 const graphReadTools = new Set(["search_execution_graph"]);
+const memoryTools = new Set(["retain_memory", "recall_memory", "reflect_memory"]);
 const graphWriteTools = new Set([
   "create_graph_project",
   "create_graph_task",
@@ -484,6 +543,7 @@ function enabledNativeDefs(): ChatCompletionTool[] {
     const name = tool.function.name;
     if (graphReadTools.has(name)) return graphEnabled();
     if (graphWriteTools.has(name)) return graphEnabled() && graphWritesEnabled();
+    if (memoryTools.has(name)) return memoryFactsEnabled();
     return true;
   });
 }
@@ -511,6 +571,9 @@ export async function dispatch(
       };
     }
     const operation = operationMetadata(name);
+    if (name === "retain_memory" && String(args.bank ?? "user") === "org") {
+      operation.effect = "shared_write";
+    }
     const authorization =
       ctx.authorization ??
       ({
@@ -675,6 +738,44 @@ export async function dispatch(
         });
       case "lookup_org":
         return await lookupOrg(ctx.userId, String(args.query ?? ""));
+      case "retain_memory": {
+        const bank = String(args.bank ?? "user") === "org" ? "org" : "user";
+        if (bank === "org" && !canWriteOrgBank(ctx.userId)) return denyMeetings();
+        const saved = await retainFromText({
+          userId: ctx.userId,
+          text: String(args.text ?? ""),
+          source: "chat",
+          sourceId: String(args.sourceId ?? "retain_memory"),
+          bank,
+          attribution: ctx,
+        });
+        if (!saved.length) return "Nothing retainable in that text.";
+        return `Retained ${saved.length} fact(s) in ${bank === "org" ? "org" : userBankId(ctx.userId)}: ` +
+          saved.map((fact) => `[${fact.network}] ${fact.text}`).join(" | ");
+      }
+      case "recall_memory": {
+        const recalled = await recallMemory(ctx.userId, String(args.query ?? ""), ctx);
+        const block = recallPromptBlock(recalled);
+        return block || "No matching memory facts.";
+      }
+      case "reflect_memory": {
+        if (
+          args.skepticism !== undefined ||
+          args.literalism !== undefined ||
+          args.empathy !== undefined
+        ) {
+          await upsertMemoryProfile(userBankId(ctx.userId), {
+            skepticism: args.skepticism as number | undefined,
+            literalism: args.literalism as number | undefined,
+            empathy: args.empathy as number | undefined,
+          });
+        }
+        return await reflectMemory({
+          userId: ctx.userId,
+          question: String(args.question ?? ""),
+          updateOpinion: args.updateOpinion === true,
+        });
+      }
       case "web_search": {
         const capped = consumeSearchBudget(ctx);
         if (capped) return capped;
