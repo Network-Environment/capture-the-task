@@ -280,6 +280,7 @@ describe("admin portal", () => {
     assert.match(html, /browser/);
     assert.match(html, /navigate, snapshot/);
     assert.match(html, />connected</);
+    assert.match(html, /search by name/);
     assert.match(html, /token empty/);
     assert.match(html, /Web search/);
     assert.doesNotMatch(html, /Bearer /);

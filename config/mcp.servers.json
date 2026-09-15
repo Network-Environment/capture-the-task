@@ -8,8 +8,8 @@
       "enabled": true,
       "allowTools": [
         "search",
-        "get_sheet",
         "get_sheet_summary",
+        "get_columns",
         "add_rows",
         "update_rows",
         "list_workspaces"

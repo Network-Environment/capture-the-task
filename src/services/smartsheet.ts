@@ -32,7 +32,7 @@ export function catalogPromptBlock(): string {
   if (!sheets.length) {
     return (
       "\n\nKnown Smartsheet catalog: none configured. Search by sheet name " +
-      "with smartsheet__search (quote multi-word terms). Never guess sheet IDs."
+      "with smartsheet__search (quote multi-word terms) and smartsheet__get_sheet_summary. Never guess sheet IDs."
     );
   }
   const lines = sheets.map((s) => {
@@ -187,37 +187,89 @@ export function parseSearchHits(raw: string): ParsedSearchHit[] {
   return out;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function columnTitle(col: Record<string, unknown>): string {
+  return String(col.title ?? col.name ?? col.columnName ?? "");
+}
+
+function columnId(col: Record<string, unknown>): number | undefined {
+  const n = Number(col.id ?? col.columnId);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function rowIdOf(row: Record<string, unknown>): string {
+  return String(row.row_id ?? row.rowId ?? row.id ?? "");
+}
+
+function cellsOf(row: Record<string, unknown>): Record<string, unknown>[] {
+  if (Array.isArray(row.cells)) {
+    return row.cells.filter((c) => c && typeof c === "object") as Record<string, unknown>[];
+  }
+  const map = asRecord(row.cells) ?? asRecord(row.values) ?? asRecord(row.data);
+  if (!map) return [];
+  return Object.entries(map).map(([title, value]) => ({ title, displayValue: value, value }));
+}
+
+function cellText(cell: Record<string, unknown>): string {
+  return String(cell.displayValue ?? cell.value ?? cell.title ?? "").trim();
+}
+
 export function parseSheetForRows(raw: string, sheetId: string, sheetName: string): SheetRowHit[] {
   try {
-    const parsed = JSON.parse(raw) as {
-      name?: string;
-      columns?: { id: number; title?: string }[];
-      rows?: { id: number; cells?: { columnId: number; displayValue?: string; value?: unknown }[] }[];
-    };
-    const cols = parsed.columns ?? [];
-    const status = cols.find((c) => columnNameLooksLike(c.title ?? "", ["status", "state"]));
-    const due = cols.find((c) => columnNameLooksLike(c.title ?? "", ["due", "date"]));
-    const notes = cols.find((c) => columnNameLooksLike(c.title ?? "", ["note", "comment", "update", "remark"]));
+    const parsed = JSON.parse(raw) as unknown;
+    const root = asRecord(parsed) ?? {};
+    const inner = asRecord(root.data) ?? asRecord(root.sheet) ?? root;
+    const cols = (
+      (Array.isArray(inner.columns) ? inner.columns : undefined) ??
+      (Array.isArray(inner.available_columns) ? inner.available_columns : undefined) ??
+      (Array.isArray(inner.availableColumns) ? inner.availableColumns : [])
+    ).flatMap((c) => (asRecord(c) ? [asRecord(c)!] : []));
+    const status = cols.find((c) => columnNameLooksLike(columnTitle(c), ["status", "state"]));
+    const due = cols.find((c) => columnNameLooksLike(columnTitle(c), ["due", "date"]));
+    const notes = cols.find((c) =>
+      columnNameLooksLike(columnTitle(c), ["note", "comment", "update", "remark"])
+    );
     const primary = cols[0];
-    const ownerCol = cols.find((c) => columnNameLooksLike(c.title ?? "", ["owner", "assigned", "raci"]));
+    const ownerCol = cols.find((c) =>
+      columnNameLooksLike(columnTitle(c), ["owner", "assigned", "raci"])
+    );
+    const rowsRaw = Array.isArray(inner.rows) ? inner.rows : [];
     const hits: SheetRowHit[] = [];
-    for (const row of parsed.rows ?? []) {
-      const cellText = (row.cells ?? [])
-        .map((c) => String(c.displayValue ?? c.value ?? ""))
-        .filter(Boolean)
-        .join(" ");
+    for (const item of rowsRaw) {
+      const row = asRecord(item);
+      if (!row) continue;
+      const cells = cellsOf(row);
+      const text = cells.map(cellText).filter(Boolean).join(" ");
       const ownerCell = ownerCol
-        ? row.cells?.find((c) => c.columnId === ownerCol.id)
+        ? cells.find((c) => Number(c.columnId) === columnId(ownerCol)) ??
+          cells.find((c) => columnNameLooksLike(String(c.title ?? ""), [columnTitle(ownerCol).toLowerCase()]))
         : undefined;
+      const id = rowIdOf(row);
+      if (!id && !text) continue;
       hits.push({
-        sheetId,
-        sheetName: parsed.name ?? sheetName,
-        rowId: String(row.id),
-        text: cellText || (primary ? String(row.cells?.find((c) => c.columnId === primary.id)?.displayValue ?? "") : ""),
-        owner: ownerCell ? String(ownerCell.displayValue ?? ownerCell.value ?? "") : undefined,
-        statusColumnId: status?.id,
-        dueColumnId: due?.id,
-        notesColumnId: notes?.id,
+        sheetId: String(inner.sheet_id ?? inner.sheetId ?? inner.id ?? sheetId),
+        sheetName: String(inner.name ?? inner.sheet_name ?? inner.sheetName ?? sheetName),
+        rowId: id || String(hits.length),
+        text:
+          text ||
+          (primary
+            ? cellText(
+                cells.find((c) => Number(c.columnId) === columnId(primary)) ??
+                  cells.find((c) =>
+                    columnNameLooksLike(String(c.title ?? ""), [columnTitle(primary).toLowerCase()])
+                  ) ??
+                  {}
+              )
+            : ""),
+        owner: ownerCell ? cellText(ownerCell) : undefined,
+        statusColumnId: status ? columnId(status) : undefined,
+        dueColumnId: due ? columnId(due) : undefined,
+        notesColumnId: notes ? columnId(notes) : undefined,
       });
     }
     return hits;
@@ -261,7 +313,9 @@ export async function maybeProposeSheetUpdate(
     const rows: SheetRowHit[] = [];
     for (const sid of toLoad) {
       const alias = catalogSheets().find((s) => s.sheetId === sid)?.alias ?? sid;
-      const raw = await callMcpTool("smartsheet__get_sheet", { sheetId: sid });
+      const raw = await callMcpTool("smartsheet__get_sheet_summary", {
+        sheet_id: Number(sid) || sid,
+      });
       rows.push(...parseSheetForRows(raw, sid, alias));
     }
 
@@ -273,7 +327,7 @@ export async function maybeProposeSheetUpdate(
     }
 
     const args = {
-      sheetId: best.row.sheetId,
+      sheet_id: Number(best.row.sheetId) || best.row.sheetId,
       rows: [{ id: Number(best.row.rowId) || best.row.rowId, cells }],
     };
     const id = await parkAction(userId, "smartsheet__update_rows", args);

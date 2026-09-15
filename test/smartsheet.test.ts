@@ -65,8 +65,8 @@ test("inferred updates never invent add_rows and skip when no cells", () => {
   assert.ok(inferCellUpdates(withNotes, { title: "vendor delay" }).length === 1);
 });
 
-test("get_sheet JSON becomes row hits with status columns", () => {
-  const raw = JSON.stringify({
+test("get_sheet_summary JSON becomes row hits with status columns", () => {
+  const legacy = JSON.stringify({
     name: "Risks",
     columns: [
       { id: 1, title: "Risk" },
@@ -75,9 +75,24 @@ test("get_sheet JSON becomes row hits with status columns", () => {
     ],
     rows: [{ id: 88, cells: [{ columnId: 1, displayValue: "Vendor delay" }, { columnId: 2, displayValue: "Open" }] }],
   });
-  const rows = parseSheetForRows(raw, "999", "risks");
+  const rows = parseSheetForRows(legacy, "999", "risks");
   assert.equal(rows[0]?.rowId, "88");
   assert.equal(rows[0]?.statusColumnId, 2);
+
+  const summary = JSON.stringify({
+    sheet_id: 999,
+    sheet_name: "Risks",
+    available_columns: [
+      { id: 1, title: "Risk" },
+      { id: 2, title: "Status" },
+      { id: 3, title: "Owner" },
+    ],
+    rows: [{ row_id: 88, cells: { Risk: "Vendor delay", Status: "Open", Owner: "Val" } }],
+  });
+  const fromSummary = parseSheetForRows(summary, "999", "risks");
+  assert.equal(fromSummary[0]?.rowId, "88");
+  assert.equal(fromSummary[0]?.statusColumnId, 2);
+  assert.equal(fromSummary[0]?.owner, "Val");
 });
 
 test("parked Smartsheet writes are human-readable; search does not need approval", () => {

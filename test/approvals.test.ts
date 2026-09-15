@@ -14,7 +14,7 @@ test("smartsheet writes require approval", () => {
 
 test("smartsheet reads do not", () => {
   assert.strictEqual(requiresApproval("smartsheet__search"), false);
-  assert.strictEqual(requiresApproval("smartsheet__get_sheet"), false);
+  assert.strictEqual(requiresApproval("smartsheet__get_sheet_summary"), false);
 });
 
 test("pending action ids round-trip through approve and deny commands", () => {

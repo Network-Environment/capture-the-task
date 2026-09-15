@@ -299,7 +299,7 @@ in `config/plaud-accounts.json`.
 
 Smartsheet is the PMO system of record. TaskBrain does **not** copy sheet rows
 into Cosmos or Blob. Awareness is on-demand MCP (`smartsheet__search`,
-`get_sheet`, `get_sheet_summary`) plus optional aliases in
+`smartsheet__get_sheet_summary`) plus optional aliases in
 `config/smartsheet.json` (names/ids in the prompt, never cell data).
 
 PMO / risk-register / sheet questions are `action` and run the **pmo**

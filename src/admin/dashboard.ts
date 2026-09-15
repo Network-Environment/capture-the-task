@@ -477,7 +477,12 @@ export function renderIntegrations(
       { name: "Graph To Do", label: graph ? "ready" : "not ready", tone: graph ? "ok" : "warn", note: "Task create from Teams" },
       { name: "iMessage (Photon)", label: photon ? "ready" : "not ready", tone: photon ? "ok" : "warn", note: "Spectrum stream" },
       { name: "Transcript discovery", label: ingestLabel, tone: ingestTone, note: ingestNote },
-      { name: "Smartsheet catalog", label: sheetAliases > 0 ? "ready" : "not ready", tone: sheetAliases > 0 ? "ok" : "warn", note: `${sheetAliases} alias(es)` },
+      {
+        name: "Smartsheet catalog",
+        label: sheetAliases > 0 ? "ready" : "search by name",
+        tone: sheetAliases > 0 ? "ok" : "idle",
+        note: sheetAliases > 0 ? `${sheetAliases} alias(es)` : "no aliases; MCP search is enough",
+      },
       { name: "Web search", label: process.env.WEB_SEARCH_API_KEY ? "ready" : "not ready", tone: process.env.WEB_SEARCH_API_KEY ? "ok" : "warn", note: process.env.WEB_SEARCH_ENGINE || "tavily" },
     ];
     const statusRows = platform
