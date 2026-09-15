@@ -10,7 +10,7 @@ the **Invariants** section true in every change you make.
 ## 1. What this system is
 
 TaskBrain is a personal/team capture assistant for a Microsoft 365
-organization (Tristan Energy). A user sends a text message or **voice memo to
+organization (Net Env). A user sends a text message or **voice memo to
 a Teams bot** (desktop or mobile). The system transcribes, classifies, and
 acts: personal tasks go to Microsoft To Do, ideas and references become markdown notes
 in an Obsidian-compatible "second brain," questions are answered by vector
