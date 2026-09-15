@@ -4,6 +4,7 @@ import { listOpenCommitments, searchMeetings, upsertCommitment } from "./store";
 import type { CommitmentDoc } from "./types";
 import type { ActivityAttribution } from "../services/activityLog";
 import { projectCommitment } from "../graph/project";
+import { completeWorkByCommitment } from "../work/assign";
 
 function fmtMeeting(m: {
   title: string;
@@ -75,5 +76,8 @@ export async function markCommitmentDone(userId: string, idOrText: string): Prom
   if (projected.errors.length) {
     console.error("[graph] commitment completion projection failed:", projected.errors);
   }
+  await completeWorkByCommitment(hit.id, userId).catch((err) =>
+    console.error("[work] complete from commitment failed:", err)
+  );
   return `Marked done: ${hit.ownerName} — ${hit.text}`;
 }

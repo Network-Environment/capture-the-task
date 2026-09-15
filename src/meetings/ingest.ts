@@ -12,6 +12,7 @@ import {
 } from "./graph";
 import { applyMatches, orgLessonTexts } from "./match";
 import { listOrgDirectory } from "../org/store";
+import { assignFromCommitment } from "../work/assign";
 import {
   claimQueuedTranscripts,
   getCheckpoint,
@@ -169,6 +170,13 @@ export async function processAvailableTranscript(
   const people = (await listOrgDirectory().catch(() => ({ people: [] }))).people;
   const { upserts, matched } = applyMatches(open, summary, id, summary.title, people);
   for (const c of upserts) await upsertCommitment(c);
+  for (const c of upserts.filter((row) => row.status === "open" && row.personId)) {
+    try {
+      await assignFromCommitment(c);
+    } catch (err) {
+      console.error("[work] meeting assignment failed:", c.id, err);
+    }
+  }
 
   // Graph projection is derived and repairable by the backfill. A transient
   // graph failure must not discard an otherwise valid meeting summary.

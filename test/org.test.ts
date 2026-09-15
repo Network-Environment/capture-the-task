@@ -98,6 +98,7 @@ describe("org directory", () => {
     assert.match(block, /Valerie Moraru/);
     assert.match(block, /Risk owner @ Ops/);
     assert.match(block, /Keep the risk register honest/);
+    assert.match(block, /Work: teams \+ Teams card/);
     assert.doesNotMatch(block, /Departed/);
     assert.doesNotMatch(block, /Legacy/);
     const huge: OrgDirectory = {

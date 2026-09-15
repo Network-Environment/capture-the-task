@@ -283,7 +283,7 @@ button.ghost{
   color:var(--text);font:inherit;font-weight:650;cursor:pointer;
 }
 button.danger{background:var(--err)}
-input[type="checkbox"]{width:16px;height:16px;accent-color:var(--accent)}
+label.inline{flex-direction:row;align-items:center;text-transform:none;letter-spacing:0;font-size:13px;font-weight:600}
 .form{
   display:grid;gap:.75rem;padding:1rem 1.15rem;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
 }

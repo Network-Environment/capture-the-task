@@ -53,6 +53,21 @@ param executionGraphWritesEnabled bool = false
 @description('Stable partition key for the shared execution graph')
 param graphWorkspaceId string = 'org'
 
+@description('Teams team id for the Follow-through channel (Graph ChannelMessage fallback)')
+param followthroughTeamId string = ''
+
+@description('Teams channel id inside the Follow-through team')
+param followthroughChannelId string = ''
+
+@description('Planner plan id for people whose org queue includes planner')
+param plannerPlanId string = ''
+
+@description('Optional Planner bucket id')
+param plannerBucketId string = ''
+
+@description('Mailbox UPN used with Mail.Send when Teams delivery fails')
+param followthroughMailFrom string = ''
+
 @description('Use the structured conversational intent gateway for inbound channels')
 param intentGatewayEnabled bool = true
 
@@ -481,6 +496,18 @@ resource commitmentsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/con
   }
 }
 
+resource workColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'work'
+  properties: {
+    resource: {
+      id: 'work'
+      partitionKey: { paths: ['/ownerPersonId'], kind: 'Hash' }
+      defaultTtl: -1
+    }
+  }
+}
+
 resource graphNodesColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
   parent: cosmosDb
   name: 'graph-nodes'
@@ -700,11 +727,16 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'MEETINGS_CONTAINER', value: 'meetings' }
         { name: 'MEETING_TTL_DAYS', value: '90' }
         { name: 'COMMITMENT_TTL_DAYS', value: '180' }
+        { name: 'FOLLOWTHROUGH_TEAM_ID', value: followthroughTeamId }
+        { name: 'FOLLOWTHROUGH_CHANNEL_ID', value: followthroughChannelId }
+        { name: 'PLANNER_PLAN_ID', value: plannerPlanId }
+        { name: 'PLANNER_BUCKET_ID', value: plannerBucketId }
+        { name: 'FOLLOWTHROUGH_MAIL_FROM', value: followthroughMailFrom }
       ]
     }
   }
   identity: { type: 'SystemAssigned' }
-  dependsOn: [ graphNodesColl, graphEdgesColl ]
+  dependsOn: [ graphNodesColl, graphEdgesColl, workColl ]
 }
 
 // App Service pulls from ACR without registry credentials or stored secrets.
@@ -800,6 +832,11 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'COSMOS_DB', value: cosmosDb.name }
         { name: 'MEETING_TTL_DAYS', value: '90' }
         { name: 'COMMITMENT_TTL_DAYS', value: '180' }
+        { name: 'FOLLOWTHROUGH_TEAM_ID', value: followthroughTeamId }
+        { name: 'FOLLOWTHROUGH_CHANNEL_ID', value: followthroughChannelId }
+        { name: 'PLANNER_PLAN_ID', value: plannerPlanId }
+        { name: 'PLANNER_BUCKET_ID', value: plannerBucketId }
+        { name: 'FOLLOWTHROUGH_MAIL_FROM', value: followthroughMailFrom }
         { name: 'MEETING_ORGANIZERS_PER_RUN', value: '25' }
         { name: 'MEETING_VIEWERS', value: 'bceb24c5-ef85-4301-9ab2-073805d535aa,4f323599-0df8-47f7-aa01-46dbb211894c' }
         { name: 'PLAUD_INGEST_ENABLED', value: string(plaudIngestEnabled) }
@@ -833,6 +870,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     meetingsBlobContainer
     meetingsColl
     commitmentsColl
+    workColl
     meetingCheckpointsColl
     graphNodesColl
     graphEdgesColl

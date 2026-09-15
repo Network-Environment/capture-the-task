@@ -12,7 +12,7 @@ import { mcpToolDefinitions, isMcpTool, callMcpTool } from "./mcpClient";
 import { requiresApproval, parkAction, type PendingAction } from "../services/approvals";
 import { approvalMessage } from "../services/smartsheet";
 import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
-import { lookupOrg } from "../org/store";
+import { lookupOrg, rememberOrgPreference } from "../org/store";
 import type {
   ActivityChannel,
   ActivityInputMode,
@@ -41,6 +41,7 @@ import {
 import { deterministicGraphId } from "../graph/validation";
 import type { GraphEdgeType, GraphNodeStatus } from "../graph/types";
 import { canViewMeetings, denyMeetings } from "../meetings/access";
+import { assignWorkForUser, completeWork, nudgeWork } from "../work/assign";
 import {
   evaluateOperation,
   type AuthorizationContext,
@@ -72,6 +73,10 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   list_commitments: { effect: "read", reversible: true },
   complete_commitment: { effect: "shared_write", reversible: true },
   lookup_org: { effect: "read", reversible: true },
+  assign_work: { effect: "personal_write", reversible: true },
+  nudge_work: { effect: "personal_write", reversible: true },
+  complete_work: { effect: "personal_write", reversible: true },
+  remember_org_preference: { effect: "shared_write", reversible: true },
   web_search: { effect: "read", reversible: true },
   search_execution_graph: { effect: "read", reversible: true },
   create_graph_project: { effect: "shared_write", reversible: true },
@@ -184,9 +189,9 @@ const nativeDefs: ChatCompletionTool[] = [
       name: "remember_lesson",
       description:
         "Store an operational lesson in the agent's OWN memory (not the user's notes): a user " +
-        "preference about how you work, a correction/alias ('the register' = sheet X), a tool " +
-        "quirk you discovered, or a self-observation about a mistake pattern. Use when the user " +
-        "corrects you or teaches you shorthand. Keep it one sentence.",
+        "preference about how YOU reply, a correction/alias ('the register' = sheet X), a tool " +
+        "quirk, or a self-observation. Do NOT store how a named colleague works (queues, Planner vs To Do, " +
+        "nudge channel) — use remember_org_preference. Keep it one sentence.",
       parameters: {
         type: "object",
         properties: {
@@ -253,10 +258,80 @@ const nativeDefs: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "assign_work",
+      description:
+        "Create a durable work assignment for a named org person and fan it out to their stored " +
+        "queues (Teams card, To Do, Planner, Smartsheet). Do not pick destinations — the org record does. " +
+        "Use when a named owner is obligated, including when the speaker is not the owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          owner: { type: "string", description: "Name, alias, or Entra id from the org directory" },
+          title: { type: "string" },
+          detail: { type: "string" },
+          due: { type: "string", description: "ISO date" },
+        },
+        required: ["owner", "title"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "nudge_work",
+      description: "Re-send the Teams card (and Planner comment) for an open work assignment.",
+      parameters: {
+        type: "object",
+        properties: { idOrTitle: { type: "string" } },
+        required: ["idOrTitle"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "complete_work",
+      description: "Mark a work assignment and its To Do / Planner copies done. Prefer the owner's card action.",
+      parameters: {
+        type: "object",
+        properties: { idOrTitle: { type: "string" } },
+        required: ["idOrTitle"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remember_org_preference",
+      description:
+        "Store how a named org person executes work (To Do vs Planner vs Teams, nudge channel, one-line notes) " +
+        "on the org directory — not in personal lessons. Use when someone says how a colleague works.",
+      parameters: {
+        type: "object",
+        properties: {
+          person: { type: "string" },
+          executionQueues: {
+            type: "array",
+            items: { type: "string", enum: ["teams", "todo", "planner", "smartsheet"] },
+          },
+          nudgeChannel: {
+            type: "string",
+            enum: ["teams_card", "teams_chat", "imessage", "email", "silent"],
+          },
+          workingNotes: { type: "string" },
+          dropQueue: { type: "string", description: "Queue to remove after delivery feedback (todo, planner, …)" },
+        },
+        required: ["person"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "lookup_org",
       description:
         "Look up people, teams, and named roles in the org directory: reporting, mandates " +
-        "(what they should be doing), and open commitment counts (what they are doing).",
+        "(what they should be doing), how they execute work, and open commitment counts.",
       parameters: {
         type: "object",
         properties: { query: { type: "string", description: "Name, team, role, or alias" } },
@@ -574,6 +649,30 @@ export async function dispatch(
         return await listFollowThrough(ctx.userId, args.owner ? String(args.owner) : undefined);
       case "complete_commitment":
         return await markCommitmentDone(ctx.userId, String(args.idOrText));
+      case "assign_work":
+        return await assignWorkForUser(ctx.userId, {
+          owner: String(args.owner ?? ""),
+          title: String(args.title ?? ""),
+          detail: args.detail ? String(args.detail) : undefined,
+          due: args.due ? String(args.due) : undefined,
+          source: "chat",
+          requesterUserId: ctx.userId,
+        });
+      case "nudge_work":
+        if (!canViewMeetings(ctx.userId)) return denyMeetings();
+        return await nudgeWork(String(args.idOrTitle ?? ""));
+      case "complete_work":
+        if (!canViewMeetings(ctx.userId)) return denyMeetings();
+        return await completeWork(String(args.idOrTitle ?? ""), ctx.userId);
+      case "remember_org_preference":
+        return await rememberOrgPreference(ctx.userId, {
+          person: String(args.person ?? ""),
+          executionQueues: args.executionQueues,
+          nudgeChannel: args.nudgeChannel ? String(args.nudgeChannel) : undefined,
+          workingNotes: args.workingNotes ? String(args.workingNotes) : undefined,
+          dropQueue: args.dropQueue ? String(args.dropQueue) : undefined,
+          source: "explicit",
+        });
       case "lookup_org":
         return await lookupOrg(ctx.userId, String(args.query ?? ""));
       case "web_search": {

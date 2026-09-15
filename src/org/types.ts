@@ -4,6 +4,10 @@ export type OrgUnitStatus = "active" | "archived";
 export type OrgPersonStatus = "active" | "inactive";
 export type OrgRoleStatus = "active" | "inactive";
 
+export type ExecutionQueue = "teams" | "todo" | "planner" | "smartsheet";
+export type NudgeChannel = "teams_card" | "teams_chat" | "imessage" | "email" | "silent";
+export type PrefSource = "admin" | "explicit" | "inferred";
+
 export interface OrgUnit {
   id: string;
   kind: "unit";
@@ -26,6 +30,13 @@ export interface OrgPerson {
   title?: string;
   mandate: string;
   status: OrgPersonStatus;
+  /** Ordered work queues; first is primary. Empty means Teams-only default. */
+  executionQueues?: ExecutionQueue[];
+  nudgeChannel?: NudgeChannel;
+  /** One-line working style, max ~240 chars. */
+  workingNotes?: string;
+  prefSource?: PrefSource;
+  prefUpdatedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

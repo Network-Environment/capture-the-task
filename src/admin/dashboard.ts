@@ -45,6 +45,7 @@ import {
 } from "../org/store";
 import { parseAliases } from "../org/resolve";
 import type { OrgDirectory } from "../org/types";
+import { EXECUTION_QUEUES, NUDGE_CHANNELS, isNudgeChannel, parseExecutionQueues } from "../org/prefs";
 import {
   graphEnabled,
   graphWritesEnabled,
@@ -695,6 +696,23 @@ function field(body: Record<string, unknown>, key: string): string {
   return String(body[key] ?? "").trim();
 }
 
+function fieldList(body: Record<string, unknown>, key: string): string[] {
+  const v = body[key];
+  if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof v === "string" && v.trim()) return [v.trim()];
+  return [];
+}
+
+function queueChecks(selected?: string[]): string {
+  const set = new Set(selected?.length ? selected : ["teams"]);
+  return EXECUTION_QUEUES.map(
+    (q) =>
+      `<label class="inline"><input type="checkbox" name="executionQueues" value="${esc(q)}"${
+        set.has(q) ? " checked" : ""
+      }> ${esc(q)}</label>`
+  ).join(" ");
+}
+
 function selectHtml(
   name: string,
   items: { id: string; label: string }[],
@@ -847,6 +865,9 @@ export function renderOrg(
           `<td class="muted">${esc(p.managerPersonId ? personName(p.managerPersonId) : "—")}</td>` +
           `<td class="muted clip">${esc(p.mandate || "—")}</td>` +
           `<td class="muted clip">${esc(hats || "—")}</td>` +
+          `<td class="muted clip">${esc((p.executionQueues?.length ? p.executionQueues : ["teams"]).join(", "))}${
+            p.prefSource === "inferred" ? " <span class=\"muted\">(inferred)</span>" : ""
+          }</td>` +
           `<td>${pill(p.status, p.status === "active" ? "ok" : "idle")}</td>` +
           (canWrite ? `<td><form method="post" action="/admin/org">${rowHidden}` +
           `<input type="hidden" name="id" value="${esc(p.id)}">` +
@@ -857,6 +878,7 @@ export function renderOrg(
           `<input type="hidden" name="managerPersonId" value="${esc(p.managerPersonId ?? "")}">` +
           `<input type="hidden" name="unitId" value="${esc(p.unitId ?? "")}">` +
           `<input type="hidden" name="mandate" value="${esc(p.mandate)}">` +
+          `<input type="hidden" name="workingNotes" value="${esc(p.workingNotes ?? "")}">` +
           `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td>` : "<td></td>") +
           `</tr>`
         );
@@ -877,12 +899,20 @@ export function renderOrg(
           <label>Home team ${selectHtml("unitId", unitOpts)}</label>
           <label>Manager ${selectHtml("managerPersonId", personOpts)}</label>
           <label class="span2">Mandate (what they should be doing) <textarea name="mandate" maxlength="400"></textarea></label>
+          <label class="span2">Execution queues ${queueChecks(["teams"])}</label>
+          <label>Nudge channel ${selectHtml(
+            "nudgeChannel",
+            NUDGE_CHANNELS.map((id) => ({ id, label: id })),
+            "teams_card",
+            "teams_card"
+          )}</label>
+          <label class="span2">Working notes (how to reach them for work) <input name="workingNotes" maxlength="240" placeholder="reviews Smartsheet Monday AM"></label>
           <div class="actions"><button type="submit">Save person</button></div>
         </form>
       </section>` : ""}
       <section class="panel">
         <h2>People</h2>
-        ${table(["Name", "Title", "Team", "Manager", "Mandate", "Roles", "Status", ""], rows, "No people in the directory yet.")}
+        ${table(["Name", "Title", "Team", "Manager", "Mandate", "Roles", "Queues", "Status", ""], rows, "No people in the directory yet.")}
       </section>`;
   }
 
@@ -975,6 +1005,8 @@ export async function saveOrgDirectory(req: Request, res: Response): Promise<voi
     } else {
       const displayName = field(body, "displayName");
       if (!displayName) return redirect("missing");
+      const queues = parseExecutionQueues(fieldList(body, "executionQueues"));
+      const nudgeRaw = field(body, "nudgeChannel");
       await savePerson({
         id: id || undefined,
         displayName,
@@ -985,6 +1017,11 @@ export async function saveOrgDirectory(req: Request, res: Response): Promise<voi
         title: field(body, "title") || undefined,
         mandate: field(body, "mandate"),
         archive: action === "archive",
+        executionQueues: action === "archive" ? undefined : queues.length ? queues : ["teams"],
+        nudgeChannel:
+          action === "archive" ? undefined : isNudgeChannel(nudgeRaw) ? nudgeRaw : "teams_card",
+        workingNotes: action === "archive" ? undefined : field(body, "workingNotes"),
+        prefSource: action === "archive" ? undefined : "admin",
       });
     }
     void logActivity({

@@ -7,13 +7,12 @@ import { CloudAdapter, ConversationReference, TurnContext } from "botbuilder";
 import { getConversationRef, StoredRef } from "../services/conversations";
 import { sendIMessage } from "./photon";
 import { registerDeliverer } from "../services/alerts";
+import { getDeliveryAdapter, getDeliveryAppId, initDeliveryContext } from "./deliveryContext";
 
-let adapter: CloudAdapter | null = null;
-let botAppId = "";
+export { getDeliveryAdapter, getDeliveryAppId };
 
 export function initDelivery(a: CloudAdapter, appId: string): void {
-  adapter = a;
-  botAppId = appId;
+  initDeliveryContext(a, appId);
   registerDeliverer((userId, text) => deliver(userId, text));
 }
 
@@ -31,6 +30,8 @@ export async function deliver(userId: string, text: string, prefer?: StoredRef):
 }
 
 async function sendTeams(ref: StoredRef, text: string): Promise<boolean> {
+  const adapter = getDeliveryAdapter();
+  const botAppId = getDeliveryAppId();
   if (!adapter || !ref.teamsRef) return false;
   try {
     await adapter.continueConversationAsync(

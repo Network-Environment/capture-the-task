@@ -1,4 +1,5 @@
 import type { OrgDirectory, OrgPerson, OrgRole, OrgUnit } from "./types";
+import { workingStyleLine } from "./prefs";
 
 export const ORG_PROMPT_CAP = 4000;
 
@@ -107,7 +108,8 @@ export function compactOrgPrompt(dir: OrgDirectory, cap = ORG_PROMPT_CAP): strin
     ].filter(Boolean);
     const mandate = p.mandate ? ` Should: ${p.mandate}` : "";
     const roles = hats.length ? ` Roles: ${hats.join("; ")}` : "";
-    return `- ${p.displayName}${bits.length ? ` (${bits.join(", ")})` : ""}.${mandate}${roles}`;
+    const work = ` ${workingStyleLine(p)}`;
+    return `- ${p.displayName}${bits.length ? ` (${bits.join(", ")})` : ""}.${mandate}${roles}${work}`;
   });
 
   let text =

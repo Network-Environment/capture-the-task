@@ -1,7 +1,13 @@
 import { canViewMeetings, denyMeetings, syncMeetingViewersFromDirectory } from "../meetings/access";
 import { listOpenCommitments } from "../meetings/store";
 import { compactOrgPrompt, newOrgId, resolvePerson, searchOrgDirectory } from "./resolve";
-import type { OrgDirectory, OrgDoc, OrgKind, OrgPerson, OrgRole, OrgUnit } from "./types";
+import type { ExecutionQueue, NudgeChannel, OrgDirectory, OrgDoc, OrgKind, OrgPerson, OrgRole, OrgUnit, PrefSource } from "./types";
+import {
+  canApplyPref,
+  isNudgeChannel,
+  parseExecutionQueues,
+  workingStyleLine,
+} from "./prefs";
 import { projectPerson } from "../graph/project";
 import { cosmosContainer } from "../services/cosmos";
 
@@ -80,9 +86,14 @@ export async function savePerson(input: {
   title?: string;
   mandate: string;
   archive?: boolean;
+  executionQueues?: ExecutionQueue[];
+  nudgeChannel?: NudgeChannel;
+  workingNotes?: string;
+  prefSource?: PrefSource;
 }): Promise<OrgPerson> {
   const now = new Date().toISOString();
   const existing = input.id ? await getOrgDoc<OrgPerson>(input.id, "person") : undefined;
+  const prefSource = input.prefSource ?? (input.executionQueues || input.nudgeChannel || input.workingNotes ? "admin" : existing?.prefSource);
   const doc: OrgPerson = {
     id: existing?.id ?? newOrgId("person", input.displayName),
     kind: "person",
@@ -93,6 +104,11 @@ export async function savePerson(input: {
     unitId: input.unitId || undefined,
     title: input.title?.trim().slice(0, 80) || undefined,
     mandate: input.mandate.trim().slice(0, 400),
+    executionQueues: input.executionQueues ?? existing?.executionQueues,
+    nudgeChannel: input.nudgeChannel ?? existing?.nudgeChannel,
+    workingNotes: input.workingNotes !== undefined ? input.workingNotes.slice(0, 240) : existing?.workingNotes,
+    prefSource,
+    prefUpdatedAt: input.executionQueues || input.nudgeChannel || input.workingNotes ? now : existing?.prefUpdatedAt,
     status: input.archive ? "inactive" : "active",
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -104,6 +120,47 @@ export async function savePerson(input: {
     console.error("[org] meeting viewer refresh failed:", err)
   );
   return saved;
+}
+
+export async function rememberOrgPreference(
+  userId: string,
+  input: {
+    person: string;
+    executionQueues?: unknown;
+    nudgeChannel?: string;
+    workingNotes?: string;
+    dropQueue?: string;
+    source?: PrefSource;
+  }
+): Promise<string> {
+  if (!canViewMeetings(userId)) return denyMeetings();
+  const dir = await listOrgDirectory();
+  const person = resolvePerson(dir.people, { ownerId: input.person, ownerName: input.person });
+  if (!person) return `No org person matching "${input.person}".`;
+  const incoming = input.source ?? "explicit";
+  if (!canApplyPref(person.prefSource, incoming)) {
+    return `${person.displayName} working style is locked as ${person.prefSource}; not overriding with ${incoming}.`;
+  }
+  let queues = parseExecutionQueues(input.executionQueues ?? person.executionQueues ?? ["teams"]);
+  const drop = input.dropQueue?.trim().toLowerCase();
+  if (drop) queues = queues.filter((q) => q !== drop);
+  const nudge = input.nudgeChannel && isNudgeChannel(input.nudgeChannel) ? input.nudgeChannel : person.nudgeChannel;
+  const notes = input.workingNotes !== undefined ? input.workingNotes.trim().slice(0, 240) : person.workingNotes;
+  const saved = await savePerson({
+    id: person.id,
+    displayName: person.displayName,
+    entraId: person.entraId,
+    aliases: person.aliases,
+    managerPersonId: person.managerPersonId,
+    unitId: person.unitId,
+    title: person.title,
+    mandate: person.mandate,
+    executionQueues: queues,
+    nudgeChannel: nudge,
+    workingNotes: notes,
+    prefSource: incoming,
+  });
+  return `Stored org working style for ${saved.displayName}: ${workingStyleLine(saved)}`;
 }
 
 export async function saveRole(input: {
@@ -177,6 +234,7 @@ export async function lookupOrg(userId: string, query: string): Promise<string> 
         `${p.managerPersonId ? ` · reports to ${personName(p.managerPersonId)}` : ""}.` +
         ` Should: ${p.mandate || "—"}.` +
         `${hats.length ? ` Roles: ${hats.join(", ")}.` : ""}` +
+        ` ${workingStyleLine(p)}` +
         ` Open commitments: ${doing}.`
     );
   }

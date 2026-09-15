@@ -14,6 +14,7 @@ import {
   isPersonalTeamsConversation,
   stripBotMention,
 } from "./channels/teamsText";
+import { handleWorkCardAction } from "./work/assign";
 
 const AUDIO_TYPES = [
   "audio/mp4", "audio/mpeg", "audio/wav", "audio/aac", "audio/ogg",
@@ -38,6 +39,20 @@ export class TaskBrainBot extends ActivityHandler {
 
       // Proactive jobs/alerts stay on the 1:1 chat, not the channel that @mentioned us.
       if (personal) void saveConversationRef(userId, convRef);
+
+      const workSubmit = context.activity.value as
+        | { taskbrainWork?: string; workId?: string; ownerPersonId?: string }
+        | undefined;
+      if (workSubmit?.taskbrainWork && workSubmit.workId) {
+        const result = await handleWorkCardAction(
+          workSubmit.taskbrainWork,
+          workSubmit.workId,
+          workSubmit.ownerPersonId,
+          userId
+        );
+        await context.sendActivity(result);
+        return next();
+      }
 
       const submitted = context.activity.value as
         | { taskbrainApproval?: string; pendingActionId?: string }

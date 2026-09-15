@@ -167,6 +167,8 @@ describe("risk policy", () => {
     assert.equal(operationMetadata("schedule_job").effect, "scheduled");
     assert.equal(operationMetadata("cancel_job").effect, "destructive");
     assert.equal(operationMetadata("complete_commitment").effect, "shared_write");
+    assert.equal(operationMetadata("assign_work").effect, "personal_write");
+    assert.equal(operationMetadata("remember_org_preference").effect, "shared_write");
     assert.equal(operationMetadata("create_graph_task").effect, "shared_write");
     assert.equal(operationMetadata("smartsheet__get_sheet").effect, "read");
     assert.equal(operationMetadata("future__mutate_everything").effect, "shared_write");
