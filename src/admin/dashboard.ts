@@ -32,7 +32,12 @@ import type {
 } from "../meetings/types";
 import { loadConfig } from "../config";
 import { nativeToolCatalog } from "../tools/registry";
-import { mcpServerCatalog, mcpServerHealth, mcpToolDefinitions, type McpServerHealth } from "../tools/mcpClient";
+import {
+  mcpServerCatalog,
+  mcpServerHealth,
+  mcpServerSnapshot,
+  type McpServerHealth,
+} from "../tools/mcpClient";
 import { catalogSheets } from "../services/smartsheet";
 import { requiresApproval } from "../services/approvals";
 import { imessageEnabled } from "../channels/types";
@@ -71,6 +76,7 @@ import {
   esc,
   isSection,
   pill,
+  MCP_HYDRATE_SCRIPT,
   renderShell,
   table,
   tabs,
@@ -185,16 +191,20 @@ async function renderSection(
       ]);
       return renderOverview({ stats, events, health, signedIn, today, orgCounts: counts });
     }
-    case "capabilities": {
-      const mcp = tab === "tools" ? await toolCatalogRows() : [];
-      return renderCapabilities(signedIn, tab === "tools" ? "tools" : "skills", mcp);
-    }
+    case "capabilities":
+      return renderCapabilities(
+        signedIn,
+        tab === "tools" ? "tools" : "skills",
+        tab === "tools" ? configuredToolCatalogRows() : []
+      );
     case "integrations": {
-      const [health, mcp] = await Promise.all([
-        readHealth().catch(() => undefined),
-        mcpServerHealth().catch(() => [] as McpServerHealth[]),
-      ]);
-      return renderIntegrations(signedIn, tab === "catalog" ? "catalog" : "status", health, mcp);
+      const health = await readHealth().catch(() => undefined);
+      return renderIntegrations(
+        signedIn,
+        tab === "catalog" ? "catalog" : "status",
+        health,
+        mcpServerSnapshot()
+      );
     }
     case "usage": {
       const [usage, events] = await Promise.all([usageBreakdown(), recentEvents(80)]);
@@ -350,36 +360,16 @@ export function renderOverview(d: {
 interface ToolCatalogRow {
   name: string;
   description: string;
-  status?: "connected" | "down" | "disabled" | "unavailable" | "timeout";
+  status?: "connected" | "down" | "disabled" | "unavailable" | "timeout" | "checking";
 }
 
-/**
- * The tool list comes from config, so the tab renders even when a server is
- * unreachable; live discovery only decorates it with status.
- */
-async function toolCatalogRows(): Promise<ToolCatalogRow[]> {
-  const [defs, health] = await Promise.all([
-    mcpToolDefinitions().catch(() => []),
-    mcpServerHealth().catch(() => [] as McpServerHealth[]),
-  ]);
-  const discovered = new Map(defs.map((t) => [t.function.name, t.function.description ?? ""]));
-  const healthByServer = new Map(health.map((h) => [h.name, h]));
-
+function configuredToolCatalogRows(): ToolCatalogRow[] {
   return mcpServerCatalog().flatMap((server) =>
-    (server.allowTools ?? []).map((tool) => {
-      const name = `${server.name}__${tool}`;
-      const live = healthByServer.get(server.name);
-      let status: ToolCatalogRow["status"];
-      if (!server.enabled) status = "disabled";
-      else if (live?.connected) status = discovered.has(name) ? "connected" : "unavailable";
-      else if (live?.timedOut) status = "timeout";
-      else status = "down";
-      return {
-        name,
-        description: discovered.get(name) ?? `[${server.name}] ${server.description ?? tool}`,
-        status,
-      };
-    })
+    (server.allowTools ?? []).map((tool) => ({
+      name: `${server.name}__${tool}`,
+      description: `[${server.name}] ${server.description ?? tool}`,
+      status: server.enabled ? "checking" : "disabled",
+    }))
   );
 }
 
@@ -421,8 +411,13 @@ export function renderCapabilities(
         const tone: Tone =
           t.status === "connected" ? "ok" :
           t.status === "disabled" ? "idle" :
+          t.status === "checking" ? "info" :
           t.status === "unavailable" || t.status === "timeout" ? "warn" : "err";
-        return `<tr><td class="mono strong">${esc(t.name)}</td><td>${pill("mcp", "accent")}</td><td>${pill(t.status ?? "connected", tone)}</td><td>${gate}</td><td class="muted">${esc(t.description)}</td></tr>`;
+        const parts = t.name.split("__");
+        const server = parts[0] ?? "";
+        const tool = parts.slice(1).join("__");
+        const status = `<span class="pill ${tone}" data-mcp-server="${esc(server)}" data-mcp-kind="tool" data-mcp-tool="${esc(tool)}">${esc(t.status ?? "connected")}</span>`;
+        return `<tr><td class="mono strong">${esc(t.name)}</td><td>${pill("mcp", "accent")}</td><td>${status}</td><td>${gate}</td><td class="muted">${esc(t.description)}</td></tr>`;
       })
       .join("");
     inner = `<p class="lede">Every configured tool is listed, including tools whose backing service is down. Writes listed in confirmTools park until approve pa-x.</p>
@@ -439,6 +434,8 @@ export function renderCapabilities(
     title: "Capabilities",
     subtitle: "what the agent can do",
     body: tabBar + inner,
+    autoRefresh: false,
+    footerScript: tab === "tools" ? MCP_HYDRATE_SCRIPT : undefined,
   });
 }
 
@@ -464,17 +461,11 @@ export function renderIntegrations(
     const serverConfig = new Map(mcpServerCatalog().map((s) => [s.name, s]));
     const mcpRows = mcp
       .map((s) => {
-        const tone: Tone = !s.enabled ? "idle" : s.connected ? "ok" : s.timedOut ? "warn" : "err";
-        const label = !s.enabled
-          ? "disabled"
-          : s.connected
-            ? "connected"
-            : s.timedOut
-              ? "timeout"
-              : "down";
+        const { label, tone } = mcpLinkLabel(s);
         const token = s.authEnv ? (s.tokenPresent ? pill("token set", "ok") : pill("token empty", "err")) : pill("no auth", "idle");
         const tools = (serverConfig.get(s.name)?.allowTools ?? []).join(", ") || "all";
-        return `<tr><td class="strong">${esc(s.name)}</td><td>${pill(label, tone)}</td><td>${token}</td><td><span class="num">${s.toolCount}</span><div class="muted">${esc(tools)}</div></td><td class="muted clip">${esc(s.error ?? "—")}</td></tr>`;
+        const status = `<span class="pill ${tone}" data-mcp-server="${esc(s.name)}" data-mcp-kind="status">${esc(label)}</span>`;
+        return `<tr><td class="strong">${esc(s.name)}</td><td>${status}</td><td>${token}</td><td><span class="num" data-mcp-server="${esc(s.name)}" data-mcp-kind="count">${s.toolCount}</span><div class="muted">${esc(tools)}</div></td><td class="muted clip" data-mcp-server="${esc(s.name)}" data-mcp-kind="error">${esc(s.error ?? "—")}</td></tr>`;
       })
       .join("");
     const ingestTone: Tone = !health ? "warn" : health.errors.length ? "err" : "ok";
@@ -533,7 +524,17 @@ export function renderIntegrations(
     title: "Integrations",
     subtitle: "tools and connections",
     body: tabBar + inner,
+    autoRefresh: false,
+    footerScript: tab === "status" ? MCP_HYDRATE_SCRIPT : undefined,
   });
+}
+
+function mcpLinkLabel(s: McpServerHealth): { label: string; tone: Tone } {
+  if (!s.enabled) return { label: "disabled", tone: "idle" };
+  if (s.pending) return { label: "checking", tone: "info" };
+  if (s.connected) return { label: "connected", tone: "ok" };
+  if (s.timedOut) return { label: "timeout", tone: "warn" };
+  return { label: "down", tone: "err" };
 }
 
 export function renderUsage(
@@ -1662,6 +1663,26 @@ export async function readMemoryFactsApi(req: Request, res: Response): Promise<v
   } catch (err) {
     console.error("[admin] memory facts read failed:", err);
     res.send(500, { error: "could not load memory facts" });
+  }
+}
+
+export async function readMcpHealthApi(req: Request, res: Response): Promise<void> {
+  const principal = dashboardPrincipal(req);
+  if (process.env.WEBSITE_INSTANCE_ID && !principal) {
+    res.send(401, { error: "sign in required" });
+    return;
+  }
+  if (process.env.WEBSITE_INSTANCE_ID && principal && !canReadDashboard(principal)) {
+    res.send(403, { error: "Admin or Reader app role required" });
+    return;
+  }
+  try {
+    const health = await mcpServerHealth();
+    res.header("Cache-Control", "private, max-age=15");
+    res.send(200, { health });
+  } catch (err) {
+    console.error("[admin] mcp health failed:", err);
+    res.send(500, { error: "could not probe MCP servers" });
   }
 }
 

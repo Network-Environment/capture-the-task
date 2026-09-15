@@ -71,6 +71,7 @@ export function renderShell(opts: {
   notFound?: boolean;
   autoRefresh?: boolean;
   wide?: boolean;
+  footerScript?: string;
 }): string {
   const { signedIn, title, subtitle, body } = opts;
   const nav = SECTIONS.map((s) => {
@@ -121,8 +122,50 @@ document.getElementById("theme").addEventListener("click", function(){
   try { localStorage.setItem("tb-theme", next); } catch (e) {}
 });
 </script>
+${opts.footerScript ? `<script>${opts.footerScript}</script>` : ""}
 </body></html>`;
 }
+
+/** Updates [data-mcp-*] pills after first paint. Live probes stay off the HTML request. */
+export const MCP_HYDRATE_SCRIPT = `(function(){
+  var nodes = document.querySelectorAll("[data-mcp-server]");
+  if (!nodes.length) return;
+  fetch("/admin/api/mcp-health", {credentials:"same-origin", headers:{Accept:"application/json"}})
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      var by = {};
+      (data.health || []).forEach(function(s){ by[s.name] = s; });
+      nodes.forEach(function(el){
+        var s = by[el.getAttribute("data-mcp-server")];
+        if (!s) return;
+        var kind = el.getAttribute("data-mcp-kind") || "status";
+        if (kind === "count") { el.textContent = String(s.toolCount); return; }
+        if (kind === "error") { el.textContent = s.error || "—"; return; }
+        var tool = el.getAttribute("data-mcp-tool") || "";
+        var label = "down";
+        var tone = "err";
+        if (!s.enabled) { label = "disabled"; tone = "idle"; }
+        else if (s.connected) {
+          if (kind === "tool" && Array.isArray(s.toolNames) && tool && s.toolNames.indexOf(tool) < 0) {
+            label = "unavailable"; tone = "warn";
+          } else { label = "connected"; tone = "ok"; }
+        } else if (s.timedOut) { label = "timeout"; tone = "warn"; }
+        else if (s.error) { label = "down"; tone = "err"; }
+        else { label = "down"; tone = "err"; }
+        el.className = "pill " + tone;
+        el.textContent = label;
+      });
+    })
+    .catch(function(){
+      nodes.forEach(function(el){
+        var kind = el.getAttribute("data-mcp-kind") || "status";
+        if (kind === "error") { el.textContent = "check failed"; return; }
+        if (kind === "count") return;
+        el.className = "pill warn";
+        el.textContent = "check failed";
+      });
+    });
+})();`;
 
 const ADMIN_CSS = `
 :root{

@@ -11,6 +11,7 @@ import {
   queueMeetingSummaries,
   readExecutionGraphApi,
   readMemoryFactsApi,
+  readMcpHealthApi,
   saveOrgDirectory,
 } from "./admin/dashboard";
 import { startOrchestrator } from "./jobs/orchestrator";
@@ -77,6 +78,7 @@ server.get("/admin/assets/graph.js", (_req, res, next) => {
 server.get("/admin/api/graph", readExecutionGraphApi);
 server.post("/admin/api/graph", mutateExecutionGraphApi);
 server.get("/admin/api/memory-facts", readMemoryFactsApi);
+server.get("/admin/api/mcp-health", readMcpHealthApi);
 server.get("/admin/:section", adminPage);
 server.post("/admin/meetings/summarize", queueMeetingSummaries);
 server.post("/admin/org", saveOrgDirectory);

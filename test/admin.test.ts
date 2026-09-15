@@ -293,6 +293,30 @@ describe("admin portal", () => {
     assert.doesNotMatch(catalog, /\+1/);
   });
 
+  it("does not block capabilities or integrations HTML on live MCP", () => {
+    const tools = renderCapabilities("local", "tools", [
+      { name: "smartsheet__search", description: "Search sheets", status: "checking" },
+    ]);
+    assert.match(tools, />checking</);
+    assert.match(tools, /\/admin\/api\/mcp-health/);
+    assert.doesNotMatch(tools, /http-equiv="refresh"/);
+
+    const status = renderIntegrations("local", "status", undefined, [
+      {
+        name: "smartsheet",
+        enabled: true,
+        url: "https://mcp.smartsheet.com",
+        tokenPresent: true,
+        connected: false,
+        toolCount: 6,
+        pending: true,
+      },
+    ]);
+    assert.match(status, />checking</);
+    assert.match(status, /\/admin\/api\/mcp-health/);
+    assert.doesNotMatch(status, /http-equiv="refresh"/);
+  });
+
   it("meetings empty states and ingest health stay on the meetings section", () => {
     const empty = renderMeetings("local");
     assert.match(empty, /No discovery run yet/);

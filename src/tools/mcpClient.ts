@@ -43,6 +43,10 @@ let toolCache: McpToolRef[] | null = null;
  */
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/** Admin HTML must not wait for scale-to-zero MCP (browser allowlist is 25s). */
+export const ADMIN_MCP_PROBE_MS = 3_500;
+const HEALTH_TTL_MS = 45_000;
+
 export class McpTimeout extends Error {
   constructor(server: string, ms: number) {
     super(`${server} did not answer within ${ms}ms`);
@@ -70,7 +74,11 @@ export function resolveServerUrl(cfg: ServerConfig): string | undefined {
   return u || undefined;
 }
 
-async function connect(cfg: ServerConfig): Promise<Client> {
+function timeoutMsFor(cfg: ServerConfig, override?: number): number {
+  return override ?? cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+}
+
+async function connect(cfg: ServerConfig, probeMs?: number): Promise<Client> {
   const existing = clients.get(cfg.name);
   if (existing) return existing;
 
@@ -85,13 +93,13 @@ async function connect(cfg: ServerConfig): Promise<Client> {
     requestInit: { headers },
   });
   const client = new Client({ name: "taskbrain", version: "0.1.0" });
-  await withTimeout(client.connect(transport), cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS, cfg.name);
+  await withTimeout(client.connect(transport), timeoutMsFor(cfg, probeMs), cfg.name);
   clients.set(cfg.name, client);
   return client;
 }
 
-async function listTools(cfg: ServerConfig, client: Client) {
-  return withTimeout(client.listTools(), cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS, cfg.name);
+async function listTools(cfg: ServerConfig, client: Client, probeMs?: number) {
+  return withTimeout(client.listTools(), timeoutMsFor(cfg, probeMs), cfg.name);
 }
 
 /**
@@ -101,33 +109,33 @@ async function listTools(cfg: ServerConfig, client: Client) {
  */
 export async function discoverMcpTools(): Promise<McpToolRef[]> {
   if (toolCache) return toolCache;
-  const refs: McpToolRef[] = [];
-  let complete = true;
-  for (const cfg of (serversConfig.servers as ServerConfig[]).filter((s) => s.enabled)) {
-    if (!resolveServerUrl(cfg)) {
-      complete = false;
-      continue;
-    }
-    try {
-      const client = await connect(cfg);
-      const { tools } = await listTools(cfg, client);
-      for (const t of tools) {
-        if (cfg.allowTools && !cfg.allowTools.includes(t.name)) continue;
-        refs.push({
-          server: cfg.name,
-          client,
-          name: t.name,
-          description: t.description,
-          inputSchema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
-        });
+  const enabled = (serversConfig.servers as ServerConfig[]).filter((s) => s.enabled);
+  const results = await Promise.all(
+    enabled.map(async (cfg) => {
+      if (!resolveServerUrl(cfg)) return { ok: false, refs: [] as McpToolRef[] };
+      try {
+        const client = await connect(cfg);
+        const { tools } = await listTools(cfg, client);
+        const refs: McpToolRef[] = [];
+        for (const t of tools) {
+          if (cfg.allowTools && !cfg.allowTools.includes(t.name)) continue;
+          refs.push({
+            server: cfg.name,
+            client,
+            name: t.name,
+            description: t.description,
+            inputSchema: (t.inputSchema as Record<string, unknown>) ?? { type: "object" },
+          });
+        }
+        return { ok: true, refs };
+      } catch (err) {
+        console.error(`[mcp] failed to connect to ${cfg.name}:`, err);
+        return { ok: false, refs: [] as McpToolRef[] };
       }
-    } catch (err) {
-      console.error(`[mcp] failed to connect to ${cfg.name}:`, err);
-      // Degrade gracefully: the agent runs without that server's tools.
-      complete = false;
-    }
-  }
-  if (complete) toolCache = refs;
+    })
+  );
+  const refs = results.flatMap((row) => row.refs);
+  if (results.every((row) => row.ok)) toolCache = refs;
   return refs;
 }
 
@@ -156,72 +164,102 @@ export interface McpServerHealth {
   tokenPresent: boolean;
   connected: boolean;
   toolCount: number;
+  toolNames?: string[];
   error?: string;
   /** Timed out rather than refused — the server is slow, restarting, or wedged. */
   timedOut?: boolean;
+  /** Config snapshot only; live probe has not finished. */
+  pending?: boolean;
 }
 
-/** Live connect check for the admin Integrations page. Does not log tokens. */
-export async function mcpServerHealth(): Promise<McpServerHealth[]> {
-  const out: McpServerHealth[] = [];
-  for (const cfg of mcpServerCatalog()) {
-    const tokenPresent = !!(cfg.authEnv && process.env[cfg.authEnv]);
-    const url = resolveServerUrl(cfg) ?? (cfg.urlEnv ? `env:${cfg.urlEnv}` : cfg.url ?? "");
-    if (!cfg.enabled) {
-      out.push({
-        name: cfg.name,
-        enabled: false,
-        url,
-        authEnv: cfg.authEnv,
-        tokenPresent,
-        connected: false,
-        toolCount: 0,
-      });
-      continue;
-    }
+let healthCache: { at: number; value: McpServerHealth[] } | undefined;
+let healthInflight: Promise<McpServerHealth[]> | undefined;
+
+function baseHealth(cfg: ServerConfig): Omit<McpServerHealth, "connected" | "toolCount"> {
+  return {
+    name: cfg.name,
+    enabled: cfg.enabled,
+    url: resolveServerUrl(cfg) ?? (cfg.urlEnv ? `env:${cfg.urlEnv}` : cfg.url ?? ""),
+    authEnv: cfg.authEnv,
+    tokenPresent: !!(cfg.authEnv && process.env[cfg.authEnv]),
+  };
+}
+
+/** Instant, no network — what the admin HTML can render on first paint. */
+export function mcpServerSnapshot(): McpServerHealth[] {
+  return mcpServerCatalog().map((cfg) => {
+    const base = baseHealth(cfg);
+    if (!cfg.enabled) return { ...base, connected: false, toolCount: 0 };
     if (!resolveServerUrl(cfg)) {
-      out.push({
-        name: cfg.name,
-        enabled: true,
-        url,
-        authEnv: cfg.authEnv,
-        tokenPresent,
+      return {
+        ...base,
         connected: false,
         toolCount: 0,
         error: `${cfg.urlEnv ?? "url"} unset`,
-      });
-      continue;
+      };
     }
-    try {
-      const client = await connect(cfg);
-      const { tools } = await listTools(cfg, client);
-      const n = cfg.allowTools
-        ? tools.filter((t) => cfg.allowTools!.includes(t.name)).length
-        : tools.length;
-      out.push({
-        name: cfg.name,
-        enabled: true,
-        url,
-        authEnv: cfg.authEnv,
-        tokenPresent,
-        connected: true,
-        toolCount: n,
-      });
-    } catch (err) {
-      out.push({
-        name: cfg.name,
-        enabled: true,
-        url,
-        authEnv: cfg.authEnv,
-        tokenPresent,
-        connected: false,
-        toolCount: 0,
-        error: (err as Error).message.slice(0, 180),
-        timedOut: err instanceof McpTimeout,
-      });
-    }
+    return {
+      ...base,
+      connected: false,
+      toolCount: cfg.allowTools?.length ?? 0,
+      pending: true,
+    };
+  });
+}
+
+async function probeServer(cfg: ServerConfig, probeMs: number): Promise<McpServerHealth> {
+  const base = baseHealth(cfg);
+  if (!cfg.enabled) return { ...base, connected: false, toolCount: 0 };
+  if (!resolveServerUrl(cfg)) {
+    return {
+      ...base,
+      connected: false,
+      toolCount: 0,
+      error: `${cfg.urlEnv ?? "url"} unset`,
+    };
   }
-  return out;
+  try {
+    const client = await connect(cfg, probeMs);
+    const { tools } = await listTools(cfg, client, probeMs);
+    const allowed = cfg.allowTools
+      ? tools.filter((t) => cfg.allowTools!.includes(t.name))
+      : tools;
+    return {
+      ...base,
+      connected: true,
+      toolCount: allowed.length,
+      toolNames: allowed.map((t) => t.name),
+    };
+  } catch (err) {
+    return {
+      ...base,
+      connected: false,
+      toolCount: 0,
+      error: (err as Error).message.slice(0, 180),
+      timedOut: err instanceof McpTimeout,
+    };
+  }
+}
+
+/** Live connect check for the admin Integrations page. Does not log tokens. */
+export async function mcpServerHealth(
+  opts: { timeoutMs?: number; force?: boolean } = {}
+): Promise<McpServerHealth[]> {
+  const now = Date.now();
+  if (!opts.force && healthCache && now - healthCache.at < HEALTH_TTL_MS) {
+    return healthCache.value;
+  }
+  if (!opts.force && healthInflight) return healthInflight;
+  const probeMs = opts.timeoutMs ?? ADMIN_MCP_PROBE_MS;
+  healthInflight = Promise.all(mcpServerCatalog().map((cfg) => probeServer(cfg, probeMs)))
+    .then((value) => {
+      healthCache = { at: Date.now(), value };
+      return value;
+    })
+    .finally(() => {
+      healthInflight = undefined;
+    });
+  return healthInflight;
 }
 
 export function isMcpTool(name: string): boolean {
