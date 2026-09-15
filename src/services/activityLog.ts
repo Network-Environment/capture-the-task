@@ -23,6 +23,7 @@ export type ActivityType =
   | "model_call"
   | "embedding"
   | "job_run"
+  | "request_queue"
   | "meeting_discovery"
   | "meeting_summary"
   | "error";

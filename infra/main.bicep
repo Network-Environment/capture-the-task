@@ -410,6 +410,36 @@ resource jobsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers
   }
 }
 
+resource agentRequestsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'agent-requests'
+  properties: {
+    resource: {
+      id: 'agent-requests'
+      partitionKey: { paths: ['/bucket'], kind: 'Hash' }
+      defaultTtl: 604800
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        automatic: true
+        includedPaths: [ { path: '/*' } ]
+        excludedPaths: [ { path: '/result/body/?' }, { path: '/"_etag"/?' } ]
+        compositeIndexes: [
+          [
+            { path: '/status', order: 'ascending' }
+            { path: '/availableAt', order: 'ascending' }
+            { path: '/createdAt', order: 'ascending' }
+          ]
+          [
+            { path: '/status', order: 'ascending' }
+            { path: '/nextDeliveryAt', order: 'ascending' }
+            { path: '/finishedAt', order: 'ascending' }
+          ]
+        ]
+      }
+    }
+  }
+}
+
 
 resource activityColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
   parent: cosmosDb
@@ -706,6 +736,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
       linuxFxVersion: 'DOCKER|${registry.properties.loginServer}/taskbrain:${containerImageTag}'
       acrUseManagedIdentityCreds: true
       alwaysOn: planAlwaysOn
+      healthCheckPath: '/healthz'
       appSettings: [
         // --- Bot identity ---
         { name: 'MicrosoftAppType', value: 'SingleTenant' }
@@ -756,6 +787,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'JOBS_TIMEZONE', value: jobsTimezone }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
         { name: 'WEBSITES_PORT', value: '3978' }
+        { name: 'WEBSITE_HEALTHCHECK_MAXPINGFAILURES', value: '3' }
         { name: 'MEETING_VIEWERS', value: 'bceb24c5-ef85-4301-9ab2-073805d535aa,4f323599-0df8-47f7-aa01-46dbb211894c' }
         { name: 'MEETINGS_CONTAINER', value: 'meetings' }
         { name: 'MEETING_TTL_DAYS', value: '90' }
@@ -769,7 +801,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
     }
   }
   identity: { type: 'SystemAssigned' }
-  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, workColl ]
+  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, agentRequestsColl, workColl ]
 }
 
 // App Service pulls from ACR without registry credentials or stored secrets.

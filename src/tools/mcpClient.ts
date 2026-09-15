@@ -34,6 +34,11 @@ interface McpToolRef {
 }
 
 const clients = new Map<string, Client>();
+const connectionInflight = new Map<string, Promise<Client>>();
+const toolListInflight = new Map<
+  string,
+  Promise<Awaited<ReturnType<Client["listTools"]>>>
+>();
 let toolCache: McpToolRef[] | null = null;
 
 /**
@@ -85,21 +90,53 @@ async function connect(cfg: ServerConfig, probeMs?: number): Promise<Client> {
   const url = resolveServerUrl(cfg);
   if (!url) throw new Error(`${cfg.urlEnv ?? "url"} is not set`);
 
-  const headers: Record<string, string> = {};
-  if (cfg.authEnv && process.env[cfg.authEnv]) {
-    headers["Authorization"] = `Bearer ${process.env[cfg.authEnv]}`;
+  let pending = connectionInflight.get(cfg.name);
+  if (!pending) {
+    const headers: Record<string, string> = {};
+    if (cfg.authEnv && process.env[cfg.authEnv]) {
+      headers["Authorization"] = `Bearer ${process.env[cfg.authEnv]}`;
+    }
+    const transport = new StreamableHTTPClientTransport(new URL(url), {
+      requestInit: { headers },
+    });
+    const client = new Client({ name: "taskbrain", version: "0.1.0" });
+    pending = withTimeout(
+      client.connect(transport).then(() => {
+        clients.set(cfg.name, client);
+        return client;
+      }),
+      cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      cfg.name
+    )
+      .catch(async (err) => {
+        await client.close().catch(() => undefined);
+        throw err;
+      })
+      .finally(() => {
+        connectionInflight.delete(cfg.name);
+      });
+    connectionInflight.set(cfg.name, pending);
   }
-  const transport = new StreamableHTTPClientTransport(new URL(url), {
-    requestInit: { headers },
-  });
-  const client = new Client({ name: "taskbrain", version: "0.1.0" });
-  await withTimeout(client.connect(transport), timeoutMsFor(cfg, probeMs), cfg.name);
-  clients.set(cfg.name, client);
-  return client;
+  return probeMs
+    ? withTimeout(pending, probeMs, cfg.name)
+    : pending;
 }
 
 async function listTools(cfg: ServerConfig, client: Client, probeMs?: number) {
-  return withTimeout(client.listTools(), timeoutMsFor(cfg, probeMs), cfg.name);
+  let pending = toolListInflight.get(cfg.name);
+  if (!pending) {
+    pending = withTimeout(
+      client.listTools(),
+      cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      cfg.name
+    ).finally(() => {
+      toolListInflight.delete(cfg.name);
+    });
+    toolListInflight.set(cfg.name, pending);
+  }
+  return probeMs
+    ? withTimeout(pending, timeoutMsFor(cfg, probeMs), cfg.name)
+    : pending;
 }
 
 /**

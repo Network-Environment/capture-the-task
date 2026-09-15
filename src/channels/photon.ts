@@ -18,9 +18,10 @@
  * is pulled in with a dynamic import; static imports fail to compile.
  */
 import type { SpectrumInstance, Platform, PlatformInstance } from "spectrum-ts" with { "resolution-mode": "import" };
-import { processCapture } from "../pipeline";
 import { saveConversationRef } from "../services/conversations";
 import { logActivity } from "../services/activityLog";
+import { enqueueAgentRequest } from "../services/requestQueue";
+import { transcribeBuffer } from "../services/transcription";
 import {
   imessageEnabled,
   imessageAllowsActions,
@@ -28,7 +29,6 @@ import {
   phoneForUser,
   channelEnvelope,
   THINKING_RESPONSE,
-  toPlainText,
 } from "./types";
 
 type IMessagePlatform = (typeof import("spectrum-ts/providers/imessage", {
@@ -128,23 +128,34 @@ async function handleInbound(space: IMessageSpace, message: IMessageMessage): Pr
   }
 
   await space.send(THINKING_RESPONSE);
-  await space.responding(async () => {
-    const out = await processCapture({
-      userId,
-      channel: "imessage",
-      text,
-      audio,
-      ...channelEnvelope("imessage", {
-        eventId: message.id,
-        conversationId: space.id,
-        scope: "private",
-        identity: "mapped",
-        allowActions: imessageAllowsActions(),
-      }),
-      conversationRef: { channel: "imessage", phone },
-    });
-    await space.send(toPlainText(out.title, out.body, out.tags));
+  if (audio) {
+    text = await transcribeBuffer(audio);
+    if (!text) {
+      await space.send("I couldn't make out that recording — mind trying again?");
+      return;
+    }
+  }
+  const envelope = channelEnvelope("imessage", {
+    eventId: message.id,
+    conversationId: space.id,
+    scope: "private",
+    identity: "mapped",
+    allowActions: imessageAllowsActions(),
   });
+  const queued = await enqueueAgentRequest({
+    userId,
+    channel: "imessage",
+    text: text!,
+    eventId: envelope.eventId,
+    conversationId: envelope.conversationId,
+    policy: envelope.policy,
+    conversationRef: { channel: "imessage", phone, spaceId: space.id },
+  });
+  await space.send(
+    queued.created
+      ? `Queued ${queued.request.id}. I'll reply here when it finishes.`
+      : `${queued.request.id} was already queued.`
+  );
 }
 
 /** Proactive delivery to a user's iMessage (job results, alerts). */

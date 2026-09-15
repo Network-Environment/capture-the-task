@@ -216,6 +216,7 @@ SCHEDULER — jobs-as-data
 | `notes` | `/userId` | — | note metadata + 1536-dim embedding (diskANN, cosine). Canonical note body also lives as markdown in Blob `notes/{userId}/{yyyy-mm}/{id}.md` |
 | `sessions` | `/userId` | 900s | conversation-scoped structured turns plus pending clarification |
 | `inbound-receipts` | `/channel` | 2d | hashed source event receipts preventing duplicate execution |
+| `agent-requests` | `/bucket` | 2d delivered / 7d pending or failed | durable FIFO for interactive Teams/iMessage requests; ETag claims, leases, retries, result delivery state |
 | `jobs` | `/userId` | — | scheduled jobs plus immutable read-only tool envelope |
 | `activity` | `/day` | 30d | event stream incl. model calls with token counts |
 | `agent-memory` | `/userId` | — | agent lessons (≤40/user, auto-consolidated) |
@@ -379,8 +380,17 @@ and iMessage call the same agent and tools. Existing approval gates still
 park write operations until an explicit `approve pa-x`; channel parity does
 not bypass write approval. Unknown numbers remain silently rejected.
 
-Both interactive adapters immediately send `thinking about response` before
-processing. A deterministic quality gate first handles probes (`test`, `ping`),
+Both interactive adapters immediately send `thinking about response`, persist
+the normalized text in `agent-requests`, and acknowledge the queue id. Voice
+bytes are transcribed before enqueue and are never stored in Cosmos. The
+App Service request worker claims one request at a time with an ETag and
+10-minute lease, retries failures three times with backoff, then proactively
+delivers the result to the exact Teams conversation or iMessage sender.
+Completed-but-undelivered results remain durable and delivery is retried.
+This global concurrency cap keeps concurrent users from starving the single
+Node worker; admin reads are never put on this queue.
+
+The worker then runs the deterministic quality gate for probes (`test`, `ping`),
 repeated noise, punctuation/gibberish, and context-free single words without a
 model call or durable note. It asks one focused question, explains how to use
 TaskBrain, or refuses credential/identity/policy bypass attempts. The gate
@@ -674,9 +684,10 @@ logging already support it. Do not pay this tax early.
 8. No secrets in the repo. CI authenticates via OIDC only.
 9. A capture is never silently lost: every path ends in a saved artifact or
    an explicit error message to the user.
-10. All channels feed `processCapture()` with a stable event id, canonical
-    identity, conversation scope, and declared capabilities. Adapters only
-    authenticate/normalize and render; no intent logic lives in an adapter.
+10. All channels enqueue a stable event id, canonical identity, conversation
+    scope, declared capabilities, and exact response destination before
+    `processCapture()` runs. Adapters only authenticate, normalize, enqueue,
+    and render; no intent logic lives in an adapter.
 11. Non-Teams senders must resolve to a canonical userId through
     `config/channels.json` before anything runs. Never auto-provision a brain
     for an unknown identity.

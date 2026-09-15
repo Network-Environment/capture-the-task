@@ -3,12 +3,13 @@
  * CaptureInput, runs the shared pipeline, renders the result as an Adaptive
  * Card. All capture logic lives in src/pipeline.ts.
  */
-import { ActivityHandler, TurnContext, CardFactory, Attachment } from "botbuilder";
-import { processCapture } from "./pipeline";
+import { ActivityHandler, TurnContext, Attachment } from "botbuilder";
 import { downloadAudio } from "./services/transcription";
-import { createTodoTask } from "./services/graphTasks";
 import { saveConversationRef } from "./services/conversations";
 import { channelEnvelope, THINKING_RESPONSE } from "./channels/types";
+import { outboundCard } from "./channels/teamsCard";
+import { enqueueAgentRequest } from "./services/requestQueue";
+import { transcribeBuffer } from "./services/transcription";
 import {
   botWasMentioned,
   isPersonalTeamsConversation,
@@ -61,7 +62,7 @@ export class TaskBrainBot extends ActivityHandler {
         submitted?.taskbrainApproval && submitted.pendingActionId
           ? `${submitted.taskbrainApproval} ${submitted.pendingActionId}`
           : undefined;
-      const text = approvalText ?? stripBotMention(context.activity.text, entities, bot);
+      let text = approvalText ?? stripBotMention(context.activity.text, entities, bot);
 
       let audio: Buffer | undefined;
       const att = (context.activity.attachments ?? []).find((a) => AUDIO_TYPES.includes(a.contentType));
@@ -86,23 +87,41 @@ export class TaskBrainBot extends ActivityHandler {
 
       await context.sendActivity(THINKING_RESPONSE);
 
-      const out = await processCapture({
+      if (audio) {
+        text = await transcribeBuffer(audio);
+        if (!text) {
+          await context.sendActivity("I couldn't make out that recording — mind trying again?");
+          return next();
+        }
+      }
+
+      const envelope = channelEnvelope("teams", {
+        eventId: context.activity.id,
+        conversationId: context.activity.conversation?.id,
+        scope: personal ? "private" : "group",
+        identity: context.activity.from.aadObjectId ? "canonical" : "weak",
+        allowActions: true,
+      });
+      const queued = await enqueueAgentRequest({
         userId,
         channel: "teams",
-        text,
-        audio,
-        ...channelEnvelope("teams", {
-          eventId: context.activity.id,
-          conversationId: context.activity.conversation?.id,
-          scope: personal ? "private" : "group",
-          identity: context.activity.from.aadObjectId ? "canonical" : "weak",
-          allowActions: true,
-        }),
-        conversationRef: personal ? convRef : undefined,
-        createTask: (title, detail, due) => createTodoTask(context, title, detail, due),
+        text: text!,
+        eventId: envelope.eventId,
+        conversationId: envelope.conversationId,
+        policy: envelope.policy,
+        conversationRef: { channel: "teams", teamsRef: convRef },
       });
-
-      await context.sendActivity({ attachments: [card(out.title, out.body, out.tags)] });
+      await context.sendActivity({
+        attachments: [
+          outboundCard({
+            title: queued.created ? "Queued" : "Already queued",
+            body: queued.created
+              ? `Request \`${queued.request.id}\` is queued. I'll reply here when it finishes.`
+              : `Request \`${queued.request.id}\` was already received.`,
+            tags: [],
+          }),
+        ],
+      });
       await next();
     });
 
@@ -142,34 +161,3 @@ async function getAttachmentToken(context: TurnContext): Promise<string | undefi
   }
 }
 
-function card(title: string, body: string, tags: string[]): Attachment {
-  const pendingId = body.match(/\b(pa-[a-z0-9]+)\b/i)?.[1];
-  return CardFactory.adaptiveCard({
-    $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
-    type: "AdaptiveCard",
-    version: "1.5",
-    body: [
-      { type: "TextBlock", text: title, weight: "Bolder", size: "Medium" },
-      { type: "TextBlock", text: body, wrap: true },
-      ...(tags.length
-        ? [{ type: "TextBlock", text: tags.map((t) => `#${t}`).join("  "), isSubtle: true, wrap: true }]
-        : []),
-    ],
-    ...(pendingId
-      ? {
-          actions: [
-            {
-              type: "Action.Submit",
-              title: "Approve",
-              data: { taskbrainApproval: "approve", pendingActionId: pendingId },
-            },
-            {
-              type: "Action.Submit",
-              title: "Deny",
-              data: { taskbrainApproval: "deny", pendingActionId: pendingId },
-            },
-          ],
-        }
-      : {}),
-  });
-}

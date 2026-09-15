@@ -19,6 +19,10 @@ import { initDelivery } from "./channels/deliver";
 import { startPhotonChannel, stopPhotonChannel } from "./channels/photon";
 import { refreshMeetingViewers } from "./org/store";
 import { cosmosConfigured } from "./services/cosmos";
+import {
+  startRequestWorker,
+  stopRequestWorker,
+} from "./services/requestWorker";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -45,6 +49,7 @@ startPhotonChannel().catch((e) => console.error("[imessage] failed to start:", e
 
 // Single orchestrator: polls jobs every 60s, runs them through the agent.
 startOrchestrator(adapter, botAppId);
+startRequestWorker(adapter, botAppId);
 
 const server = restify.createServer();
 server.use(restify.plugins.bodyParser());
@@ -101,6 +106,7 @@ server.listen(port, () => {
 });
 
 process.on("SIGTERM", async () => {
+  stopRequestWorker();
   await stopPhotonChannel();
   process.exit(0);
 });
