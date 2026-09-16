@@ -6,8 +6,7 @@
 import { ActivityHandler, TurnContext, Attachment } from "botbuilder";
 import { downloadAudio } from "./services/transcription";
 import { saveConversationRef } from "./services/conversations";
-import { channelEnvelope, THINKING_RESPONSE } from "./channels/types";
-import { outboundCard } from "./channels/teamsCard";
+import { channelEnvelope, WORKING_RESPONSE } from "./channels/types";
 import { enqueueAgentRequest } from "./services/requestQueue";
 import { transcribeBuffer } from "./services/transcription";
 import {
@@ -85,7 +84,7 @@ export class TaskBrainBot extends ActivityHandler {
         return next();
       }
 
-      await context.sendActivity(THINKING_RESPONSE);
+      await context.sendActivity({ type: "typing" });
 
       if (audio) {
         text = await transcribeBuffer(audio);
@@ -111,17 +110,9 @@ export class TaskBrainBot extends ActivityHandler {
         policy: envelope.policy,
         conversationRef: { channel: "teams", teamsRef: convRef },
       });
-      await context.sendActivity({
-        attachments: [
-          outboundCard({
-            title: queued.created ? "Queued" : "Already queued",
-            body: queued.created
-              ? `Request \`${queued.request.id}\` is queued. I'll reply here when it finishes.`
-              : `Request \`${queued.request.id}\` was already received.`,
-            tags: [],
-          }),
-        ],
-      });
+      if (queued.created) {
+        await context.sendActivity(WORKING_RESPONSE);
+      }
       await next();
     });
 

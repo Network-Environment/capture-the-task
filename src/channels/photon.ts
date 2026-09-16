@@ -28,7 +28,7 @@ import {
   resolveIMessageUser,
   phoneForUser,
   channelEnvelope,
-  THINKING_RESPONSE,
+  WORKING_RESPONSE,
 } from "./types";
 
 type IMessagePlatform = (typeof import("spectrum-ts/providers/imessage", {
@@ -127,7 +127,6 @@ async function handleInbound(space: IMessageSpace, message: IMessageMessage): Pr
     return;
   }
 
-  await space.send(THINKING_RESPONSE);
   if (audio) {
     text = await transcribeBuffer(audio);
     if (!text) {
@@ -151,11 +150,9 @@ async function handleInbound(space: IMessageSpace, message: IMessageMessage): Pr
     policy: envelope.policy,
     conversationRef: { channel: "imessage", phone, spaceId: space.id },
   });
-  await space.send(
-    queued.created
-      ? `Queued ${queued.request.id}. I'll reply here when it finishes.`
-      : `${queued.request.id} was already queued.`
-  );
+  if (queued.created) {
+    await space.send(WORKING_RESPONSE);
+  }
 }
 
 /** Proactive delivery to a user's iMessage (job results, alerts). */

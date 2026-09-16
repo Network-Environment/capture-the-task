@@ -12,7 +12,8 @@ import type { ChannelPolicy } from "../services/intent";
 const channelsConfig = loadConfig("channels");
 
 export type Channel = "teams" | "imessage";
-export const THINKING_RESPONSE = "thinking about response";
+/** User-facing receipt sent only after the durable request write succeeds. */
+export const WORKING_RESPONSE = "Got it — I’m working on that.";
 
 interface ChannelsConfig {
   imessage: {

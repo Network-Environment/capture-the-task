@@ -2,7 +2,7 @@ import "./setup";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { normalizeTriageResult } from "../src/services/agent";
-import { THINKING_RESPONSE } from "../src/channels/types";
+import { WORKING_RESPONSE } from "../src/channels/types";
 
 test("casual conversation is a non-persistent triage kind", () => {
   assert.deepEqual(
@@ -30,6 +30,7 @@ test("capture fields are normalized for valid persistent kinds", () => {
   );
 });
 
-test("both adapters share the requested thinking acknowledgement", () => {
-  assert.equal(THINKING_RESPONSE, "thinking about response");
+test("both adapters hide queue internals behind a natural acknowledgement", () => {
+  assert.equal(WORKING_RESPONSE, "Got it — I’m working on that.");
+  assert.doesNotMatch(WORKING_RESPONSE, /queue|request id/i);
 });

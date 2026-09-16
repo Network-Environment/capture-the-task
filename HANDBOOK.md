@@ -385,8 +385,10 @@ and iMessage call the same agent and tools. Existing approval gates still
 park write operations until an explicit `approve pa-x`; channel parity does
 not bypass write approval. Unknown numbers remain silently rejected.
 
-Both interactive adapters immediately send `thinking about response`, persist
-the normalized text in `agent-requests`, and acknowledge the queue id. Voice
+Both interactive adapters persist the normalized text in `agent-requests`,
+then send the natural acknowledgement `Got it — I’m working on that.` Queue
+ids and queue terminology are never user-visible; duplicate channel deliveries
+are acknowledged internally without sending a second message. Voice
 bytes are transcribed before enqueue and are never stored in Cosmos. The
 isolated worker App Service claims one request at a time with an ETag and
 10-minute lease, retries failures with backoff, and writes the result to
