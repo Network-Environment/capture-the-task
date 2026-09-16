@@ -77,7 +77,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bash "${SCRIPT_DIR}/configure-admin-roles.sh" "$app_id"
 
-HOST=$(az webapp list -g "$RG" --query "[?starts_with(name, 'app-taskbrain')].defaultHostName | [0]" -o tsv 2>/dev/null || echo "")
+HOST=$(az webapp list -g "$RG" --query "[?starts_with(name, 'admin-taskbrain-')].defaultHostName | [0]" -o tsv 2>/dev/null || echo "")
 if [[ -n "$HOST" ]]; then
   az ad app update --id "$app_id" \
     --web-redirect-uris "https://${HOST}/.auth/login/aad/callback" \

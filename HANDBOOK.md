@@ -109,10 +109,15 @@ The Bot Service Graph OAuth connection is deployed by Bicep.
 ```
 
 ```
-CHANNELS (adapters normalize → src/pipeline.ts)
-  Teams  ─ Bot Framework activity ─► Azure Bot Service ─► App Service (src/bot.ts)
-  iMessage ─ Photon spectrum-ts persistent gRPC stream (src/channels/photon.ts)
-             allowlist + identity map (config/channels.json) → canonical userId
+ISOLATED RUNTIMES (same image, separate App Service plans)
+  Admin   ─ Easy Auth ─► admin role: dashboard + control-plane APIs only
+  Teams   ─ Bot Framework ─► gateway role ┐
+  iMessage ─ Photon gRPC ─► gateway role  ├─► Cosmos agent-requests
+                                          │
+  worker role ◄─ ETag claim + lease ──────┘
+        │
+        ├─► processCapture() → result stored in Cosmos
+        └─► gateway delivery pump → exact Teams/iMessage conversation
         ▼
 PIPELINE — processCapture()  (channel-agnostic)
         │
@@ -383,12 +388,17 @@ not bypass write approval. Unknown numbers remain silently rejected.
 Both interactive adapters immediately send `thinking about response`, persist
 the normalized text in `agent-requests`, and acknowledge the queue id. Voice
 bytes are transcribed before enqueue and are never stored in Cosmos. The
-App Service request worker claims one request at a time with an ETag and
-10-minute lease, retries failures three times with backoff, then proactively
-delivers the result to the exact Teams conversation or iMessage sender.
-Completed-but-undelivered results remain durable and delivery is retried.
-This global concurrency cap keeps concurrent users from starving the single
-Node worker; admin reads are never put on this queue.
+isolated worker App Service claims one request at a time with an ETag and
+10-minute lease, retries failures with backoff, and writes the result to
+Cosmos. The gateway delivery pump sends it to the exact Teams conversation or
+iMessage sender. Completed-but-undelivered results remain durable and delivery
+is retried.
+
+Admin, gateway, and worker use the same immutable image with
+`TASKBRAIN_ROLE`, but each has its own App Service plan. A CPU-bound agent turn
+therefore cannot starve dashboard requests, Bot Framework acknowledgements, or
+Photon delivery. Never consolidate these roles onto one plan: separate apps on
+one plan still share CPU and do not form a failure boundary.
 
 The worker then runs the deterministic quality gate for probes (`test`, `ping`),
 repeated noise, punctuation/gibberish, and context-free single words without a
@@ -510,7 +520,8 @@ repo, org permission to upload Teams apps.
    `taskbrain-browser` in ACR → Bicep (all resources including Flex
    Consumption Function + meeting Cosmos containers, ACR, Container Apps
    Playwright MCP, three model deployments, every app setting, Bot OAuth) →
-   build `taskbrain` image → App Service restart → health check → zip-deploy
+   build `taskbrain` image → isolated admin/gateway/worker App Service
+   restarts and health checks → zip-deploy
    the meeting ingest Function. The browser image is built first on purpose:
    Container Apps fails revision provisioning if the tag is not already in the
    registry. Optional: set `WEB_SEARCH_API_KEY` in GitHub secrets so
@@ -676,7 +687,7 @@ logging already support it. Do not pay this tax early.
 5. User knowledge → `notes`; agent operational knowledge → `agent-memory`;
    org structure → `org`; shared work → execution graph; dated epistemic
    facts → `memory-facts`. Never cross-filed. Lessons stay capped.
-6. The App Service orchestrator is the only scheduler for chat jobs; jobs
+6. The worker App Service orchestrator is the only scheduler for chat jobs; jobs
    are data; claims are etag-conditioned. Meeting ingest is a separate
    Functions timer (Graph polling), not a chat job.
 7. Logging and alerting are non-fatal: their failures never break the

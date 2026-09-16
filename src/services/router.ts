@@ -20,11 +20,15 @@ import { alertAdmin } from "./alerts";
 
 export type TaskClass = "triage" | "agent" | "synthesis" | "digest";
 
-const client = new AzureOpenAI({
-  endpoint: process.env.FOUNDRY_ENDPOINT!,
-  apiKey: process.env.FOUNDRY_API_KEY!,
-  apiVersion: "2024-10-21",
-});
+let client: AzureOpenAI | undefined;
+
+function modelClient(): AzureOpenAI {
+  return (client ??= new AzureOpenAI({
+    endpoint: process.env.FOUNDRY_ENDPOINT!,
+    apiKey: process.env.FOUNDRY_API_KEY!,
+    apiVersion: "2024-10-21",
+  }));
+}
 
 interface RouteSpec {
   deployment: string; // env var NAME holding the deployment
@@ -148,7 +152,7 @@ export async function route(
   let res;
   for (let attempt = 0; ; attempt++) {
     try {
-      res = await client.chat.completions.create({
+      res = await modelClient().chat.completions.create({
         ...body,
         ...chatSamplingParams(caps, s.maxTokens, s.temperature),
       });
@@ -200,7 +204,7 @@ export async function embed(
   text: string,
   attribution: Partial<ActivityAttribution> = {}
 ): Promise<number[]> {
-  const res = await client.embeddings.create({
+  const res = await modelClient().embeddings.create({
     model: process.env.EMBED_DEPLOYMENT!,
     input: text.slice(0, 8000),
   });

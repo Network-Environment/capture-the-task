@@ -35,6 +35,8 @@ jobs:
     environment: production
     outputs:
       app-name: ${{ steps.deploy.outputs.app-name }}
+      admin-app-name: ${{ steps.deploy.outputs.admin-app-name }}
+      worker-app-name: ${{ steps.deploy.outputs.worker-app-name }}
       registry-name: ${{ steps.deploy.outputs.registry-name }}
       function-app-name: ${{ steps.deploy.outputs.function-app-name }}
       browser-app-name: ${{ steps.deploy.outputs.browser-app-name }}
@@ -102,7 +104,7 @@ jobs:
           if [ -n "${APP_IMAGE_TAG:-}" ]; then
             IMAGE_PARAM="containerImageTag=$APP_IMAGE_TAG"
           else
-            EXISTING=$(az webapp list -g "$RESOURCE_GROUP" --query "[0].name" -o tsv 2>/dev/null || true)
+            EXISTING=$(az webapp list -g "$RESOURCE_GROUP" --query "[?starts_with(name, 'app-taskbrain-')].name | [0]" -o tsv 2>/dev/null || true)
             if [ -n "$EXISTING" ]; then
               FX=$(az webapp config show -g "$RESOURCE_GROUP" -n "$EXISTING" --query linuxFxVersion -o tsv)
               TAG="${FX##*:}"
@@ -141,6 +143,8 @@ jobs:
                $BROWSER_PARAM \
                $IMAGE_PARAM)
           echo "app-name=$(jq -r '.appName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
+          echo "admin-app-name=$(jq -r '.adminAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
+          echo "worker-app-name=$(jq -r '.workerAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "registry-name=$(jq -r '.registryName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "function-app-name=$(jq -r '.functionAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "browser-app-name=$(jq -r '.browserAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
@@ -188,27 +192,38 @@ jobs:
             -g "$RESOURCE_GROUP" \
             -n "${{ needs.infra.outputs.browser-app-name }}" \
             --image "$TARGET"
-      - name: Point App Service at this commit's image
+      - name: Point isolated runtimes at this commit's image
         run: |
           IMAGE="${{ needs.infra.outputs.registry-name }}.azurecr.io/taskbrain:${GITHUB_SHA}"
-          az webapp config set \
-            -g "$RESOURCE_GROUP" \
-            -n "${{ needs.infra.outputs.app-name }}" \
-            --linux-fx-version "DOCKER|$IMAGE"
-          az webapp restart -g "$RESOURCE_GROUP" -n "${{ needs.infra.outputs.app-name }}"
-      - name: Smoke test (retries while App Service pulls the image)
-        run: |
-          for i in $(seq 1 30); do
-            if curl --connect-timeout 5 --max-time 10 -sf \
-              "https://${{ needs.infra.outputs.app-name }}.azurewebsites.net/healthz"; then
-              echo
-              echo "healthy on image ${GITHUB_SHA}"
-              exit 0
-            fi
-            echo "waiting for container ($i/30)..."
-            sleep 10
+          for APP in \
+            "${{ needs.infra.outputs.app-name }}" \
+            "${{ needs.infra.outputs.admin-app-name }}" \
+            "${{ needs.infra.outputs.worker-app-name }}"; do
+            az webapp config set \
+              -g "$RESOURCE_GROUP" \
+              -n "$APP" \
+              --linux-fx-version "DOCKER|$IMAGE"
+            az webapp restart -g "$RESOURCE_GROUP" -n "$APP"
           done
-          echo "app did not become healthy"; exit 1
+      - name: Smoke test all isolated runtimes
+        run: |
+          for APP in \
+            "${{ needs.infra.outputs.app-name }}" \
+            "${{ needs.infra.outputs.admin-app-name }}" \
+            "${{ needs.infra.outputs.worker-app-name }}"; do
+            HEALTHY=false
+            for i in $(seq 1 30); do
+              if BODY=$(curl --connect-timeout 5 --max-time 10 -sf \
+                "https://${APP}.azurewebsites.net/healthz"); then
+                echo "$APP $BODY"
+                HEALTHY=true
+                break
+              fi
+              echo "waiting for $APP ($i/30)..."
+              sleep 10
+            done
+            [ "$HEALTHY" = true ] || { echo "$APP did not become healthy"; exit 1; }
+          done
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}

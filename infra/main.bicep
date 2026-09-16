@@ -718,7 +718,66 @@ resource depEmbed 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' 
   dependsOn: [ depStandard ]
 }
 
-// ---------- App Service ----------
+// ---------- Isolated runtimes ----------
+// All three roles use the same immutable image and shared data services, but
+// run on separate App Service plans so CPU starvation cannot cross boundaries.
+var runtimeAppSettings = [
+  { name: 'MicrosoftAppType', value: 'SingleTenant' }
+  { name: 'MicrosoftAppId', value: botAppId }
+  { name: 'MicrosoftAppPassword', value: botAppPassword }
+  { name: 'MicrosoftAppTenantId', value: tenant().tenantId }
+  { name: 'FOUNDRY_ENDPOINT', value: 'https://${foundry.properties.customSubDomainName}.openai.azure.com' }
+  { name: 'FOUNDRY_API_KEY', value: foundry.listKeys().key1 }
+  { name: 'CHEAP_DEPLOYMENT', value: depCheap.name }
+  { name: 'STANDARD_DEPLOYMENT', value: depStandard.name }
+  { name: 'PREMIUM_DEPLOYMENT', value: depStandard.name }
+  { name: 'EMBED_DEPLOYMENT', value: depEmbed.name }
+  { name: 'SPEECH_REGION', value: location }
+  { name: 'SPEECH_KEY', value: speech.listKeys().key1 }
+  { name: 'STORAGE_CONNECTION_STRING', value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}' }
+  { name: 'NOTES_CONTAINER', value: 'notes' }
+  { name: 'COSMOS_ENDPOINT', value: cosmos.properties.documentEndpoint }
+  { name: 'COSMOS_KEY', value: cosmos.listKeys().primaryMasterKey }
+  { name: 'COSMOS_DB', value: cosmosDb.name }
+  { name: 'GRAPH_CONNECTION_NAME', value: 'graph-connection' }
+  { name: 'SMARTSHEET_API_TOKEN', value: smartsheetApiToken }
+  { name: 'WEB_SEARCH_API_KEY', value: webSearchApiKey }
+  { name: 'WEB_SEARCH_ENGINE', value: webSearchEngine }
+  { name: 'EXECUTION_GRAPH_ENABLED', value: string(executionGraphEnabled) }
+  { name: 'EXECUTION_GRAPH_WRITES_ENABLED', value: string(executionGraphWritesEnabled) }
+  { name: 'MEMORY_FACTS_ENABLED', value: string(memoryFactsEnabled) }
+  { name: 'GRAPH_WORKSPACE_ID', value: graphWorkspaceId }
+  { name: 'INTENT_GATEWAY_ENABLED', value: string(intentGatewayEnabled) }
+  { name: 'INTENT_SHADOW_MODE', value: string(intentShadowMode) }
+  { name: 'CLARIFICATION_ENFORCEMENT_ENABLED', value: string(clarificationEnforcementEnabled) }
+  { name: 'UNIFIED_ACTION_POLICY_ENABLED', value: string(unifiedActionPolicyEnabled) }
+  { name: 'INTENT_CONFIDENCE_THRESHOLD', value: intentConfidenceThreshold }
+  { name: 'INBOUND_QUALITY_GATE_ENABLED', value: string(inboundQualityGateEnabled) }
+  { name: 'LEGACY_TRIAGE_WRITES_ENABLED', value: string(legacyTriageWritesEnabled) }
+  { name: 'BROWSER_MCP_URL', value: 'https://${browserApp.properties.configuration.ingress.fqdn}/mcp' }
+  { name: 'BROWSER_MCP_TOKEN', value: browserToken }
+  { name: 'SPECTRUM_PROJECT_ID', value: spectrumProjectId }
+  { name: 'SPECTRUM_PROJECT_SECRET', value: spectrumProjectSecret }
+  { name: 'ADMIN_APP_ID', value: adminAppId }
+  { name: 'ADMIN_APP_SECRET', value: adminAppSecret }
+  { name: 'ADMIN_AAD_OBJECT_ID', value: adminAadObjectId }
+  { name: 'DAILY_TOKEN_BUDGET', value: dailyTokenBudget }
+  { name: 'JOBS_TIMEZONE', value: jobsTimezone }
+  { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
+  { name: 'WEBSITES_PORT', value: '3978' }
+  { name: 'WEBSITE_HEALTHCHECK_MAXPINGFAILURES', value: '10' }
+  { name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '600' }
+  { name: 'MEETING_VIEWERS', value: 'bceb24c5-ef85-4301-9ab2-073805d535aa,4f323599-0df8-47f7-aa01-46dbb211894c' }
+  { name: 'MEETINGS_CONTAINER', value: 'meetings' }
+  { name: 'MEETING_TTL_DAYS', value: '90' }
+  { name: 'COMMITMENT_TTL_DAYS', value: '180' }
+  { name: 'FOLLOWTHROUGH_TEAM_ID', value: followthroughTeamId }
+  { name: 'FOLLOWTHROUGH_CHANNEL_ID', value: followthroughChannelId }
+  { name: 'PLANNER_PLAN_ID', value: plannerPlanId }
+  { name: 'PLANNER_BUCKET_ID', value: plannerBucketId }
+  { name: 'FOLLOWTHROUGH_MAIL_FROM', value: followthroughMailFrom }
+]
+
 resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: 'plan-${appName}'
   location: appLocation
@@ -737,67 +796,67 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
       acrUseManagedIdentityCreds: true
       alwaysOn: planAlwaysOn
       healthCheckPath: '/healthz'
-      appSettings: [
-        // --- Bot identity ---
-        { name: 'MicrosoftAppType', value: 'SingleTenant' }
-        { name: 'MicrosoftAppId', value: botAppId }
-        { name: 'MicrosoftAppPassword', value: botAppPassword }
-        { name: 'MicrosoftAppTenantId', value: tenant().tenantId }
-        // --- Foundry (OpenAI-compatible) + model tiers ---
-        { name: 'FOUNDRY_ENDPOINT', value: 'https://${foundry.properties.customSubDomainName}.openai.azure.com' }
-        { name: 'FOUNDRY_API_KEY', value: foundry.listKeys().key1 }
-        { name: 'CHEAP_DEPLOYMENT', value: depCheap.name }
-        { name: 'STANDARD_DEPLOYMENT', value: depStandard.name }
-        { name: 'PREMIUM_DEPLOYMENT', value: depStandard.name } // point at an Opus/large deployment later
-        { name: 'EMBED_DEPLOYMENT', value: depEmbed.name }
-        // --- Speech ---
-        { name: 'SPEECH_REGION', value: location }
-        { name: 'SPEECH_KEY', value: speech.listKeys().key1 }
-        // --- Second brain ---
-        { name: 'STORAGE_CONNECTION_STRING', value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}' }
-        { name: 'NOTES_CONTAINER', value: 'notes' }
-        { name: 'COSMOS_ENDPOINT', value: cosmos.properties.documentEndpoint }
-        { name: 'COSMOS_KEY', value: cosmos.listKeys().primaryMasterKey }
-        { name: 'COSMOS_DB', value: cosmosDb.name }
-        // --- Integrations / channels ---
-        { name: 'GRAPH_CONNECTION_NAME', value: 'graph-connection' }
-        { name: 'SMARTSHEET_API_TOKEN', value: smartsheetApiToken }
-        { name: 'WEB_SEARCH_API_KEY', value: webSearchApiKey }
-        { name: 'WEB_SEARCH_ENGINE', value: webSearchEngine }
-        { name: 'EXECUTION_GRAPH_ENABLED', value: string(executionGraphEnabled) }
-        { name: 'EXECUTION_GRAPH_WRITES_ENABLED', value: string(executionGraphWritesEnabled) }
-        { name: 'MEMORY_FACTS_ENABLED', value: string(memoryFactsEnabled) }
-        { name: 'GRAPH_WORKSPACE_ID', value: graphWorkspaceId }
-        { name: 'INTENT_GATEWAY_ENABLED', value: string(intentGatewayEnabled) }
-        { name: 'INTENT_SHADOW_MODE', value: string(intentShadowMode) }
-        { name: 'CLARIFICATION_ENFORCEMENT_ENABLED', value: string(clarificationEnforcementEnabled) }
-        { name: 'UNIFIED_ACTION_POLICY_ENABLED', value: string(unifiedActionPolicyEnabled) }
-        { name: 'INTENT_CONFIDENCE_THRESHOLD', value: intentConfidenceThreshold }
-        { name: 'INBOUND_QUALITY_GATE_ENABLED', value: string(inboundQualityGateEnabled) }
-        { name: 'LEGACY_TRIAGE_WRITES_ENABLED', value: string(legacyTriageWritesEnabled) }
-        { name: 'BROWSER_MCP_URL', value: 'https://${browserApp.properties.configuration.ingress.fqdn}/mcp' }
-        { name: 'BROWSER_MCP_TOKEN', value: browserToken }
-        { name: 'SPECTRUM_PROJECT_ID', value: spectrumProjectId }
-        { name: 'SPECTRUM_PROJECT_SECRET', value: spectrumProjectSecret }
-        // --- Ops ---
-        { name: 'ADMIN_APP_ID', value: adminAppId }
-        { name: 'ADMIN_APP_SECRET', value: adminAppSecret }
-        { name: 'ADMIN_AAD_OBJECT_ID', value: adminAadObjectId }
-        { name: 'DAILY_TOKEN_BUDGET', value: dailyTokenBudget }
-        { name: 'JOBS_TIMEZONE', value: jobsTimezone }
-        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
-        { name: 'WEBSITES_PORT', value: '3978' }
-        { name: 'WEBSITE_HEALTHCHECK_MAXPINGFAILURES', value: '3' }
-        { name: 'MEETING_VIEWERS', value: 'bceb24c5-ef85-4301-9ab2-073805d535aa,4f323599-0df8-47f7-aa01-46dbb211894c' }
-        { name: 'MEETINGS_CONTAINER', value: 'meetings' }
-        { name: 'MEETING_TTL_DAYS', value: '90' }
-        { name: 'COMMITMENT_TTL_DAYS', value: '180' }
-        { name: 'FOLLOWTHROUGH_TEAM_ID', value: followthroughTeamId }
-        { name: 'FOLLOWTHROUGH_CHANNEL_ID', value: followthroughChannelId }
-        { name: 'PLANNER_PLAN_ID', value: plannerPlanId }
-        { name: 'PLANNER_BUCKET_ID', value: plannerBucketId }
-        { name: 'FOLLOWTHROUGH_MAIL_FROM', value: followthroughMailFrom }
-      ]
+      appSettings: concat(runtimeAppSettings, [
+        { name: 'TASKBRAIN_ROLE', value: 'gateway' }
+        { name: 'ADMIN_BASE_URL', value: 'https://admin-${appName}-${suffix}.azurewebsites.net' }
+        { name: 'DELIVERY_GATEWAY_TOKEN', value: adminAppSecret }
+      ])
+    }
+  }
+  identity: { type: 'SystemAssigned' }
+  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, agentRequestsColl, workColl ]
+}
+
+resource adminPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
+  name: 'plan-${appName}-admin'
+  location: appLocation
+  sku: { name: planSku }
+  properties: { reserved: true }
+}
+
+resource adminApp 'Microsoft.Web/sites@2024-04-01' = {
+  name: 'admin-${appName}-${suffix}'
+  location: appLocation
+  properties: {
+    serverFarmId: adminPlan.id
+    httpsOnly: true
+    siteConfig: {
+      linuxFxVersion: 'DOCKER|${registry.properties.loginServer}/taskbrain:${containerImageTag}'
+      acrUseManagedIdentityCreds: true
+      alwaysOn: planAlwaysOn
+      healthCheckPath: '/healthz'
+      appSettings: concat(runtimeAppSettings, [
+        { name: 'TASKBRAIN_ROLE', value: 'admin' }
+      ])
+    }
+  }
+  identity: { type: 'SystemAssigned' }
+  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, agentRequestsColl, workColl ]
+}
+
+resource workerPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
+  name: 'plan-${appName}-worker'
+  location: appLocation
+  sku: { name: planSku }
+  properties: { reserved: true }
+}
+
+resource workerApp 'Microsoft.Web/sites@2024-04-01' = {
+  name: 'worker-${appName}-${suffix}'
+  location: appLocation
+  properties: {
+    serverFarmId: workerPlan.id
+    httpsOnly: true
+    siteConfig: {
+      linuxFxVersion: 'DOCKER|${registry.properties.loginServer}/taskbrain:${containerImageTag}'
+      acrUseManagedIdentityCreds: true
+      alwaysOn: planAlwaysOn
+      healthCheckPath: '/healthz'
+      appSettings: concat(runtimeAppSettings, [
+        { name: 'TASKBRAIN_ROLE', value: 'worker' }
+        { name: 'DELIVERY_GATEWAY_URL', value: 'https://${app.properties.defaultHostName}' }
+        { name: 'DELIVERY_GATEWAY_TOKEN', value: adminAppSecret }
+      ])
     }
   }
   identity: { type: 'SystemAssigned' }
@@ -815,9 +874,39 @@ resource appAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-// Entra Easy Auth on /admin. Bot traffic and the CI smoke test stay anonymous.
-resource appAuth 'Microsoft.Web/sites/config@2024-04-01' = {
+resource adminAppAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, adminApp.id, acrPullRoleId)
+  scope: registry
+  properties: {
+    roleDefinitionId: acrPullRoleId
+    principalId: adminApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource workerAppAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, workerApp.id, acrPullRoleId)
+  scope: registry
+  properties: {
+    roleDefinitionId: acrPullRoleId
+    principalId: workerApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// The gateway must stay anonymous for Bot Framework and health probes. This
+// explicit disable removes the old combined app's Easy Auth config.
+resource gatewayAuth 'Microsoft.Web/sites/config@2024-04-01' = {
   parent: app
+  name: 'authsettingsV2'
+  properties: {
+    platform: { enabled: false }
+  }
+}
+
+// Entra Easy Auth exists only on the isolated admin control plane.
+resource adminAppAuth 'Microsoft.Web/sites/config@2024-04-01' = {
+  parent: adminApp
   name: 'authsettingsV2'
   properties: {
     platform: { enabled: true }
@@ -826,7 +915,6 @@ resource appAuth 'Microsoft.Web/sites/config@2024-04-01' = {
       unauthenticatedClientAction: 'RedirectToLoginPage'
       redirectToProvider: 'azureactivedirectory'
       excludedPaths: [
-        '/api/messages'
         '/healthz'
       ]
     }
@@ -1024,7 +1112,10 @@ resource graphConnection 'Microsoft.BotService/botServices/connections@2023-09-1
 
 output appHostname string = app.properties.defaultHostName
 output appName string = app.name
-output adminUrl string = 'https://${app.properties.defaultHostName}/admin'
+output gatewayAppName string = app.name
+output workerAppName string = workerApp.name
+output adminAppName string = adminApp.name
+output adminUrl string = 'https://${adminApp.properties.defaultHostName}/admin'
 output registryName string = registry.name
 output registryLoginServer string = registry.properties.loginServer
 output storageAccount string = storage.name

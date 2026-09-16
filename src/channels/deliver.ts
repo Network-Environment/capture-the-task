@@ -17,6 +17,29 @@ export function initDelivery(a: CloudAdapter, appId: string): void {
 }
 
 export async function deliver(userId: string, text: string, prefer?: StoredRef): Promise<boolean> {
+  const gatewayUrl = process.env.DELIVERY_GATEWAY_URL?.replace(/\/+$/, "");
+  const gatewayToken = process.env.DELIVERY_GATEWAY_TOKEN;
+  if (gatewayUrl && gatewayToken) {
+    try {
+      const response = await fetch(`${gatewayUrl}/internal/deliver`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${gatewayToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ userId, text, prefer }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) return false;
+      return Boolean(
+        ((await response.json()) as { delivered?: boolean }).delivered
+      );
+    } catch (err) {
+      console.error("[deliver] gateway send failed:", err);
+      return false;
+    }
+  }
+
   const ref = prefer ?? (await getConversationRef(userId));
   if (!ref) return false;
 

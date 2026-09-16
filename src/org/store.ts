@@ -15,14 +15,29 @@ function org() {
   return cosmosContainer("org");
 }
 
+/** Units sort by name, people by display name, roles by title. */
+function orgLabel(doc: OrgDoc): string {
+  switch (doc.kind) {
+    case "unit":
+      return doc.name;
+    case "person":
+      return doc.displayName;
+    case "role":
+      return doc.title;
+  }
+}
+
 export async function listOrgByKind<T extends OrgDoc>(kind: OrgKind): Promise<T[]> {
+  // Sorted in memory: a multi-property ORDER BY needs a composite index the
+  // org container does not carry, and the directory is small enough that the
+  // sort is free next to the round trip.
   const { resources } = await org().items
     .query<T>({
-      query: "SELECT * FROM c WHERE c.kind = @k ORDER BY c.name, c.displayName, c.title",
+      query: "SELECT * FROM c WHERE c.kind = @k",
       parameters: [{ name: "@k", value: kind }],
     })
     .fetchAll();
-  return resources;
+  return resources.sort((a, b) => orgLabel(a).localeCompare(orgLabel(b)));
 }
 
 export async function listOrgDirectory(): Promise<OrgDirectory> {

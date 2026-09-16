@@ -5,34 +5,62 @@ import {
 } from "botbuilder";
 import { processCapture, type Outbound } from "../pipeline";
 import { createTodoTask } from "./graphTasks";
-import { deliver } from "../channels/deliver";
-import { outboundCard } from "../channels/teamsCard";
-import { toPlainText } from "../channels/types";
 import { logActivity } from "./activityLog";
 import {
   claimNextAgentRequest,
   completeAgentRequest,
-  deferAgentRequestDelivery,
-  markAgentRequestDelivered,
-  nextUndeliveredResult,
+  markAgentRequestFailed,
   retryAgentRequest,
   type QueuedAgentRequest,
 } from "./requestQueue";
 
-const POLL_MS = 1_000;
+const POLL_MS = Number(process.env.REQUEST_POLL_MS ?? 5_000);
+/**
+ * A request that wedges the worker is re-claimed on the next boot, so the app
+ * never stays up long enough to drain it. The grace period lets the container
+ * pass its health probe first, and the deadline bounds any single request.
+ */
+const START_DELAY_MS = Number(process.env.REQUEST_WORKER_START_DELAY_MS ?? 45_000);
+const REQUEST_DEADLINE_MS = Number(process.env.REQUEST_DEADLINE_MS ?? 240_000);
+
 let timer: ReturnType<typeof setInterval> | undefined;
+let startTimer: ReturnType<typeof setTimeout> | undefined;
 let running = false;
 
+class RequestDeadline extends Error {
+  constructor(id: string, ms: number) {
+    super(`request ${id} exceeded its ${ms}ms deadline`);
+    this.name = "RequestDeadline";
+  }
+}
+
+function withDeadline<T>(work: Promise<T>, ms: number, id: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new RequestDeadline(id, ms)), ms);
+    work.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); }
+    );
+  });
+}
+
 export function startRequestWorker(adapter: CloudAdapter, botAppId: string): void {
-  if (timer) return;
-  timer = setInterval(() => void tick(adapter, botAppId), POLL_MS);
-  void tick(adapter, botAppId);
-  console.log("[request-worker] durable queue polling every 1s, concurrency=1");
+  if (timer || startTimer) return;
+  startTimer = setTimeout(() => {
+    startTimer = undefined;
+    timer = setInterval(() => void tick(adapter, botAppId), POLL_MS);
+    void tick(adapter, botAppId);
+  }, START_DELAY_MS);
+  console.log(
+    `[request-worker] starting in ${START_DELAY_MS}ms, then polling every ${POLL_MS}ms, concurrency=1`
+  );
 }
 
 export function stopRequestWorker(): void {
   if (timer) clearInterval(timer);
+  if (startTimer) clearTimeout(startTimer);
   timer = undefined;
+  startTimer = undefined;
 }
 
 export async function tick(
@@ -44,11 +72,6 @@ export async function tick(
   try {
     const request = await claimNextAgentRequest();
     if (request) await processRequest(adapter, botAppId, request);
-
-    const undelivered = await nextUndeliveredResult();
-    if (undelivered?.result) {
-      await deliverResult(adapter, botAppId, undelivered, undelivered.result);
-    }
   } catch (err) {
     console.error("[request-worker] tick failed:", err);
   } finally {
@@ -62,10 +85,10 @@ async function processRequest(
   request: QueuedAgentRequest
 ): Promise<void> {
   try {
-    const out =
+    const work =
       request.channel === "teams"
-        ? await processTeamsRequest(adapter, botAppId, request)
-        : await processCapture({
+        ? processTeamsRequest(adapter, botAppId, request)
+        : processCapture({
             userId: request.userId,
             channel: "imessage",
             text: request.text,
@@ -73,6 +96,7 @@ async function processRequest(
             policy: request.policy,
             conversationRef: request.conversationRef,
           });
+    const out = await withDeadline(work, REQUEST_DEADLINE_MS, request.id);
     await completeAgentRequest(request, out);
     void logActivity({
       type: "request_queue",
@@ -88,7 +112,14 @@ async function processRequest(
     });
   } catch (err) {
     const message = (err as Error).message;
-    const retrying = await retryAgentRequest(request, message);
+    // A request that ran out its deadline is terminal: retrying it would stall
+    // the worker again and starve everyone behind it.
+    let retrying = false;
+    if (err instanceof RequestDeadline) {
+      await markAgentRequestFailed(request, message);
+    } else {
+      retrying = await retryAgentRequest(request, message);
+    }
     console.error(
       `[request-worker] ${request.id} ${retrying ? "retrying" : "failed"}:`,
       err
@@ -105,9 +136,6 @@ async function processRequest(
         message: message.slice(0, 300),
       },
     });
-    if (!retrying) {
-      await deliverFailure(adapter, botAppId, request).catch(() => undefined);
-    }
   }
 }
 
@@ -139,60 +167,4 @@ async function processTeamsRequest(
   );
   if (!result) throw new Error("Queued Teams request produced no result.");
   return result;
-}
-
-async function deliverResult(
-  adapter: CloudAdapter,
-  botAppId: string,
-  request: QueuedAgentRequest,
-  out: Outbound
-): Promise<void> {
-  try {
-    let delivered = false;
-    if (
-      request.channel === "teams" &&
-      request.conversationRef.channel === "teams"
-    ) {
-      await adapter.continueConversationAsync(
-        botAppId,
-        request.conversationRef.teamsRef as Partial<ConversationReference>,
-        async (ctx: TurnContext) => {
-          await ctx.sendActivity({ attachments: [outboundCard(out)] });
-        }
-      );
-      delivered = true;
-    } else if (request.conversationRef.channel === "imessage") {
-      delivered = await deliver(
-        request.userId,
-        toPlainText(out.title, out.body, out.tags),
-        request.conversationRef
-      );
-    }
-    if (!delivered) throw new Error("No channel accepted the queued result.");
-    await markAgentRequestDelivered(request);
-  } catch (err) {
-    await deferAgentRequestDelivery(request, (err as Error).message);
-    console.error(`[request-worker] delivery deferred for ${request.id}:`, err);
-  }
-}
-
-async function deliverFailure(
-  adapter: CloudAdapter,
-  botAppId: string,
-  request: QueuedAgentRequest
-): Promise<void> {
-  const message =
-    `Request ${request.id} failed after ${request.attempts} attempts. ` +
-    "Nothing was intentionally discarded; please retry the request.";
-  if (request.channel === "teams" && request.conversationRef.channel === "teams") {
-    await adapter.continueConversationAsync(
-      botAppId,
-      request.conversationRef.teamsRef as Partial<ConversationReference>,
-      async (ctx: TurnContext) => {
-        await ctx.sendActivity(message);
-      }
-    );
-    return;
-  }
-  await deliver(request.userId, message, request.conversationRef);
 }

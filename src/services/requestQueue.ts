@@ -162,7 +162,7 @@ export async function nextUndeliveredResult(
     .items.query<QueuedAgentRequest>({
       query: `SELECT TOP 5 * FROM c
         WHERE c.bucket = @bucket
-          AND c.status = "completed"
+          AND c.status IN ("completed", "failed")
           AND IS_DEFINED(c.result)
           AND NOT IS_DEFINED(c.deliveredAt)
           AND c.nextDeliveryAt <= @now
@@ -245,11 +245,23 @@ export async function markAgentRequestFailed(
   request: QueuedAgentRequest,
   error: string
 ): Promise<void> {
+  const result: Outbound = {
+    title: "Request failed",
+    body:
+      `Request \`${request.id}\` could not finish safely. ` +
+      "Nothing was intentionally discarded; please retry or contact an administrator.",
+    tags: [],
+    summaryLine: `Request failed: ${error}`.slice(0, 500),
+  };
   await replaceRequest(request, {
     status: "failed",
     finishedAt: new Date().toISOString(),
     leaseUntil: undefined,
     lastError: error.slice(0, 500),
+    result,
+    resultPreview: result.summaryLine,
+    deliveryAttempts: 0,
+    nextDeliveryAt: new Date().toISOString(),
     ttl: 604800,
   });
 }

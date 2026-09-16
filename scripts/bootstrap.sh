@@ -305,7 +305,7 @@ if [[ -n "$ADMIN_OID" ]]; then
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bash "${SCRIPT_DIR}/configure-admin-roles.sh" "$ADMIN_APP_ID"
-HOST=$(az webapp list -g "$RG" --query "[?starts_with(name, 'app-taskbrain')].defaultHostName | [0]" -o tsv 2>/dev/null || echo "")
+HOST=$(az webapp list -g "$RG" --query "[?starts_with(name, 'admin-taskbrain-')].defaultHostName | [0]" -o tsv 2>/dev/null || echo "")
 if [[ -n "$HOST" ]]; then
   az ad app update --id "$ADMIN_APP_ID" \
     --web-redirect-uris "https://${HOST}/.auth/login/aad/callback" \
@@ -403,7 +403,7 @@ BOOTSTRAP COMPLETE — copy these where they belong
        teams-app/ and upload via Teams admin center > Manage apps.
     2. If admin consent printed a WARNING above, grant it in Entra.
        (Graph OAuth connection graph-connection is created by Bicep.)
-    3. Share https://<app>.azurewebsites.net/admin. Add dashboard viewers under
+    3. Share https://<admin-app>.azurewebsites.net/admin. Add dashboard viewers under
        Entra → Enterprise applications → TaskBrain Admin → Users and groups.
 =============================================================================
 SUMMARY
