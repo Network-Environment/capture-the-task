@@ -1,6 +1,9 @@
 import "./setup";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it } from "node:test";
+import { parseOrgSeed, planOrgImport, validateOrgSeed } from "../src/org/import";
 import {
   compactOrgPrompt,
   ORG_PROMPT_CAP,
@@ -115,5 +118,146 @@ describe("org directory", () => {
     const capped = compactOrgPrompt(huge);
     assert.ok(capped.length <= ORG_PROMPT_CAP);
     assert.match(capped, /truncated/);
+  });
+
+  it("validates the reviewed org seed without inventing titles or reporting lines", () => {
+    const seed = parseOrgSeed(
+      JSON.parse(
+        readFileSync(
+          resolve(process.cwd(), "data/org/ryalto-org-lite.json"),
+          "utf8"
+        )
+      )
+    );
+    assert.deepEqual(validateOrgSeed(seed), []);
+    assert.equal(
+      seed.units.find((unit) => unit.id === "unt-network-environments")?.parentId,
+      "unt-ryalto-holdings"
+    );
+    assert.equal(
+      seed.units.find((unit) => unit.id === "unt-gra")?.parentId,
+      "unt-ryalto-holdings"
+    );
+    assert.equal(seed.people.some((row) => "managerPersonId" in row), false);
+    assert.equal(
+      JSON.stringify(seed).toLowerCase().includes('"coo"'),
+      false
+    );
+    assert.equal(
+      seed.roles.find((role) => role.id === "rol-joe-visionary")?.title,
+      "Visionary"
+    );
+    assert.equal(
+      seed.roles.filter((role) => role.personId === "per-valerie-moraru").length,
+      3
+    );
+  });
+
+  it("plans an idempotent seed and enriches only exact complete identities", () => {
+    const seed = parseOrgSeed(
+      JSON.parse(
+        readFileSync(resolve(process.cwd(), "data/org/ryalto-org-lite.json"), "utf8")
+      )
+    );
+    const empty: OrgDirectory = { units: [], people: [], roles: [] };
+    const first = planOrgImport(
+      seed,
+      empty,
+      [
+        { id: "entra-joe", displayName: "Joe Ryan" },
+        { id: "entra-shelly", displayName: "Shelly" },
+      ],
+      "2026-09-17T00:00:00Z"
+    );
+    assert.deepEqual(first.conflicts, []);
+    assert.equal(first.creates.length, seed.units.length + seed.people.length + seed.roles.length);
+    const joe = first.writes.find(
+      (row): row is OrgPerson => row.kind === "person" && row.id === "per-joe-ryan"
+    );
+    const shelly = first.writes.find(
+      (row): row is OrgPerson => row.kind === "person" && row.id === "per-shelly-incomplete"
+    );
+    assert.equal(joe?.entraId, "entra-joe");
+    assert.equal(shelly?.entraId, undefined);
+    assert.ok(first.unresolvedIdentities.some((item) => item.startsWith("Shelly:")));
+
+    const imported: OrgDirectory = {
+      units: first.writes.filter((row) => row.kind === "unit"),
+      people: first.writes.filter((row): row is OrgPerson => row.kind === "person"),
+      roles: first.writes.filter((row) => row.kind === "role"),
+    };
+    const second = planOrgImport(
+      seed,
+      imported,
+      [{ id: "entra-joe", displayName: "Joe Ryan" }],
+      "2026-09-18T00:00:00Z"
+    );
+    assert.deepEqual(second.conflicts, []);
+    assert.equal(second.writes.length, 0);
+    assert.equal(second.unchanged.length, first.creates.length);
+  });
+
+  it("fills missing fields without overwriting curated person data", () => {
+    const seed = parseOrgSeed(
+      JSON.parse(
+        readFileSync(resolve(process.cwd(), "data/org/ryalto-org-lite.json"), "utf8")
+      )
+    );
+    const curatedVal = person({
+      id: "per-valerie-moraru",
+      displayName: "Valerie Moraru",
+      aliases: ["VM"],
+      title: "Curated title",
+      mandate: "Curated mandate",
+      executionQueues: ["planner"],
+      nudgeChannel: "teams_chat",
+      workingNotes: "Keep this",
+      prefSource: "admin",
+    });
+    const plan = planOrgImport(
+      seed,
+      { units: [], people: [curatedVal], roles: [] },
+      [{ id: "entra-val", displayName: "Valerie Moraru" }],
+      "2026-09-17T00:00:00Z"
+    );
+    assert.deepEqual(plan.conflicts, []);
+    const updated = plan.writes.find(
+      (row): row is OrgPerson => row.kind === "person" && row.id === curatedVal.id
+    );
+    assert.equal(updated?.entraId, "entra-val");
+    assert.equal(updated?.unitId, "unt-admin-ryalto");
+    assert.deepEqual(updated?.aliases, ["VM"]);
+    assert.equal(updated?.title, "Curated title");
+    assert.equal(updated?.mandate, "Curated mandate");
+    assert.deepEqual(updated?.executionQueues, ["planner"]);
+    assert.equal(updated?.nudgeChannel, "teams_chat");
+    assert.equal(updated?.workingNotes, "Keep this");
+    assert.equal(updated?.prefSource, "admin");
+  });
+
+  it("fails closed on bad references, cycles, and ambiguous directory identities", () => {
+    const seed = parseOrgSeed(
+      JSON.parse(
+        readFileSync(resolve(process.cwd(), "data/org/ryalto-org-lite.json"), "utf8")
+      )
+    );
+    const broken = structuredClone(seed);
+    broken.units[0].parentId = broken.units[1].id;
+    broken.units[1].parentId = broken.units[0].id;
+    broken.roles[0].personId = "missing-person";
+    const errors = validateOrgSeed(broken);
+    assert.ok(errors.some((error) => error.includes("parent cycle")));
+    assert.ok(errors.some((error) => error.includes("unknown personId")));
+
+    const ambiguous = planOrgImport(
+      seed,
+      { units: [], people: [], roles: [] },
+      [
+        { id: "joe-1", displayName: "Joe Ryan" },
+        { id: "joe-2", displayName: "Joe Ryan" },
+      ]
+    );
+    assert.ok(ambiguous.conflicts.some((error) => error.includes("multiple exact")));
+    assert.equal(ambiguous.writes.length, 0);
   });
 });

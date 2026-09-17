@@ -333,6 +333,21 @@ gate). New features that "remember" something must pick the store: user
 knowledge, agent operating knowledge, org structure, shared execution, or
 dated memory facts?
 
+The reviewed baseline org chart is versioned at
+`data/org/ryalto-org-lite.json`; it is an operator input and is excluded from
+runtime images. Preview it against the configured Cosmos account with
+`npm run org:import -- --resolve-entra`. Review every create, update, conflict,
+and unresolved identity, then apply the same input with
+`npm run org:import -- --resolve-entra --apply`. Omit `--resolve-entra` when
+Microsoft 365 directory access is unavailable. The importer matches stable
+IDs first, then unique exact names/Entra IDs, never fuzzy-matches people, and
+aborts all writes on ambiguity. It only fills empty fields on existing
+records: admin-curated names, mandates, aliases, preferences, queues, status,
+and timestamps remain authoritative. Re-running an applied seed must report
+only unchanged records. Edit and review the source JSON for future baseline
+changes; use `/admin/org` for later operational curation. Do not add reporting
+lines or titles that the source did not state.
+
 The **execution graph** (`graph-nodes` + `graph-edges`) is shared operational
 state: projects, tasks, owners, dependencies, source meetings, and evidence.
 Graph projects/tasks are authoritative once graph writes are enabled. Org

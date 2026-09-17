@@ -1,0 +1,294 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "name": "Org chart lite",
+    "date": "2026-08-25",
+    "providedBy": "Valerie Moraru",
+    "note": "Incomplete roster; responsibilities are source statements, not reporting lines."
+  },
+  "units": [
+    {
+      "id": "unt-ryalto-holdings",
+      "name": "Ryalto Holdings LLC",
+      "purpose": "Holding organization for the operating entities and shared business functions."
+    },
+    {
+      "id": "unt-network-environments",
+      "name": "Network Environments",
+      "aliases": ["NetEnv", "NE"],
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "Network Environments operating entity."
+    },
+    {
+      "id": "unt-gra",
+      "name": "GRA",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "GRA operating entity."
+    },
+    {
+      "id": "unt-igsa",
+      "name": "IGSA",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "IGSA operating entity."
+    },
+    {
+      "id": "unt-apex",
+      "name": "Apex",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "Apex business referenced in operations leadership responsibilities."
+    },
+    {
+      "id": "unt-operations",
+      "name": "Operations",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "Enterprise operations, execution, risk, quality, safety, and workflow."
+    },
+    {
+      "id": "unt-marketing",
+      "name": "Marketing",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "Lead generation, brand management, and marketing strategy."
+    },
+    {
+      "id": "unt-operations-growth",
+      "name": "Operations Growth",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "Sales support, inquiries and orders, customer records, and market monitoring."
+    },
+    {
+      "id": "unt-revenue-sales",
+      "name": "Revenue / Sales",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "Revenue growth, market-share expansion, and strategic client engagement."
+    },
+    {
+      "id": "unt-engineering-netenv",
+      "name": "Engineering",
+      "parentId": "unt-network-environments",
+      "purpose": "Engineering strategy, requirements, design analysis, and technical risk for Network Environments."
+    },
+    {
+      "id": "unt-service-igsa",
+      "name": "Service",
+      "parentId": "unt-igsa",
+      "purpose": "IGSA logistics, SLA, warranty, parts, help desk, and field data."
+    },
+    {
+      "id": "unt-finance-legal",
+      "name": "Finance / Legal",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "Forecasting, budgets, reporting, legal, tax, accounting, and insurance."
+    },
+    {
+      "id": "unt-hr-recruiting-performance",
+      "name": "HR / Recruiting / Performance",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "Recruiting, staffing, employee development, and performance management."
+    },
+    {
+      "id": "unt-legal-risk",
+      "name": "Legal & Risk Management",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "Legal support and risk analysis."
+    },
+    {
+      "id": "unt-admin-ryalto",
+      "name": "Administrative Office",
+      "parentId": "unt-ryalto-holdings",
+      "purpose": "Administrative office for Ryalto Holdings LLC and executive support."
+    },
+    {
+      "id": "unt-admin-netenv",
+      "name": "Admin Support",
+      "parentId": "unt-network-environments",
+      "purpose": "Administrative support for Network Environments."
+    }
+  ],
+  "people": [
+    {
+      "id": "per-joe-ryan",
+      "displayName": "Joe Ryan",
+      "aliases": ["Joe"],
+      "unitId": "unt-ryalto-holdings",
+      "mandate": "Strategic partnerships and relationship management; client pricing; product development; business development; vision and strategy; culture."
+    },
+    {
+      "id": "per-teddy-kang",
+      "displayName": "Teddy Kang",
+      "aliases": ["Teddy"],
+      "unitId": "unt-operations",
+      "title": "SVP Operations",
+      "mandate": "P&L and strategy execution; remove obstacles; special projects; risk; post-PO; maintenance and service, including Apex; workflow design; hiring, assessments, and management; quality control; safety and protocol."
+    },
+    {
+      "id": "per-jason-ferrara",
+      "displayName": "Jason Ferrara",
+      "aliases": ["Jason"],
+      "unitId": "unt-marketing",
+      "mandate": "Lead generation; brand definition and management; marketing strategy."
+    },
+    {
+      "id": "per-matt-moskitis",
+      "displayName": "Matt Moskitis",
+      "aliases": ["Matt"],
+      "unitId": "unt-operations-growth",
+      "title": "Director of Operations Growth",
+      "mandate": "Sales support; team and IC collaboration; inquiries and orders; CRM and customer records; RFIs, RFPs, and contract documents; industry and competitor monitoring; website."
+    },
+    {
+      "id": "per-brian-kortendick",
+      "displayName": "Brian Kortendick",
+      "aliases": ["Brian"],
+      "unitId": "unt-revenue-sales",
+      "mandate": "Drive revenue streams and growth; expand market share; lead strategic client engagement."
+    },
+    {
+      "id": "per-audi-rattanawelu",
+      "displayName": "Audi Rattanawelu",
+      "aliases": ["Audi"],
+      "unitId": "unt-engineering-netenv",
+      "title": "Engineer",
+      "mandate": "Design and requirements analysis; execute engineering strategy for Network Environments; technical risk management."
+    },
+    {
+      "id": "per-cato-johnson",
+      "displayName": "Cato Johnson",
+      "aliases": ["Cato"],
+      "unitId": "unt-gra",
+      "title": "VP Operations",
+      "mandate": "P&L and strategy execution; remove obstacles; deliver on time and on budget; growth; penetration; retention."
+    },
+    {
+      "id": "per-saul-hernandez",
+      "displayName": "Saul Hernandez",
+      "aliases": ["Saul"],
+      "unitId": "unt-gra",
+      "title": "Chief Process Architect",
+      "mandate": "Create schedules and budgets; safety; procurement; reporting and communication to Network Environments; quality; project and technical information; means and methods; communication strategy and flow."
+    },
+    {
+      "id": "per-steven-miller",
+      "displayName": "Steven Miller",
+      "aliases": ["Steven"],
+      "unitId": "unt-service-igsa",
+      "mandate": "Logistics; SLA; warranty; parts depot; help desk; field data."
+    },
+    {
+      "id": "per-raffy-ohannesian",
+      "displayName": "Raffy Ohannesian",
+      "aliases": ["Raffy"],
+      "unitId": "unt-finance-legal",
+      "mandate": "Forecasting and budgets; reporting; legal; tax planning; accounting; insurance."
+    },
+    {
+      "id": "per-shelly-incomplete",
+      "displayName": "Shelly",
+      "aliases": [],
+      "unitId": "unt-hr-recruiting-performance",
+      "mandate": "Recruiting, staffing, and hiring; employee development; performance management.",
+      "sourceNote": "Surname was not provided in the source email; do not identity-match automatically."
+    },
+    {
+      "id": "per-caroline-banzali",
+      "displayName": "Caroline Banzali",
+      "aliases": ["Caroline"],
+      "unitId": "unt-legal-risk",
+      "mandate": "Legal support; risk and analysis."
+    },
+    {
+      "id": "per-valerie-moraru",
+      "displayName": "Valerie Moraru",
+      "aliases": ["Val", "Valerie"],
+      "unitId": "unt-admin-ryalto",
+      "mandate": "Executive and administrative support for the CEO, Ryalto Holdings LLC, and GRA."
+    },
+    {
+      "id": "per-kristoffer-anderson",
+      "displayName": "Kristoffer Anderson",
+      "aliases": ["Kristoffer"],
+      "unitId": "unt-admin-ryalto",
+      "mandate": "Bookkeeping; meeting minutes; expense reports.",
+      "sourceNote": "Additional responsibilities are maintained in Valerie Moraru's grid and were not included in the source email."
+    },
+    {
+      "id": "per-elisa-amador",
+      "displayName": "Elisa Amador",
+      "aliases": ["Elisa"],
+      "unitId": "unt-admin-ryalto",
+      "mandate": "Bookkeeping; meeting minutes; expense reports.",
+      "sourceNote": "Additional responsibilities are maintained in Valerie Moraru's grid and were not included in the source email."
+    },
+    {
+      "id": "per-sheena-barton",
+      "displayName": "Sheena Barton",
+      "aliases": ["Sheena"],
+      "unitId": "unt-admin-netenv",
+      "mandate": "Interview process; travel coordination."
+    }
+  ],
+  "roles": [
+    {
+      "id": "rol-joe-visionary",
+      "personId": "per-joe-ryan",
+      "unitId": "unt-ryalto-holdings",
+      "title": "Visionary",
+      "mandate": "Vision and strategy, culture, partnerships, product development, and business development."
+    },
+    {
+      "id": "rol-teddy-lma",
+      "personId": "per-teddy-kang",
+      "unitId": "unt-operations",
+      "title": "LMA",
+      "mandate": "Lead, manage, and maintain accountability."
+    },
+    {
+      "id": "rol-jason-lma",
+      "personId": "per-jason-ferrara",
+      "unitId": "unt-marketing",
+      "title": "LMA",
+      "mandate": "Lead, manage, and maintain accountability."
+    },
+    {
+      "id": "rol-brian-lma",
+      "personId": "per-brian-kortendick",
+      "unitId": "unt-revenue-sales",
+      "title": "LMA",
+      "mandate": "Lead, manage, and maintain accountability."
+    },
+    {
+      "id": "rol-cato-lma",
+      "personId": "per-cato-johnson",
+      "unitId": "unt-gra",
+      "title": "LMA",
+      "mandate": "Lead, manage, and maintain accountability."
+    },
+    {
+      "id": "rol-raffy-lma",
+      "personId": "per-raffy-ohannesian",
+      "unitId": "unt-finance-legal",
+      "title": "LMA",
+      "mandate": "Lead, manage, and maintain accountability."
+    },
+    {
+      "id": "rol-valerie-executive-admin",
+      "personId": "per-valerie-moraru",
+      "unitId": "unt-admin-ryalto",
+      "title": "Executive Admin to CEO",
+      "mandate": "Executive administration for the CEO."
+    },
+    {
+      "id": "rol-valerie-chief-of-staff",
+      "personId": "per-valerie-moraru",
+      "unitId": "unt-admin-ryalto",
+      "title": "Chief of Staff to CEO",
+      "mandate": "Chief of staff support for the CEO."
+    },
+    {
+      "id": "rol-valerie-admin-gra",
+      "personId": "per-valerie-moraru",
+      "unitId": "unt-gra",
+      "title": "Admin Support for GRA",
+      "mandate": "Administrative support for GRA."
+    }
+  ]
+}
