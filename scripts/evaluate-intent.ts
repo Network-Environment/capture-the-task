@@ -9,6 +9,11 @@ interface Fixture {
   expectedKinds: string[];
   expectedDisposition: "proceed" | "clarify" | "help" | "refuse";
   mustClarify: boolean;
+  acceptableOutcomes?: Array<{
+    disposition: "proceed" | "clarify" | "help" | "refuse";
+    kinds: string[];
+    clarify: boolean;
+  }>;
 }
 
 async function main(): Promise<void> {
@@ -29,14 +34,21 @@ async function main(): Promise<void> {
     });
     const kinds = plan.intents.map((intent) => intent.kind);
     const clarify = planNeedsClarification(plan);
-    const ok =
-      JSON.stringify(kinds) === JSON.stringify(fixture.expectedKinds) &&
-      plan.disposition === fixture.expectedDisposition &&
-      clarify === fixture.mustClarify;
+    const outcomes = fixture.acceptableOutcomes ?? [{
+      disposition: fixture.expectedDisposition,
+      kinds: fixture.expectedKinds,
+      clarify: fixture.mustClarify,
+    }];
+    const ok = outcomes.some(
+      (expected) =>
+        JSON.stringify(kinds) === JSON.stringify(expected.kinds) &&
+        plan.disposition === expected.disposition &&
+        clarify === expected.clarify
+    );
     if (ok) passed++;
     console.log(`${ok ? "PASS" : "FAIL"} ${fixture.name}`);
     if (!ok) {
-      console.log(`  expected disposition=${fixture.expectedDisposition} kinds=${fixture.expectedKinds.join(",")} clarify=${fixture.mustClarify}`);
+      console.log(`  expected=${JSON.stringify(outcomes)}`);
       console.log(`  actual   disposition=${plan.disposition} kinds=${kinds.join(",")} clarify=${clarify}`);
       console.log(`  plan=${JSON.stringify(plan)}`);
     }

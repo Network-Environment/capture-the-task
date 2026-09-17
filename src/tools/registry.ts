@@ -47,6 +47,7 @@ import { deterministicGraphId } from "../graph/validation";
 import type { GraphEdgeType, GraphNodeStatus } from "../graph/types";
 import { canViewMeetings, denyMeetings } from "../meetings/access";
 import { assignWorkForUser, completeWork, nudgeWork } from "../work/assign";
+import { searchMyCalendar } from "../services/graphCalendar";
 import {
   evaluateOperation,
   type AuthorizationContext,
@@ -61,8 +62,14 @@ export interface ToolContext {
   channel?: ActivityChannel;
   inputMode?: ActivityInputMode;
   trigger?: string;
+  traceId?: string;
   research?: ResearchBudget;
   authorization?: AuthorizationContext;
+  /** Delegated token for tools that read the requester's own Microsoft 365 data. */
+  getGraphToken?: () => Promise<string>;
+  /** Evaluation-only hook; production callers leave these unset. */
+  observeToolCall?: (name: string) => void;
+  dryRunTools?: boolean;
   /** Immutable tool envelope, primarily for approved scheduled jobs. */
   allowedTools?: string[];
 }
@@ -74,6 +81,7 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   list_jobs: { effect: "read", reversible: true },
   remember_lesson: { effect: "personal_write", reversible: true },
   cancel_job: { effect: "destructive", reversible: false },
+  search_my_calendar: { effect: "read", reversible: true },
   recall_meetings: { effect: "read", reversible: true },
   list_commitments: { effect: "read", reversible: true },
   complete_commitment: { effect: "shared_write", reversible: true },
@@ -96,6 +104,7 @@ const scheduledNativeReads = new Set([
   "recall_notes",
   "search_execution_graph",
   "recall_memory",
+  "search_my_calendar",
   "recall_meetings",
   "list_commitments",
   "lookup_org",
@@ -226,10 +235,37 @@ const nativeDefs: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "search_my_calendar",
+      description:
+        "Search the requesting user's own live Outlook calendar for events in a date range. " +
+        "Use this source for whether or when the requester met someone, event subjects, and attendees. " +
+        "It does not read another person's mailbox or meeting transcript content.",
+      parameters: {
+        type: "object",
+        properties: {
+          attendee: {
+            type: "string",
+            description: "Tenant colleague name, alias, or email address when the request names one",
+          },
+          keywords: {
+            type: "string",
+            description: "Optional words that must appear in the calendar event subject",
+          },
+          start: { type: "string", description: "Optional ISO date/time range start" },
+          end: { type: "string", description: "Optional ISO date/time range end" },
+          limit: { type: "number", description: "Number of newest matching events, 1-10" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "recall_meetings",
       description:
-        "Search org meeting summaries (last 90 days) for what was decided, discussed, or assigned. " +
-        "Use for questions about meetings, decisions, and who said they would do what.",
+        "Search stored Teams/Plaud transcript summaries (last 90 days) for meeting content: " +
+        "what was discussed, decided, or assigned. This is not a complete calendar and should not " +
+        "be the only source for whether or when a meeting occurred.",
       parameters: {
         type: "object",
         properties: {
@@ -593,6 +629,7 @@ export async function dispatch(
         channel: ctx.channel,
         inputMode: ctx.inputMode,
         trigger: ctx.trigger ?? "operation_policy",
+        traceId: ctx.traceId,
         detail: {
           tool: name,
           effect: operation.effect,
@@ -708,6 +745,22 @@ export async function dispatch(
           Number(args.k ?? 6),
           ctx
         );
+      case "search_my_calendar": {
+        if (!ctx.getGraphToken) {
+          return "The requester's live Outlook calendar is unavailable on this channel.";
+        }
+        try {
+          return await searchMyCalendar(await ctx.getGraphToken(), {
+            attendee: args.attendee ? String(args.attendee) : undefined,
+            keywords: args.keywords ? String(args.keywords) : undefined,
+            start: args.start ? String(args.start) : undefined,
+            end: args.end ? String(args.end) : undefined,
+            limit: args.limit == null ? undefined : Number(args.limit),
+          });
+        } catch (err) {
+          return `Outlook calendar lookup failed: ${(err as Error).message}`;
+        }
+      }
       case "list_commitments":
         return await listFollowThrough(ctx.userId, args.owner ? String(args.owner) : undefined);
       case "complete_commitment":

@@ -9,6 +9,7 @@
  * Order of operations is fixed and every path ends in either a saved artifact
  * or an explicit message to the user (invariant #9).
  */
+import { randomUUID } from "node:crypto";
 import { transcribeBuffer } from "./services/transcription";
 import {
   triage,
@@ -32,7 +33,7 @@ import {
 } from "./services/session";
 import { logActivity } from "./services/activityLog";
 import { handleApprovalCommand } from "./services/approvals";
-import { agentProfileFor, isPmoRequest, maybeProposeSheetUpdate } from "./services/smartsheet";
+import { maybeProposeSheetUpdate } from "./services/smartsheet";
 import { Channel } from "./channels/types";
 import { graphEnabled, searchExecutionGraph } from "./graph/store";
 import { canViewMeetings } from "./meetings/access";
@@ -44,7 +45,7 @@ import {
   type IntentPlan,
 } from "./services/intent";
 import { channelPolicy } from "./channels/types";
-import { executeApprovedAction } from "./tools/registry";
+import { executeApprovedAction, scheduledReadToolEnvelope } from "./tools/registry";
 import { claimInboundEvent, finishInboundEvent } from "./services/inboundReceipts";
 import { assessInboundQuality } from "./services/inboundQuality";
 
@@ -66,8 +67,12 @@ export interface CaptureInput {
    * fall back to the brain.
    */
   createTask?: (title: string, detail?: string, due?: string) => Promise<void>;
+  /** Delegated requester token for read-only Microsoft Graph tools. */
+  getGraphToken?: () => Promise<string>;
   /** Opaque per-channel reference stored on scheduled jobs for delivery. */
   conversationRef?: unknown;
+  /** Correlates interpretation, model, policy, and tool events for one request. */
+  traceId?: string;
 }
 
 export interface Outbound {
@@ -100,6 +105,7 @@ export async function processCapture(input: CaptureInput): Promise<Outbound> {
 
 async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   const { userId, channel } = input;
+  input.traceId ??= randomUUID();
 
   // 1. Resolve input text (voice → transcript) before interpreting approvals.
   let text = (input.text ?? "").trim();
@@ -169,6 +175,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     origin: "user_message" as const,
     channel,
     inputMode: source,
+    traceId: input.traceId,
   };
   // 2. Short follow-up window only (never the full thread).
   const recent = await getRecentTurns(userId, input.conversationId);
@@ -279,8 +286,11 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
       ...attribution,
       trigger: shadow ? "intent_shadow" : "intent_interpretation",
       detail: {
+        disposition: plan.disposition,
+        reason: plan.reason,
         confidenceBand: plan.confidence >= 0.9 ? "high" : plan.confidence >= 0.72 ? "medium" : "low",
         kinds: plan.intents.map((i) => i.kind),
+        explicit: plan.intents.map((i) => i.explicit),
         ambiguous: planNeedsClarification(plan),
         assumptions: plan.assumptions.length,
       },
@@ -372,11 +382,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   }
 
   // 3. Triage on the cheap tier.
-  const result = await triage(text, recent, attribution);
-  const kind =
-    (result.kind === "question" || result.kind === "conversation") && isPmoRequest(text)
-      ? ({ kind: "action" } as TriageResult)
-      : result;
+  const kind = await triage(text, recent, attribution);
   if (shadow && plan) {
     void logActivity({
       type: "intent",
@@ -468,23 +474,23 @@ async function executeIntent(
     return execute(input, intent.standalone, source, { kind: "conversation" }, recent);
   }
   if (intent.kind === "read") {
-    if (isPmoRequest(intent.standalone)) {
-      const result = await runAgent(
-        {
-          userId: input.userId,
-          conversationRef: input.conversationRef,
-          origin: "user_message",
-          channel: input.channel,
-          inputMode: source,
-          authorization: auth,
-        },
-        intent.standalone,
-        "pmo",
-        recent
-      );
-      return { title: "TaskBrain", body: result, tags: [], summaryLine: result.slice(0, 500) };
-    }
-    return execute(input, intent.standalone, source, { kind: "question" }, recent);
+    const result = await runAgent(
+      {
+        userId: input.userId,
+        conversationRef: input.conversationRef,
+        origin: "user_message",
+        channel: input.channel,
+        inputMode: source,
+        authorization: auth,
+        allowedTools: await scheduledReadToolEnvelope(),
+        getGraphToken: input.getGraphToken,
+        traceId: input.traceId,
+      },
+      intent.standalone,
+      undefined,
+      recent
+    );
+    return { title: "TaskBrain", body: result, tags: [], summaryLine: result.slice(0, 500) };
   }
   if (intent.kind === "capture") {
     const decision = evaluateOperation(
@@ -550,9 +556,11 @@ async function executeIntent(
         channel: input.channel,
         inputMode: source,
         authorization: auth,
+        getGraphToken: input.getGraphToken,
+        traceId: input.traceId,
       },
       intent.standalone,
-      agentProfileFor("action", intent.standalone),
+      undefined,
       recent
     );
     return { title: "TaskBrain", body: result, tags: [], summaryLine: result.slice(0, 500) };
@@ -715,9 +723,11 @@ async function execute(
             confidence: 1,
             channel: effectivePolicy,
           },
+          getGraphToken: input.getGraphToken,
+          traceId: input.traceId,
         },
         text,
-        agentProfileFor("action", text),
+        undefined,
         recent
       );
       return { title: "Done", body: result, tags: [], summaryLine: result.slice(0, 200) };

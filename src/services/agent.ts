@@ -15,7 +15,13 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
 import { route, routeWithEscalation, TaskClass } from "./router";
-import { allToolDefinitions, dispatch, ToolContext } from "../tools/registry";
+import {
+  allToolDefinitions,
+  dispatch,
+  nativeToolCatalog,
+  operationMetadata,
+  ToolContext,
+} from "../tools/registry";
 import { lessonsPromptBlock } from "./agentMemory";
 import { logActivity, type ActivityAttribution } from "./activityLog";
 import { RecallHit } from "./brain";
@@ -111,6 +117,12 @@ Rules:
 - capture is a personal task, idea, or reference the user clearly wants retained.
 - read is a request to retrieve or inspect information without changing it.
 - act is a request to change, schedule, cancel, complete, publish, assign work, or operate on a system.
+- For a read, facts that enabled tools can discover (source, date, record id, current
+  value, or which matching item is newest) are not missing user context. Proceed and
+  let the downstream agent choose tools; do not ask the user which system to search.
+- For an act, an exact system id or current value that tools can safely discover first
+  is not missing authorization. Proceed when the desired outcome and human target are
+  clear; the downstream agent will read before proposing or executing the mutation.
 - A named owner being obligated (including when the speaker is not the owner) is act, not a personal capture.
 - How a named colleague works belongs on the org directory, not a personal lesson.
 - respond is conversation, advice, explanation, greetings, or acknowledgement.
@@ -148,12 +160,18 @@ export async function interpretIntent(
   recent: SessionTurn[],
   attribution: Partial<ActivityAttribution> = {}
 ): Promise<IntentPlan> {
+  const readCapabilities = nativeToolCatalog()
+    .filter((tool) => operationMetadata(tool.name).effect === "read")
+    .map((tool) => `- ${tool.name}: ${tool.description}`)
+    .join("\n");
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
       content:
         INTENT_SYSTEM.replace("{{TODAY}}", new Date().toISOString().slice(0, 10)) +
-        INTENT_EXAMPLES,
+        INTENT_EXAMPLES +
+        "\nEnabled read capabilities (the downstream agent chooses among these; you only classify intent):\n" +
+        readCapabilities,
     },
   ];
   if (recent.length) {
@@ -173,7 +191,14 @@ export async function interpretIntent(
       if (!content) return true;
       try {
         const plan = validateIntentPlan(JSON.parse(content));
-        return !plan || planNeedsClarification(plan) && !plan.clarification;
+        // Refusal is a high-consequence classification: confirm it on the
+        // stronger tier so quoted analysis and incident capture are not
+        // mistaken for attempts to perform the prohibited operation.
+        return (
+          !plan ||
+          plan.disposition === "refuse" ||
+          (planNeedsClarification(plan) && !plan.clarification)
+        );
       } catch {
         return true;
       }
@@ -330,6 +355,7 @@ export async function runAgent(
   recent: SessionTurn[] = []
 ): Promise<string> {
   const { name, profile } = getProfile(profileName);
+  const startedAt = Date.now();
   let tools = filterTools(await allToolDefinitions(), profile.tools);
   if (ctx.allowedTools) {
     const envelope = new Set(ctx.allowedTools);
@@ -340,6 +366,21 @@ export async function runAgent(
     ? catalogPromptBlock()
     : "";
   const orgBlock = await orgPromptBlock(ctx.userId);
+  void logActivity({
+    type: "agent_turn",
+    userId: ctx.userId,
+    agent: name,
+    origin: ctx.origin,
+    channel: ctx.channel,
+    inputMode: ctx.inputMode,
+    trigger: ctx.trigger ?? `agent:${name}`,
+    traceId: ctx.traceId,
+    detail: {
+      phase: "start",
+      toolsOfferedCount: tools.length,
+      toolsOffered: tools.map((tool) => tool.function.name),
+    },
+  });
 
   const messages: ChatCompletionMessageParam[] = [
     { role: "system", content: profile.persona + lessons + catalog + orgBlock },
@@ -355,20 +396,38 @@ export async function runAgent(
         channel: ctx.channel,
         inputMode: ctx.inputMode,
         trigger: ctx.trigger ?? `agent:${name}`,
+        traceId: ctx.traceId,
       },
     });
     const msg = res.choices[0]?.message;
     if (!msg) return "The agent produced no response.";
 
     const calls = msg.tool_calls ?? [];
-    if (!calls.length) return msg.content ?? "Done.";
+    if (!calls.length) {
+      void logActivity({
+        type: "agent_turn",
+        userId: ctx.userId,
+        agent: name,
+        origin: ctx.origin,
+        channel: ctx.channel,
+        inputMode: ctx.inputMode,
+        trigger: ctx.trigger ?? `agent:${name}`,
+        traceId: ctx.traceId,
+        detail: { phase: "complete", rounds: round + 1, durationMs: Date.now() - startedAt },
+      });
+      return msg.content ?? "Done.";
+    }
 
     messages.push(msg as ChatCompletionMessageParam);
     for (const call of calls) {
       if (call.type !== "function") continue;
       let args: Record<string, unknown> = {};
       try { args = JSON.parse(call.function.arguments || "{}"); } catch { /* empty */ }
-      const result = await dispatch(ctx, call.function.name, args);
+      const toolStartedAt = Date.now();
+      ctx.observeToolCall?.(call.function.name);
+      const result = ctx.dryRunTools
+        ? "Evaluation stub: the selected tool is available. Return a concise answer now."
+        : await dispatch(ctx, call.function.name, args);
       const research =
         call.function.name === "web_search" || call.function.name.startsWith("browser__");
       void logActivity({
@@ -379,7 +438,17 @@ export async function runAgent(
         channel: ctx.channel,
         inputMode: ctx.inputMode,
         trigger: research ? "web_research" : (ctx.trigger ?? `agent:${name}`),
-        detail: { tool: call.function.name, ok: !result.startsWith(`Tool ${call.function.name} failed`) },
+        traceId: ctx.traceId,
+        detail: {
+          tool: call.function.name,
+          effect: operationMetadata(call.function.name).effect,
+          round: round + 1,
+          durationMs: Date.now() - toolStartedAt,
+          ok:
+            !result.startsWith(`Tool ${call.function.name} failed`) &&
+            !result.startsWith("NOT_ALLOWED:") &&
+            !result.includes("lookup failed:"),
+        },
       });
       messages.push({ role: "tool", tool_call_id: call.id, content: result.slice(0, 12_000) });
     }

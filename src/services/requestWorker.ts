@@ -4,7 +4,7 @@ import {
   type TurnContext,
 } from "botbuilder";
 import { processCapture, type Outbound } from "../pipeline";
-import { createTodoTask } from "./graphTasks";
+import { createTodoTask, getGraphUserToken } from "./graphTasks";
 import { logActivity } from "./activityLog";
 import {
   claimNextAgentRequest,
@@ -162,6 +162,7 @@ async function processTeamsRequest(
         conversationRef: teamsRef,
         createTask: (title, detail, due) =>
           createTodoTask(ctx, title, detail, due),
+        getGraphToken: () => getGraphUserToken(ctx),
       });
     }
   );

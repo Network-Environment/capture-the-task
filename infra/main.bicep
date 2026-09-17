@@ -1091,7 +1091,8 @@ resource teamsChannel 'Microsoft.BotService/botServices/channels@2023-09-15-prev
   }
 }
 
-// Graph OAuth for Microsoft To Do. serviceProviderId is the portal's
+// Delegated Graph OAuth for Microsoft To Do and the requester's own calendar.
+// serviceProviderId is the portal's
 // "Azure Active Directory v2" provider — not documented in the ARM schema.
 resource graphConnection 'Microsoft.BotService/botServices/connections@2023-09-15-preview' = {
   parent: bot
@@ -1102,7 +1103,7 @@ resource graphConnection 'Microsoft.BotService/botServices/connections@2023-09-1
     serviceProviderId: '30dd229c-58e3-4a48-bdfd-91ec48eb906c'
     clientId: botAppId
     clientSecret: botAppPassword
-    scopes: 'Tasks.ReadWrite'
+    scopes: 'Tasks.ReadWrite Calendars.ReadBasic'
     parameters: [
       { key: 'tenantId', value: tenant().tenantId }
       { key: 'tokenExchangeUrl', value: ' ' }

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "latest meeting direct",
+    "input": "When was the last time I met with Joe?",
+    "requiredAnyTools": ["search_my_calendar"],
+    "forbiddenTools": ["web_search", "recall_notes"]
+  },
+  {
+    "name": "latest meeting paraphrase",
+    "input": "How long has it been since Val and I had a meeting?",
+    "requiredAnyTools": ["search_my_calendar"],
+    "forbiddenTools": ["web_search"]
+  },
+  {
+    "name": "meeting decisions use transcript knowledge",
+    "input": "What did Morgan and I decide in our most recent meeting?",
+    "requiredAnyTools": ["recall_meetings"],
+    "forbiddenTools": ["web_search"]
+  },
+  {
+    "name": "personal memory stays private",
+    "input": "What did I previously write down about the generator warranty?",
+    "requiredAnyTools": ["recall_notes", "recall_memory"],
+    "forbiddenTools": ["web_search", "search_my_calendar"]
+  },
+  {
+    "name": "org reporting lookup",
+    "input": "Who does Morgan report to?",
+    "requiredAnyTools": ["lookup_org"],
+    "forbiddenTools": ["web_search", "search_my_calendar"]
+  }
+]

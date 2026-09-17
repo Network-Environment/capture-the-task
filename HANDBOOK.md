@@ -414,7 +414,10 @@ genuinely separate requests, records explicitness and confidence, and assigns
 `proceed`, `clarify`, `help`, or `refuse` before execution. Invalid output fails
 closed to clarification. Clear reversible personal captures proceed; shared,
 destructive, scheduled, costly, or broad operations are parked with a preview
-for approval. Production enforcement is on:
+for approval. Read requests go to the tool-capable agent with a read-only
+envelope; the model chooses among live calendar, meeting summaries, memory,
+execution graph, org, and PMO tools from their capability descriptions rather
+than from phrase-specific routing. Production enforcement is on:
 `INTENT_SHADOW_MODE=false`, `CLARIFICATION_ENFORCEMENT_ENABLED=true`, and
 `UNIFIED_ACTION_POLICY_ENABLED=true`. `LEGACY_TRIAGE_WRITES_ENABLED` stays
 false so a shadow-mode rollback cannot persist ideas. Set `INBOUND_QUALITY_GATE_ENABLED=false`
@@ -480,6 +483,7 @@ patched by bootstrap.sh) supplies the same names.
 | `PLAUD_INGEST_ENABLED` | poll mapped Plaud accounts for meeting metadata | GitHub repository variable, default `false` |
 | `PLAUD_KEY_VAULT_URL` / `PLAUD_TOKEN_SECRET_NAME` | OAuth token map read and rotated by the Function | Bicep Key Vault; secret populated by `plaud:import-token` |
 | `GRAPH_CONNECTION_NAME` | Bot Service OAuth connection name | Bicep constant `graph-connection` |
+| `CALENDAR_LOOKBACK_DAYS` | bounded range for requester-only `/me/calendarView` searches | optional; code default 730 |
 | `SMARTSHEET_API_TOKEN` | bearer for mcp.smartsheet.com | GitHub **repo** secret (already set); Bicep copies it to App Service. Do not re-run bootstrap. |
 | `WEB_SEARCH_API_KEY` / `WEB_SEARCH_ENGINE` | native `web_search` (Tavily default; Brave or Bing) | GitHub secret (optional) + Bicep `webSearchEngine` default `tavily` |
 | `BROWSER_MCP_URL` / `BROWSER_MCP_TOKEN` | Streamable HTTP to the browser Container App | Bicep (FQDN + generated or supplied token) |
@@ -505,7 +509,7 @@ repo, org permission to upload Teams apps.
 
 1. **Bootstrap (one-time, out of band):**
    `./scripts/bootstrap.sh <org>/<repo> rg-taskbrain eastus`
-   Creates the bot app registration (+2-year secret, Graph Tasks.ReadWrite,
+   Creates the bot app registration (+2-year secret, delegated Graph Tasks.ReadWrite and Calendars.ReadBasic,
    admin consent, OAuth redirect), the CI app with GitHub OIDC federation and
    Contributor + RBAC Administrator on the RG, required resource providers,
    the resource group, and the TaskBrain Admin Entra app (assignment-required
@@ -759,7 +763,7 @@ logging already support it. Do not pay this tax early.
   Speech key/region.
 - **To Do errors → "saved to brain instead":** OAuth connection name must
   equal `GRAPH_CONNECTION_NAME`; test the connection in the bot resource
-  blade; confirm admin consent for Tasks.ReadWrite.
+  blade; confirm consent for Tasks.ReadWrite and Calendars.ReadBasic.
 - **No MCP tools:** check `SMARTSHEET_API_TOKEN`; console logs
   `[mcp] failed to connect` per server; the bot degrades gracefully, so
   capture still works. Browser MCP needs `BROWSER_MCP_URL` (Container App up)

@@ -8,7 +8,7 @@ import {
   validateIntentPlan,
   type OperationMetadata,
 } from "../src/services/intent";
-import { dispatch, operationMetadata } from "../src/tools/registry";
+import { dispatch, nativeToolCatalog, operationMetadata } from "../src/tools/registry";
 
 describe("intent validation", () => {
   it("accepts ordered multi-intent plans", () => {
@@ -166,12 +166,19 @@ describe("risk policy", () => {
     assert.equal(operationMetadata("save_note").effect, "personal_write");
     assert.equal(operationMetadata("schedule_job").effect, "scheduled");
     assert.equal(operationMetadata("cancel_job").effect, "destructive");
+    assert.equal(operationMetadata("search_my_calendar").effect, "read");
     assert.equal(operationMetadata("complete_commitment").effect, "shared_write");
     assert.equal(operationMetadata("assign_work").effect, "personal_write");
     assert.equal(operationMetadata("remember_org_preference").effect, "shared_write");
     assert.equal(operationMetadata("create_graph_task").effect, "shared_write");
     assert.equal(operationMetadata("smartsheet__get_sheet_summary").effect, "read");
     assert.equal(operationMetadata("future__mutate_everything").effect, "shared_write");
+  });
+
+  it("describes live calendar and transcript summaries as distinct sources", () => {
+    const catalog = new Map(nativeToolCatalog().map((tool) => [tool.name, tool.description]));
+    assert.match(catalog.get("search_my_calendar") ?? "", /requesting user's own live Outlook calendar/i);
+    assert.match(catalog.get("recall_meetings") ?? "", /transcript summaries/i);
   });
 
   it("enforces scheduled tool envelopes at dispatch", async () => {

@@ -14,6 +14,7 @@
     "test": "tsx --test --test-force-exit test/*.test.ts",
     "graph:backfill": "tsx scripts/backfill-graph.ts",
     "intent:evaluate": "tsx scripts/evaluate-intent.ts",
+    "agent:evaluate": "tsx scripts/evaluate-agent.ts",
     "plaud:import-token": "tsx scripts/import-plaud-token.ts"
   },
   "dependencies": {

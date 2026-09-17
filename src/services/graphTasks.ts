@@ -12,12 +12,7 @@ import { UserTokenClient } from "botframework-connector";
 
 const CONNECTION = process.env.GRAPH_CONNECTION_NAME ?? "graph-connection";
 
-export async function createTodoTask(
-  context: TurnContext,
-  title: string,
-  detail?: string,
-  dueIso?: string
-): Promise<void> {
+export async function getGraphUserToken(context: TurnContext): Promise<string> {
   const tokenClient = context.turnState.get<UserTokenClient>(
     (context.adapter as any).UserTokenClientKey
   );
@@ -30,11 +25,21 @@ export async function createTodoTask(
     ""
   );
   if (!tokenResponse?.token) throw new Error("user not signed in to Graph");
+  return tokenResponse.token;
+}
+
+export async function createTodoTask(
+  context: TurnContext,
+  title: string,
+  detail?: string,
+  dueIso?: string
+): Promise<void> {
+  const token = await getGraphUserToken(context);
 
   // Default task list
   const listsRes = await fetch(
     "https://graph.microsoft.com/v1.0/me/todo/lists?$top=1&$filter=wellknownListName eq 'defaultList'",
-    { headers: { Authorization: `Bearer ${tokenResponse.token}` } }
+    { headers: { Authorization: `Bearer ${token}` } }
   );
   if (!listsRes.ok) throw new Error(`graph lists: ${listsRes.status}`);
   const lists = (await listsRes.json()) as { value: { id: string }[] };
@@ -59,7 +64,7 @@ export async function createTodoTask(
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${tokenResponse.token}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),

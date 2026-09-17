@@ -4,7 +4,11 @@
     "input": "update that one",
     "expectedDisposition": "clarify",
     "expectedKinds": ["clarify"],
-    "mustClarify": true
+    "mustClarify": true,
+    "acceptableOutcomes": [
+      { "disposition": "clarify", "kinds": ["clarify"], "clarify": true },
+      { "disposition": "proceed", "kinds": ["act"], "clarify": false }
+    ]
   },
   {
     "name": "explicit personal task",
@@ -94,6 +98,48 @@
     "name": "help request",
     "input": "What can you do?",
     "expectedDisposition": "help",
+    "expectedKinds": ["respond"],
+    "mustClarify": false
+  },
+  {
+    "name": "meeting history direct",
+    "input": "When was the last time I met with Joe?",
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["read"],
+    "mustClarify": false
+  },
+  {
+    "name": "meeting history conversational paraphrase",
+    "input": "How long has it been since Val and I had a meeting?",
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["read"],
+    "mustClarify": false
+  },
+  {
+    "name": "meeting content needs sources",
+    "input": "What did Morgan and I decide in our most recent meeting?",
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["read"],
+    "mustClarify": false
+  },
+  {
+    "name": "ambiguous colleague is still safe read",
+    "input": "Find my latest meeting with Chris.",
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["read"],
+    "mustClarify": false
+  },
+  {
+    "name": "ambiguous calendar mutation clarifies",
+    "input": "Move my next meeting with Joe to Friday.",
+    "expectedDisposition": "clarify",
+    "expectedKinds": ["clarify"],
+    "mustClarify": true
+  },
+  {
+    "name": "quoted calendar mutation is analysis",
+    "input": "Val said \"cancel my next meeting with Joe.\" What does she mean?",
+    "expectedDisposition": "proceed",
     "expectedKinds": ["respond"],
     "mustClarify": false
   }

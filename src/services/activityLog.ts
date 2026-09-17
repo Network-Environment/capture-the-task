@@ -19,6 +19,7 @@ export type ActivityType =
   | "clarification"
   | "deduplication"
   | "triage"
+  | "agent_turn"
   | "tool_call"
   | "model_call"
   | "embedding"
@@ -44,6 +45,7 @@ export interface ActivityAttribution {
   channel: ActivityChannel;
   inputMode?: ActivityInputMode;
   trigger?: string;
+  traceId?: string;
 }
 
 export interface ActivityEvent {
@@ -54,6 +56,7 @@ export interface ActivityEvent {
   channel?: ActivityChannel;
   inputMode?: ActivityInputMode;
   trigger?: string;
+  traceId?: string;
   detail: Record<string, unknown>;
 }
 
@@ -84,7 +87,8 @@ export function normalizeAttribution(
   const inputMode =
     rawMode === "text" || rawMode === "voice" ? rawMode : undefined;
   const trigger = e.trigger ?? (d.trigger ? String(d.trigger) : undefined);
-  return { origin, channel, inputMode, trigger };
+  const traceId = e.traceId ?? (d.traceId ? String(d.traceId) : undefined);
+  return { origin, channel, inputMode, trigger, ...(traceId ? { traceId } : {}) };
 }
 
 export async function logActivity(e: ActivityEvent): Promise<void> {
@@ -103,6 +107,7 @@ export async function logActivity(e: ActivityEvent): Promise<void> {
         channel: attribution.channel,
         ...(attribution.inputMode ? { inputMode: attribution.inputMode } : {}),
         ...(attribution.trigger ? { trigger: attribution.trigger } : {}),
+        ...(attribution.traceId ? { traceId: attribution.traceId } : {}),
       },
     });
   } catch (err) {
