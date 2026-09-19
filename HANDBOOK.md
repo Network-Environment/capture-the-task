@@ -328,9 +328,15 @@ the agent's operational knowledge (preferences, aliases, tool quirks,
 self-observations) — injected into every agent prompt, hard-capped and
 consolidated so it cannot become context rot. The **org directory** (`org`)
 is the company structure: teams, people, reporting, and mandates (what
-someone *should* be doing). Admins maintain it on `/admin/org`. Meeting
-commitments remain what people *are* doing. A compact snapshot is injected
-only for meeting viewers; everyone else uses `lookup_org` (same viewer
+someone *should* be doing), plus an operator-set **capacity** flag
+(`available` / `stretched` / `overloaded` / `unavailable`). Admins maintain
+it on `/admin/org`; meeting viewers can also store stated mandates, hats, and
+capacity with `remember_org_responsibility` (admin-curated fields win).
+`list_workload` is the TaskBrain plate (open work, meeting commitments, open
+graph tasks/projects, non-done PMO items) — not Microsoft To Do, Planner, or
+calendar. Call `assess_assignment` before `assign_work`; if fit or capacity is
+poor, tell the speaker and assign only if they insist. A compact snapshot is
+injected only for meeting viewers; everyone else uses `lookup_org` (same viewer
 gate). New features that "remember" something must pick the store: user
 knowledge, agent operating knowledge, org structure, shared execution,
 ephemeral PMO boards, or dated memory facts?
@@ -360,7 +366,7 @@ aborts all writes on seed/reference conflicts. Duplicate Microsoft 365 display
 names (for example two Elisa Amador accounts) and incomplete identities
 (Shelly) are skipped as unresolved and do not block unique fills. It only fills
 empty fields on existing records: admin-curated names, mandates, aliases,
-preferences, queues, status, and timestamps remain authoritative. Re-running
+preferences, queues, capacity, status, and timestamps remain authoritative. Re-running
 an applied seed must report only unchanged records. Edit and review the source
 JSON for future baseline changes; use `/admin/org` for later operational
 curation. Do not add reporting lines or titles that the source did not state.
@@ -485,7 +491,12 @@ Three config files change behavior without code:
   warm replica so Chromium never cold-starts inside an agent turn.
 - **`config/agents.json`** — profiles. Per profile: `persona` (system
   prompt), `tools` (`"*"`, exact names, or `server__*` globs), `route` (task
-  class). `default` names the fallback profile.
+  class), and `skills` (runtime workflow names). `default` names the fallback
+  profile.
+- **`config/skills.json`** — repeatable TaskBrain workflows injected into
+  profiles. A skill defines when it applies, required tools, and ordered
+  instructions. Skills orchestrate tools; they are not callable tools
+  themselves. Do not hide shared behavior in personal lessons.
 - **`config/channels.json`** — iMessage `enabled`, `allowActions`, and the
   `identities` phone→userId map (which is also the allowlist).
 - **`config/smartsheet.json`** — PMO catalog: alias → optional `sheetId` /
@@ -682,6 +693,10 @@ safety and context-budget boundary, not a paging target.
 **Add/adjust an agent profile:** edit `config/agents.json`. Persona = system
 prompt; keep tool allowlists minimal; pick the route by cost (agent for tool
 work, digest only for scheduled synthesis). No code changes.
+
+**Add/adjust a TaskBrain skill:** edit `config/skills.json`, then attach its
+name to profile `skills` in `config/agents.json`. The Admin Capabilities page
+shows runtime skills separately from agent profiles and callable tools.
 
 **Retier models:** change the `*_DEPLOYMENT` app settings (no deploy), or
 edit `config/model.routes.json` to add task classes / change limits (deploy).

@@ -39,6 +39,7 @@ import {
   type McpServerHealth,
 } from "../tools/mcpClient";
 import { catalogSheets } from "../services/smartsheet";
+import { agentSkillCatalog } from "../services/agentSkills";
 import { requiresApproval } from "../services/approvals";
 import { imessageEnabled } from "../channels/types";
 import {
@@ -50,7 +51,7 @@ import {
 } from "../org/store";
 import { parseAliases } from "../org/resolve";
 import type { OrgDirectory } from "../org/types";
-import { EXECUTION_QUEUES, NUDGE_CHANNELS, isNudgeChannel, parseExecutionQueues } from "../org/prefs";
+import { EXECUTION_QUEUES, NUDGE_CHANNELS, CAPACITY_STATUSES, isNudgeChannel, isCapacityStatus, parseExecutionQueues } from "../org/prefs";
 import { archivePmoBoard } from "../pmo/boards";
 import { listPmoBoards, listPmoItems, getPmoBoard } from "../pmo/store";
 import { ttlRemainingLabel } from "../pmo/schema";
@@ -90,7 +91,13 @@ import {
 
 const agentsConfig = loadConfig<{
   default: string;
-  profiles: Record<string, { description?: string; route?: string; tools?: string | string[]; persona?: string }>;
+  profiles: Record<string, {
+    description?: string;
+    route?: string;
+    tools?: string | string[];
+    skills?: string[];
+    persona?: string;
+  }>;
 }>("agents");
 const channelsConfig = loadConfig<{
   imessage: { enabled: boolean; allowActions: boolean; identities?: Record<string, string> };
@@ -412,18 +419,32 @@ export function renderCapabilities(
 
   let inner: string;
   if (tab === "skills") {
-    const cards = Object.entries(agentsConfig.profiles)
+    const skillCards = agentSkillCatalog()
+      .map(({ name, skill }) => {
+        const profiles = Object.entries(agentsConfig.profiles)
+          .filter(([, profile]) => profile.skills?.includes(name))
+          .map(([profileName]) => profileName);
+        return `<article class="card">
+          <h3>${esc(name)}</h3>
+          <p>${esc(skill.description)}</p>
+          <p class="muted"><strong>When:</strong> ${esc(skill.when.join("; "))}</p>
+          <div class="meta">${profiles.map((profile) => pill(`agent ${profile}`, "accent")).join(" ")} ${skill.tools.map((tool) => pill(tool, "idle")).join(" ")}</div>
+        </article>`;
+      })
+      .join("");
+    const profileCards = Object.entries(agentsConfig.profiles)
       .map(([name, p]) => {
         const allow = p.tools === "*" ? ["*"] : Array.isArray(p.tools) ? p.tools : [];
         return `<article class="card">
           <h3>${esc(name)}${agentsConfig.default === name ? ` ${pill("default", "accent")}` : ""}</h3>
           <p>${esc(p.description ?? "")}</p>
-          <div class="meta">${pill(`route ${p.route ?? "—"}`, "info")} ${allow.map((t) => pill(t, "idle")).join(" ")}</div>
+          <div class="meta">${pill(`route ${p.route ?? "—"}`, "info")} ${(p.skills ?? []).map((skill) => pill(`skill ${skill}`, "accent")).join(" ")} ${allow.map((t) => pill(t, "idle")).join(" ")}</div>
         </article>`;
       })
       .join("");
-    inner = `<p class="lede">Capture, recall, PMO/Smartsheet, meeting follow-through, Microsoft To Do, and scheduled jobs. Personas below are the agent skills; the Tools tab is the callable surface.</p>
-      <div class="cards">${cards}</div>`;
+    inner = `<p class="lede">Skills are repeatable workflows and instructions that orchestrate tools. Tools are the callable actions; agent profiles choose which skills and tools are active.</p>
+      <section class="panel"><h2>Runtime skills</h2><div class="cards">${skillCards}</div></section>
+      <section class="panel"><h2>Agent profiles</h2><div class="cards">${profileCards}</div></section>`;
   } else {
     const native = nativeToolCatalog()
       .map((t) => {
@@ -910,6 +931,9 @@ export function renderOrg(
           `<td class="muted">${esc(p.unitId ? unitName(p.unitId) : "—")}</td>` +
           `<td class="muted">${esc(p.managerPersonId ? personName(p.managerPersonId) : "—")}</td>` +
           `<td class="muted clip">${esc(p.mandate || "—")}</td>` +
+          `<td class="muted clip">${esc(p.capacityStatus ?? "—")}${
+            p.capacityNote ? ` — ${esc(p.capacityNote)}` : ""
+          }</td>` +
           `<td class="muted clip">${esc(hats || "—")}</td>` +
           `<td class="muted clip">${esc((p.executionQueues?.length ? p.executionQueues : ["teams"]).join(", "))}${
             p.prefSource === "inferred" ? " <span class=\"muted\">(inferred)</span>" : ""
@@ -924,6 +948,8 @@ export function renderOrg(
           `<input type="hidden" name="managerPersonId" value="${esc(p.managerPersonId ?? "")}">` +
           `<input type="hidden" name="unitId" value="${esc(p.unitId ?? "")}">` +
           `<input type="hidden" name="mandate" value="${esc(p.mandate)}">` +
+          `<input type="hidden" name="capacityStatus" value="${esc(p.capacityStatus ?? "")}">` +
+          `<input type="hidden" name="capacityNote" value="${esc(p.capacityNote ?? "")}">` +
           `<input type="hidden" name="workingNotes" value="${esc(p.workingNotes ?? "")}">` +
           `<button class="ghost" type="submit" name="_action" value="archive">Archive</button></form></td>` : "<td></td>") +
           `</tr>`
@@ -945,6 +971,13 @@ export function renderOrg(
           <label>Home team ${selectHtml("unitId", unitOpts)}</label>
           <label>Manager ${selectHtml("managerPersonId", personOpts)}</label>
           <label class="span2">Mandate (what they should be doing) <textarea name="mandate" maxlength="400"></textarea></label>
+          <label>Capacity ${selectHtml(
+            "capacityStatus",
+            CAPACITY_STATUSES.map((id) => ({ id, label: id })),
+            undefined,
+            "unset"
+          )}</label>
+          <label>Capacity note <input name="capacityNote" maxlength="120" placeholder="Q4 close, PTO next week"></label>
           <label class="span2">Execution queues ${queueChecks(["teams"])}</label>
           <label>Nudge channel ${selectHtml(
             "nudgeChannel",
@@ -958,7 +991,7 @@ export function renderOrg(
       </section>` : ""}
       <section class="panel">
         <h2>People</h2>
-        ${table(["Name", "Title", "Team", "Manager", "Mandate", "Roles", "Queues", "Status", ""], rows, "No people in the directory yet.")}
+        ${table(["Name", "Title", "Team", "Manager", "Mandate", "Capacity", "Roles", "Queues", "Status", ""], rows, "No people in the directory yet.")}
       </section>`;
   }
 
@@ -1194,6 +1227,9 @@ export async function saveOrgDirectory(req: Request, res: Response): Promise<voi
       if (!displayName) return redirect("missing");
       const queues = parseExecutionQueues(fieldList(body, "executionQueues"));
       const nudgeRaw = field(body, "nudgeChannel");
+      const capacityRaw = field(body, "capacityStatus");
+      const capacityNote = field(body, "capacityNote");
+      const capacitySet = isCapacityStatus(capacityRaw) || Boolean(capacityNote);
       await savePerson({
         id: id || undefined,
         displayName,
@@ -1203,12 +1239,17 @@ export async function saveOrgDirectory(req: Request, res: Response): Promise<voi
         unitId: field(body, "unitId") || undefined,
         title: field(body, "title") || undefined,
         mandate: field(body, "mandate"),
+        mandateSource: action === "archive" ? undefined : "admin",
         archive: action === "archive",
         executionQueues: action === "archive" ? undefined : queues.length ? queues : ["teams"],
         nudgeChannel:
           action === "archive" ? undefined : isNudgeChannel(nudgeRaw) ? nudgeRaw : "teams_card",
         workingNotes: action === "archive" ? undefined : field(body, "workingNotes"),
         prefSource: action === "archive" ? undefined : "admin",
+        capacityStatus:
+          action === "archive" ? undefined : isCapacityStatus(capacityRaw) ? capacityRaw : undefined,
+        capacityNote: action === "archive" || !capacityNote ? undefined : capacityNote,
+        capacitySource: action === "archive" || !capacitySet ? undefined : "admin",
       });
     }
     void logActivity({

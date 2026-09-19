@@ -194,6 +194,10 @@ describe("admin portal", () => {
 
   it("capabilities lists a profile and a native tool", () => {
     const skills = renderCapabilities("local", "skills");
+    assert.match(skills, /work-followthrough/);
+    assert.match(skills, /Runtime skills/);
+    assert.match(skills, /Agent profiles/);
+    assert.match(skills, /repeatable workflows/i);
     assert.match(skills, /pmo/);
     assert.match(skills, /Skills/);
     const tools = renderCapabilities("local", "tools", [

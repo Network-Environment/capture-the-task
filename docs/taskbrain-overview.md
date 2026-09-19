@@ -15,7 +15,7 @@ Send a complete thought. It infers the outcome and chooses tools; you do not nee
 | Remember it | “Capture: follow up with Morgan on commissioning Friday.” |
 | A personal task | “Add a task to call Pat tomorrow.” |
 | An answer | “When did I last meet with Joe?” / “Who owns the open commissioning risk?” |
-| Work assigned | “Assign Val the generator warranty review due Thursday.” |
+| Work assigned | “Assign Val the generator warranty review due Thursday.” / “Have Val do the risk register update.” It checks whether that person should own it and what is already on their plate, then assigns only if you still want that owner. |
 | Recurring help | “Every Friday at 4 PM send me a digest of open risks.” |
 
 Voice memos are transcribed. Replies stay short. High-impact writes come back as a preview you approve (`approve pa-x`).
@@ -30,9 +30,9 @@ Voice memos are transcribed. Replies stay short. High-impact writes come back as
 
 **Meeting memory.** For designated meeting viewers, it can search stored Teams/Plaud **summaries** (about 90 days): decisions, discussion, and who committed to what. Summaries are not a complete calendar; use Outlook for “when,” summaries for “what happened.”
 
-**Org directory.** People, teams, reporting, mandates, and how someone prefers to receive work (Teams, To Do, Planner). Ambiguous first names get one clarifying question.
+**Org directory.** People, teams, reporting, mandates (what they should be doing), capacity (available / stretched / overloaded / unavailable), and how someone prefers to receive work (Teams, To Do, Planner). Ambiguous or duplicate directory names stay unmatched. Ambiguous first names get one clarifying question.
 
-**Work follow-through.** Create, nudge, or complete assignments for named people. Destinations come from the org record, not a guess. Open meeting commitments can be listed and marked done.
+**Work follow-through.** Create, nudge, or complete assignments for named people. Destinations come from the org record, not a guess. Before assigning, it checks mandate fit and the TaskBrain plate (open work, commitments, graph tasks, PMO items) — not Microsoft To Do or calendar. Open meeting commitments can be listed and marked done.
 
 **Shared projects.** The execution graph is the source of truth for project/task status, owners, blockers, and dependencies. Inferred relationships are proposed for team review, not silently written.
 

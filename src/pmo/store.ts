@@ -1,4 +1,5 @@
 import { cosmosContainer } from "../services/cosmos";
+import { isDoneColumn } from "./schema";
 import type { PmoBoard, PmoBoardStatus, PmoDoc, PmoItem } from "./types";
 
 function boards() {
@@ -57,6 +58,22 @@ export async function listPmoItems(boardId: string): Promise<PmoItem[]> {
     })
     .fetchAll();
   return resources.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function listOpenOwnedPmoItems(
+  ownerPersonId: string
+): Promise<{ item: PmoItem; board: PmoBoard }[]> {
+  const boards = await listPmoBoards("open");
+  const out: { item: PmoItem; board: PmoBoard }[] = [];
+  for (const board of boards) {
+    const items = await listPmoItems(board.id);
+    for (const item of items) {
+      if (item.ownerPersonId === ownerPersonId && !isDoneColumn(board, item.columnId)) {
+        out.push({ item, board });
+      }
+    }
+  }
+  return out;
 }
 
 export async function findPmoItem(boardId: string, idOrTitle: string): Promise<PmoItem | undefined> {

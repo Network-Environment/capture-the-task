@@ -12,7 +12,7 @@ import { mcpToolDefinitions, isMcpTool, callMcpTool } from "./mcpClient";
 import { requiresApproval, parkAction, type PendingAction } from "../services/approvals";
 import { approvalMessage } from "../services/smartsheet";
 import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
-import { lookupOrg, rememberOrgPreference } from "../org/store";
+import { assessAssignment, listWorkload, lookupOrg, rememberOrgPreference, rememberOrgResponsibility } from "../org/store";
 import { retainFromText } from "../memory/retain";
 import { recallMemory, recallPromptBlock } from "../memory/recall";
 import { reflectMemory } from "../memory/reflect";
@@ -95,10 +95,13 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   list_commitments: { effect: "read", reversible: true },
   complete_commitment: { effect: "shared_write", reversible: true },
   lookup_org: { effect: "read", reversible: true },
+  list_workload: { effect: "read", reversible: true },
+  assess_assignment: { effect: "read", reversible: true },
   assign_work: { effect: "personal_write", reversible: true },
   nudge_work: { effect: "personal_write", reversible: true },
   complete_work: { effect: "personal_write", reversible: true },
   remember_org_preference: { effect: "shared_write", reversible: true },
+  remember_org_responsibility: { effect: "shared_write", reversible: true },
   web_search: { effect: "read", reversible: true },
   retain_memory: { effect: "personal_write", reversible: true },
   recall_memory: { effect: "read", reversible: true },
@@ -124,6 +127,8 @@ const scheduledNativeReads = new Set([
   "recall_meetings",
   "list_commitments",
   "lookup_org",
+  "list_workload",
+  "assess_assignment",
   "list_jobs",
   "list_pmo_boards",
   "list_pmo_board",
@@ -227,7 +232,8 @@ const nativeDefs: ChatCompletionTool[] = [
         "Store an operational lesson in the agent's OWN memory (not the user's notes): a user " +
         "preference about how YOU reply, a correction/alias ('the register' = sheet X), a tool " +
         "quirk, or a self-observation. Do NOT store how a named colleague works (queues, Planner vs To Do, " +
-        "nudge channel) — use remember_org_preference. Keep it one sentence.",
+        "nudge channel) — use remember_org_preference. Do NOT store mandates, hats, or capacity — use " +
+        "remember_org_responsibility. Keep it one sentence.",
       parameters: {
         type: "object",
         properties: {
@@ -324,8 +330,9 @@ const nativeDefs: ChatCompletionTool[] = [
       name: "assign_work",
       description:
         "Create a durable work assignment for a named org person and fan it out to their stored " +
-        "queues (Teams card, To Do, Planner, Smartsheet). Do not pick destinations — the org record does. " +
-        "Use when a named owner is obligated, including when the speaker is not the owner.",
+        "queues (Teams card, To Do, Planner, Smartsheet). Call assess_assignment first (or lookup_org plus " +
+        "list_workload). If fit or capacity is poor, tell the speaker and assign only if they still want that owner. " +
+        "Do not pick destinations — the org record does.",
       parameters: {
         type: "object",
         properties: {
@@ -391,14 +398,73 @@ const nativeDefs: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "remember_org_responsibility",
+      description:
+        "Store what a named org person should be doing (mandate), a named hat/role, or their capacity " +
+        "(available / stretched / overloaded / unavailable) on the org directory. Use when someone states " +
+        "responsibilities or load. Do not invent reporting lines. Admin-curated fields win.",
+      parameters: {
+        type: "object",
+        properties: {
+          person: { type: "string" },
+          mandate: { type: "string" },
+          roleTitle: { type: "string" },
+          roleMandate: { type: "string" },
+          roleUnit: { type: "string", description: "Team name for the hat" },
+          capacityStatus: {
+            type: "string",
+            enum: ["available", "stretched", "overloaded", "unavailable"],
+          },
+          capacityNote: { type: "string" },
+        },
+        required: ["person"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "lookup_org",
       description:
         "Look up people, teams, and named roles in the org directory: reporting, mandates " +
-        "(what they should be doing), how they execute work, and open commitment counts.",
+        "(what they should be doing), capacity, how they execute work, and TaskBrain plate counts. " +
+        "Use list_workload for the item list and assess_assignment before assign_work.",
       parameters: {
         type: "object",
         properties: { query: { type: "string", description: "Name, team, role, or alias" } },
         required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_workload",
+      description:
+        "List what a named org person currently has on their TaskBrain plate: open work assignments, " +
+        "meeting commitments, execution-graph tasks, and non-done PMO items. Does not read Microsoft To Do or calendar.",
+      parameters: {
+        type: "object",
+        properties: { person: { type: "string" } },
+        required: ["person"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "assess_assignment",
+      description:
+        "Before assign_work, check whether a named org person is a mandate fit and whether their plate/capacity " +
+        "can take the work. Advisory only — still assign if the speaker insists.",
+      parameters: {
+        type: "object",
+        properties: {
+          owner: { type: "string" },
+          title: { type: "string" },
+          detail: { type: "string" },
+        },
+        required: ["owner", "title"],
       },
     },
   },
@@ -925,8 +991,27 @@ export async function dispatch(
           dropQueue: args.dropQueue ? String(args.dropQueue) : undefined,
           source: "explicit",
         });
+      case "remember_org_responsibility":
+        return await rememberOrgResponsibility(ctx.userId, {
+          person: String(args.person ?? ""),
+          mandate: args.mandate ? String(args.mandate) : undefined,
+          roleTitle: args.roleTitle ? String(args.roleTitle) : undefined,
+          roleMandate: args.roleMandate ? String(args.roleMandate) : undefined,
+          roleUnit: args.roleUnit ? String(args.roleUnit) : undefined,
+          capacityStatus: args.capacityStatus ? String(args.capacityStatus) : undefined,
+          capacityNote: args.capacityNote ? String(args.capacityNote) : undefined,
+          source: "explicit",
+        });
       case "lookup_org":
         return await lookupOrg(ctx.userId, String(args.query ?? ""));
+      case "list_workload":
+        return await listWorkload(ctx.userId, String(args.person ?? ""));
+      case "assess_assignment":
+        return await assessAssignment(ctx.userId, {
+          owner: String(args.owner ?? ""),
+          title: String(args.title ?? ""),
+          detail: args.detail ? String(args.detail) : undefined,
+        });
       case "retain_memory": {
         const bank = String(args.bank ?? "user") === "org" ? "org" : "user";
         if (bank === "org" && !canWriteOrgBank(ctx.userId)) return denyMeetings();

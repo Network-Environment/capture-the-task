@@ -108,12 +108,13 @@ export function compactOrgPrompt(dir: OrgDirectory, cap = ORG_PROMPT_CAP): strin
     ].filter(Boolean);
     const mandate = p.mandate ? ` Should: ${p.mandate}` : "";
     const roles = hats.length ? ` Roles: ${hats.join("; ")}` : "";
+    const capacity = p.capacityStatus ? ` Capacity: ${p.capacityStatus}.` : "";
     const work = ` ${workingStyleLine(p)}`;
-    return `- ${p.displayName}${bits.length ? ` (${bits.join(", ")})` : ""}.${mandate}${roles}${work}`;
+    return `- ${p.displayName}${bits.length ? ` (${bits.join(", ")})` : ""}.${mandate}${roles}${capacity}${work}`;
   });
 
   let text =
-    "\n\nOrg directory (structure and what people should be doing; use list_commitments / lookup_org for what they are doing):\n";
+    "\n\nOrg directory (structure and what people should be doing; call assess_assignment before assign_work; use list_workload / lookup_org for what they are doing):\n";
   if (teamLines.length) text += `Teams:\n${teamLines.join("\n")}\n`;
   if (peopleLines.length) text += `People:\n${peopleLines.join("\n")}\n`;
   if (text.length <= cap) return text;

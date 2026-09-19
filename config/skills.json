@@ -1,0 +1,31 @@
+{
+  "skills": {
+    "work-followthrough": {
+      "description": "Assess who should own work, inspect their current TaskBrain plate, preserve org identity boundaries, and assign through the owner's configured queues.",
+      "when": [
+        "Someone asks a named person to do work",
+        "Someone asks who should own a task",
+        "Someone states a colleague's mandate, role, or capacity",
+        "Someone asks what a colleague currently has on their plate"
+      ],
+      "tools": [
+        "lookup_org",
+        "assess_assignment",
+        "list_workload",
+        "assign_work",
+        "remember_org_responsibility",
+        "remember_org_preference"
+      ],
+      "instructions": [
+        "Resolve the named person from the org directory. Ask one focused question if the name has multiple matches; never guess an Entra id.",
+        "Before assign_work, call assess_assignment. If unavailable, use lookup_org plus list_workload.",
+        "Compare the task with the person's mandate and named roles, then inspect org capacity and the TaskBrain plate.",
+        "If fit is weak or capacity is stretched, overloaded, or unavailable, tell the speaker and assign only if they still want that owner.",
+        "Assignment destinations always come from the org record; never choose Teams, To Do, Planner, Smartsheet, or mail by guess.",
+        "Use remember_org_responsibility for a stated mandate, named role, or capacity. Use remember_org_preference for queues, nudges, and working style.",
+        "Treat the plate as TaskBrain work, commitments, execution-graph tasks/projects, and PMO items. Do not claim it includes live Microsoft To Do, Planner, or calendar.",
+        "Keep unmatched, incomplete, or duplicate Microsoft 365 identities unresolved. Never map Joe Ryan to Joseph Ryan or choose among duplicate Elisa Amador accounts."
+      ]
+    }
+  }
+}

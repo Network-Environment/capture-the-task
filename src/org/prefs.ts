@@ -1,6 +1,18 @@
-import type { ExecutionQueue, NudgeChannel, OrgPerson, PrefSource } from "./types";
+import type {
+  CapacityStatus,
+  ExecutionQueue,
+  NudgeChannel,
+  OrgPerson,
+  PrefSource,
+} from "./types";
 
 export const EXECUTION_QUEUES: ExecutionQueue[] = ["teams", "todo", "planner", "smartsheet"];
+export const CAPACITY_STATUSES: CapacityStatus[] = [
+  "available",
+  "stretched",
+  "overloaded",
+  "unavailable",
+];
 export const NUDGE_CHANNELS: NudgeChannel[] = [
   "teams_card",
   "teams_chat",
@@ -17,6 +29,10 @@ export function isExecutionQueue(value: string): value is ExecutionQueue {
 
 export function isNudgeChannel(value: string): value is NudgeChannel {
   return (NUDGE_CHANNELS as string[]).includes(value);
+}
+
+export function isCapacityStatus(value: string): value is CapacityStatus {
+  return (CAPACITY_STATUSES as string[]).includes(value);
 }
 
 export function parseExecutionQueues(raw: unknown): ExecutionQueue[] {

@@ -1,13 +1,27 @@
 import { canViewMeetings, denyMeetings, syncMeetingViewersFromDirectory } from "../meetings/access";
-import { listOpenCommitments } from "../meetings/store";
 import { compactOrgPrompt, newOrgId, resolvePerson, searchOrgDirectory } from "./resolve";
-import type { ExecutionQueue, NudgeChannel, OrgDirectory, OrgDoc, OrgKind, OrgPerson, OrgRole, OrgUnit, PrefSource } from "./types";
+import type {
+  CapacityStatus,
+  ExecutionQueue,
+  NudgeChannel,
+  OrgDirectory,
+  OrgDoc,
+  OrgKind,
+  OrgPerson,
+  OrgRole,
+  OrgUnit,
+  PrefSource,
+} from "./types";
 import {
   canApplyPref,
+  isCapacityStatus,
   isNudgeChannel,
   parseExecutionQueues,
   workingStyleLine,
 } from "./prefs";
+import { applyHat, applyPersonResponsibility } from "./responsibility";
+import { formatAssessment, scorePeople } from "./assess";
+import { capacityLine, formatWorkload, personWorkload, plateCountsLine } from "./workload";
 import { projectPerson } from "../graph/project";
 import { cosmosContainer } from "../services/cosmos";
 
@@ -100,7 +114,11 @@ export async function savePerson(input: {
   unitId?: string;
   title?: string;
   mandate: string;
+  mandateSource?: PrefSource;
   archive?: boolean;
+  capacityStatus?: CapacityStatus;
+  capacityNote?: string;
+  capacitySource?: PrefSource;
   executionQueues?: ExecutionQueue[];
   nudgeChannel?: NudgeChannel;
   workingNotes?: string;
@@ -109,6 +127,9 @@ export async function savePerson(input: {
   const now = new Date().toISOString();
   const existing = input.id ? await getOrgDoc<OrgPerson>(input.id, "person") : undefined;
   const prefSource = input.prefSource ?? (input.executionQueues || input.nudgeChannel || input.workingNotes ? "admin" : existing?.prefSource);
+  const mandateChanged = input.mandate.trim() !== (existing?.mandate ?? "");
+  const capacityTouched =
+    input.capacityStatus !== undefined || input.capacityNote !== undefined;
   const doc: OrgPerson = {
     id: existing?.id ?? newOrgId("person", input.displayName),
     kind: "person",
@@ -119,6 +140,14 @@ export async function savePerson(input: {
     unitId: input.unitId || undefined,
     title: input.title?.trim().slice(0, 80) || undefined,
     mandate: input.mandate.trim().slice(0, 400),
+    mandateSource: input.mandateSource ?? (mandateChanged ? "admin" : existing?.mandateSource),
+    capacityStatus: input.capacityStatus ?? existing?.capacityStatus,
+    capacityNote:
+      input.capacityNote !== undefined
+        ? input.capacityNote.trim().slice(0, 120) || undefined
+        : existing?.capacityNote,
+    capacitySource:
+      input.capacitySource ?? (capacityTouched ? "admin" : existing?.capacitySource),
     executionQueues: input.executionQueues ?? existing?.executionQueues,
     nudgeChannel: input.nudgeChannel ?? existing?.nudgeChannel,
     workingNotes: input.workingNotes !== undefined ? input.workingNotes.slice(0, 240) : existing?.workingNotes,
@@ -178,16 +207,128 @@ export async function rememberOrgPreference(
   return `Stored org working style for ${saved.displayName}: ${workingStyleLine(saved)}`;
 }
 
+export async function rememberOrgResponsibility(
+  userId: string,
+  input: {
+    person: string;
+    mandate?: string;
+    roleTitle?: string;
+    roleMandate?: string;
+    roleUnit?: string;
+    capacityStatus?: string;
+    capacityNote?: string;
+    source?: PrefSource;
+  }
+): Promise<string> {
+  if (!canViewMeetings(userId)) return denyMeetings();
+  const dir = await listOrgDirectory();
+  const person = resolvePerson(dir.people, { ownerId: input.person, ownerName: input.person });
+  if (!person) return `No org person matching "${input.person}".`;
+  const incoming = input.source ?? "explicit";
+  const now = new Date().toISOString();
+  const capacityStatus =
+    input.capacityStatus && isCapacityStatus(input.capacityStatus) ? input.capacityStatus : undefined;
+  if (input.capacityStatus && !capacityStatus) {
+    return `Unknown capacity status "${input.capacityStatus}". Use available, stretched, overloaded, or unavailable.`;
+  }
+  const applied = applyPersonResponsibility(
+    person,
+    {
+      mandate: input.mandate,
+      capacityStatus,
+      capacityNote: input.capacityNote,
+    },
+    incoming,
+    now
+  );
+  let savedPerson = person;
+  if (applied.changed.length) {
+    savedPerson = await savePerson({
+      id: person.id,
+      displayName: person.displayName,
+      entraId: person.entraId,
+      aliases: person.aliases,
+      managerPersonId: person.managerPersonId,
+      unitId: person.unitId,
+      title: person.title,
+      mandate: applied.person.mandate,
+      mandateSource: applied.person.mandateSource,
+      capacityStatus: applied.person.capacityStatus,
+      capacityNote: applied.person.capacityNote,
+      capacitySource: applied.person.capacitySource,
+      executionQueues: person.executionQueues,
+      nudgeChannel: person.nudgeChannel,
+      workingNotes: person.workingNotes,
+      prefSource: person.prefSource,
+    });
+  }
+
+  const lines: string[] = [];
+  if (applied.changed.length) {
+    lines.push(`Updated ${savedPerson.displayName}: ${applied.changed.join(", ")}.`);
+  }
+  lines.push(...applied.blocked.map((item) => `${savedPerson.displayName}: ${item}.`));
+
+  const roleTitle = input.roleTitle?.trim();
+  if (roleTitle) {
+    const unitName = input.roleUnit?.trim();
+    const unit = unitName
+      ? dir.units.find(
+          (row) =>
+            row.status === "active" &&
+            (row.id === unitName || row.name.toLowerCase() === unitName.toLowerCase())
+        )
+      : undefined;
+    if (unitName && !unit) return `No org team matching "${unitName}".`;
+    const hat = applyHat(
+      dir.roles,
+      person.id,
+      {
+        title: roleTitle,
+        mandate: input.roleMandate ?? "",
+        unitId: unit?.id,
+      },
+      incoming,
+      now,
+      () => newOrgId("role", roleTitle)
+    );
+    if (hat.blocked) {
+      lines.push(`${savedPerson.displayName}: ${hat.blocked}.`);
+    } else {
+      await saveRole({
+        id: hat.role.id,
+        personId: hat.role.personId,
+        title: hat.role.title,
+        unitId: hat.role.unitId,
+        mandate: hat.role.mandate,
+        mandateSource: hat.role.mandateSource,
+      });
+      lines.push(
+        hat.created
+          ? `Added role ${hat.role.title} for ${savedPerson.displayName}.`
+          : `Updated role ${hat.role.title} for ${savedPerson.displayName}.`
+      );
+    }
+  }
+
+  if (!lines.length) {
+    return `No org responsibility changes for ${savedPerson.displayName}.`;
+  }
+  return lines.join(" ");
+}
+
 export async function saveRole(input: {
   id?: string;
   personId: string;
   title: string;
   unitId?: string;
   mandate: string;
+  mandateSource?: PrefSource;
   archive?: boolean;
 }): Promise<OrgRole> {
   const now = new Date().toISOString();
   const existing = input.id ? await getOrgDoc<OrgRole>(input.id, "role") : undefined;
+  const mandateChanged = input.mandate.trim() !== (existing?.mandate ?? "");
   const doc: OrgRole = {
     id: existing?.id ?? newOrgId("role", input.title),
     kind: "role",
@@ -195,6 +336,7 @@ export async function saveRole(input: {
     title: input.title.trim().slice(0, 80),
     unitId: input.unitId || undefined,
     mandate: input.mandate.trim().slice(0, 400),
+    mandateSource: input.mandateSource ?? (mandateChanged ? "admin" : existing?.mandateSource),
     status: input.archive ? "inactive" : "active",
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -232,7 +374,6 @@ export async function lookupOrg(userId: string, query: string): Promise<string> 
   if (!hits.people.length && !hits.units.length && !hits.roles.length) {
     return "No matching people, teams, or roles in the org directory.";
   }
-  const open = await listOpenCommitments().catch(() => []);
   const unitName = (id?: string) => dir.units.find((u) => u.id === id)?.name;
   const personName = (id?: string) => dir.people.find((p) => p.id === id)?.displayName;
   const lines: string[] = [];
@@ -240,7 +381,7 @@ export async function lookupOrg(userId: string, query: string): Promise<string> 
     lines.push(`Team ${u.name}${u.parentId ? ` under ${unitName(u.parentId) ?? u.parentId}` : ""}. Should: ${u.purpose || "—"}`);
   }
   for (const p of hits.people.slice(0, 8)) {
-    const doing = open.filter((c) => c.personId === p.id && c.status === "open").length;
+    const load = await personWorkload(p.id);
     const hats = dir.roles
       .filter((r) => r.personId === p.id && r.status === "active")
       .map((r) => r.title);
@@ -250,7 +391,7 @@ export async function lookupOrg(userId: string, query: string): Promise<string> 
         ` Should: ${p.mandate || "—"}.` +
         `${hats.length ? ` Roles: ${hats.join(", ")}.` : ""}` +
         ` ${workingStyleLine(p)}` +
-        ` Open commitments: ${doing}.`
+        ` ${capacityLine(p)} ${plateCountsLine(load)}.`
     );
   }
   for (const r of hits.roles.slice(0, 8)) {
@@ -260,6 +401,42 @@ export async function lookupOrg(userId: string, query: string): Promise<string> 
     );
   }
   return lines.join("\n");
+}
+
+export async function listWorkload(userId: string, owner: string): Promise<string> {
+  if (!canViewMeetings(userId)) return denyMeetings();
+  const dir = await listOrgDirectory();
+  const person = resolvePerson(dir.people, { ownerId: owner, ownerName: owner });
+  if (!person) return `No org person matching "${owner}".`;
+  return formatWorkload(person, await personWorkload(person.id));
+}
+
+export async function assessAssignment(
+  userId: string,
+  input: { owner: string; title: string; detail?: string }
+): Promise<string> {
+  if (!canViewMeetings(userId)) return denyMeetings();
+  const dir = await listOrgDirectory();
+  const person = resolvePerson(dir.people, { ownerId: input.owner, ownerName: input.owner });
+  if (!person) return `No org person matching "${input.owner}".`;
+  const ranked = scorePeople([input.title, input.detail ?? ""].join(" "), dir);
+  const ownerRow = ranked.find((row) => row.person.id === person.id);
+  const score = ownerRow?.score ?? 0;
+  const fit = ownerRow?.fit ?? "unknown";
+  const alternatives = ranked
+    .filter((row) => row.person.id !== person.id && row.score > score)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+  const load = await personWorkload(person.id);
+  return formatAssessment({
+    person,
+    title: input.title,
+    fit,
+    score,
+    alternatives,
+    load,
+    dir,
+  });
 }
 
 export { resolvePerson };

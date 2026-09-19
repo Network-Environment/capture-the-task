@@ -474,6 +474,27 @@ export async function listExecutionGraph(
   return payload;
 }
 
+export async function listOpenOwnedGraphNodes(ownerPersonId: string): Promise<GraphNode[]> {
+  if (!graphEnabled()) return [];
+  try {
+    const { resources } = await nodes()
+      .items.query<GraphNode>({
+        query:
+          "SELECT * FROM c WHERE c.workspaceId = @workspaceId AND c.ownerPersonId = @owner " +
+          "AND (c.type = 'task' OR c.type = 'project')",
+        parameters: [
+          { name: "@workspaceId", value: graphWorkspaceId() },
+          { name: "@owner", value: ownerPersonId },
+        ],
+      })
+      .fetchAll();
+    return resources.filter((node) => !["done", "cancelled"].includes(node.status ?? ""));
+  } catch (err) {
+    console.error("[graph] list open owned nodes failed:", err);
+    return [];
+  }
+}
+
 export async function executionGraphStats(userId: string): Promise<GraphStats> {
   requireEnabled();
   const { resources: nodeRows } = await nodes().items

@@ -7,6 +7,7 @@ export type OrgRoleStatus = "active" | "inactive";
 export type ExecutionQueue = "teams" | "todo" | "planner" | "smartsheet";
 export type NudgeChannel = "teams_card" | "teams_chat" | "imessage" | "email" | "silent";
 export type PrefSource = "admin" | "explicit" | "inferred";
+export type CapacityStatus = "available" | "stretched" | "overloaded" | "unavailable";
 
 export interface OrgUnit {
   id: string;
@@ -29,7 +30,13 @@ export interface OrgPerson {
   unitId?: string;
   title?: string;
   mandate: string;
+  mandateSource?: PrefSource;
   status: OrgPersonStatus;
+  /** Operator-set load, not inferred from Microsoft 365. */
+  capacityStatus?: CapacityStatus;
+  /** One-line capacity context, max ~120 chars. */
+  capacityNote?: string;
+  capacitySource?: PrefSource;
   /** Ordered work queues; first is primary. Empty means Teams-only default. */
   executionQueues?: ExecutionQueue[];
   nudgeChannel?: NudgeChannel;
@@ -48,6 +55,7 @@ export interface OrgRole {
   title: string;
   unitId?: string;
   mandate: string;
+  mandateSource?: PrefSource;
   status: OrgRoleStatus;
   createdAt: string;
   updatedAt: string;

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import { parseOrgSeed, planOrgImport, validateOrgSeed } from "../src/org/import";
+import { applyHat, applyPersonResponsibility } from "../src/org/responsibility";
 import {
   compactOrgPrompt,
   ORG_PROMPT_CAP,
@@ -32,6 +33,7 @@ const val = person({
   title: "PMO",
   mandate: "Keep the risk register honest",
   entraId: "4f323599-0df8-47f7-aa01-46dbb211894c",
+  capacityStatus: "stretched",
 });
 const adam = person({
   id: "per-adam",
@@ -102,6 +104,8 @@ describe("org directory", () => {
     assert.match(block, /Risk owner @ Ops/);
     assert.match(block, /Keep the risk register honest/);
     assert.match(block, /Work: teams \+ Teams card/);
+    assert.match(block, /Capacity: stretched/);
+    assert.match(block, /assess_assignment/);
     assert.doesNotMatch(block, /Departed/);
     assert.doesNotMatch(block, /Legacy/);
     const huge: OrgDirectory = {
@@ -218,6 +222,10 @@ describe("org directory", () => {
       nudgeChannel: "teams_chat",
       workingNotes: "Keep this",
       prefSource: "admin",
+      mandateSource: "admin",
+      capacityStatus: "overloaded",
+      capacityNote: "Q4 close",
+      capacitySource: "admin",
     });
     const plan = planOrgImport(
       seed,
@@ -238,6 +246,9 @@ describe("org directory", () => {
     assert.equal(updated?.nudgeChannel, "teams_chat");
     assert.equal(updated?.workingNotes, "Keep this");
     assert.equal(updated?.prefSource, "admin");
+    assert.equal(updated?.capacityStatus, "overloaded");
+    assert.equal(updated?.capacityNote, "Q4 close");
+    assert.equal(updated?.mandateSource, "admin");
   });
 
   it("fails closed on bad references and cycles, and skips duplicate directory identities", () => {
@@ -274,5 +285,61 @@ describe("org directory", () => {
     );
     assert.equal(joe?.entraId, undefined);
     assert.ok(ambiguous.writes.length > 0);
+  });
+});
+
+describe("org responsibility rank", () => {
+  it("lets explicit fill empty fields and refuses to clobber admin", () => {
+    const empty = person({ id: "per-val", displayName: "Valerie Moraru", mandate: "Keep the risk register honest" });
+    const filled = applyPersonResponsibility(
+      empty,
+      { capacityStatus: "stretched", capacityNote: "Q4" },
+      "explicit",
+      "2026-09-19T00:00:00Z"
+    );
+    assert.deepEqual(filled.changed.sort(), ["capacityNote", "capacityStatus"]);
+    assert.equal(filled.person.capacitySource, "explicit");
+
+    const locked = person({
+      id: "per-val",
+      displayName: "Valerie Moraru",
+      mandate: "Admin mandate",
+      mandateSource: "admin",
+      capacityStatus: "overloaded",
+      capacitySource: "admin",
+    });
+    const blocked = applyPersonResponsibility(
+      locked,
+      { mandate: "Agent rewrite", capacityStatus: "available" },
+      "explicit",
+      "2026-09-19T00:00:00Z"
+    );
+    assert.equal(blocked.changed.length, 0);
+    assert.ok(blocked.blocked.some((item) => item.includes("mandate")));
+    assert.ok(blocked.blocked.some((item) => item.includes("capacity")));
+    assert.equal(blocked.person.mandate, "Admin mandate");
+
+    const hat = applyHat(
+      [
+        {
+          id: "rol-risk",
+          kind: "role",
+          personId: "per-val",
+          title: "Risk owner",
+          mandate: "Flag overdue risks weekly",
+          mandateSource: "admin",
+          status: "active",
+          createdAt: "2026-09-08T00:00:00Z",
+          updatedAt: "2026-09-08T00:00:00Z",
+        },
+      ],
+      "per-val",
+      { title: "Risk owner", mandate: "rewrite" },
+      "explicit",
+      "2026-09-19T00:00:00Z",
+      () => "rol-new"
+    );
+    assert.equal(hat.created, false);
+    assert.match(hat.blocked ?? "", /locked as admin/);
   });
 });
