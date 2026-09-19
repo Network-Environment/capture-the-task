@@ -184,6 +184,7 @@ describe("admin portal", () => {
     assert.match(html, /href="\/admin\/usage"/);
     assert.match(html, /href="\/admin\/graph"/);
     assert.match(html, /href="\/admin\/org"/);
+    assert.match(html, /href="\/admin\/boards"/);
     assert.match(html, /0 people, 0 teams/);
     assert.match(html, /TaskBrain ops/);
     assert.match(html, /No discovery run yet/);

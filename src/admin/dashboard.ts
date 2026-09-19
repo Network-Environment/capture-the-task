@@ -1,6 +1,6 @@
 /**
  * Admin portal — server-rendered HTML, zero frontend build.
- * Sidebar sections: overview, capabilities, integrations, usage, org, meetings, jobs, memory.
+ * Sidebar sections: overview, capabilities, integrations, usage, org, boards, meetings, jobs, memory.
  *
  * In Azure, App Service Easy Auth (Entra) gates /admin*. Locally the page is open.
  */
@@ -51,6 +51,10 @@ import {
 import { parseAliases } from "../org/resolve";
 import type { OrgDirectory } from "../org/types";
 import { EXECUTION_QUEUES, NUDGE_CHANNELS, isNudgeChannel, parseExecutionQueues } from "../org/prefs";
+import { archivePmoBoard } from "../pmo/boards";
+import { listPmoBoards, listPmoItems, getPmoBoard } from "../pmo/store";
+import { ttlRemainingLabel } from "../pmo/schema";
+import type { PmoBoard, PmoItem } from "../pmo/types";
 import {
   graphEnabled,
   graphWritesEnabled,
@@ -218,6 +222,29 @@ async function renderSection(
       );
       const orgTab = tab === "teams" || tab === "roles" ? tab : "people";
       return renderOrg(signedIn, orgTab, dir, notice, canWrite);
+    }
+    case "boards": {
+      const [allBoards, dir] = await Promise.all([
+        listPmoBoards().catch(() => [] as PmoBoard[]),
+        listOrgDirectory().catch(() => ({ units: [], people: [], roles: [] }) as OrgDirectory),
+      ]);
+      const itemsByBoard: Record<string, PmoItem[]> = {};
+      await Promise.all(
+        allBoards.map(async (board) => {
+          itemsByBoard[board.id] = await listPmoItems(board.id).catch(() => []);
+        })
+      );
+      const boardsTab = tab === "archived" ? "archived" : "active";
+      return renderPmoBoards(
+        signedIn,
+        boardsTab,
+        allBoards,
+        itemsByBoard,
+        dir.people.map((p) => ({ id: p.id, displayName: p.displayName })),
+        notice,
+        canWrite,
+        params.get("board") ?? undefined
+      );
     }
     case "meetings": {
       const [health, meetings, commitments, transcripts] = await Promise.all([
@@ -942,6 +969,147 @@ export function renderOrg(
     subtitle: "who reports to whom, and what they should be doing",
     body: tabBar + inner,
   });
+}
+
+function pmoNoticeHtml(notice: string): string {
+  if (notice === "archived") return `<p class="pad">${pill("archived", "warn")} Board closed. It stays listed for 90 days.</p>`;
+  if (notice === "missing") return `<p class="pad muted">Board was not found.</p>`;
+  if (notice === "error") return `<p class="pad">${pill("error", "err")} Could not update the board.</p>`;
+  return "";
+}
+
+export function renderPmoBoards(
+  signedIn: string,
+  tab: "active" | "archived",
+  boards: PmoBoard[],
+  itemsByBoard: Record<string, PmoItem[]>,
+  people: { id: string; displayName: string }[],
+  notice = "",
+  canWrite = true,
+  selectedId?: string
+): string {
+  const tabBar = tabs("/admin/boards", [
+    { id: "active", label: "Active" },
+    { id: "archived", label: "Archived" },
+  ], tab);
+  const filtered = boards.filter((board) => (tab === "archived" ? board.status === "closed" : board.status === "open"));
+  const selected = boards.find((board) => board.id === selectedId) ?? filtered[0];
+  const personName = (id?: string) => people.find((p) => p.id === id)?.displayName ?? "unassigned";
+  const ids = filtered.map((b) => b.id);
+  const scope = meetingCsrfScope(["boards:close", ...ids]);
+  const csrf = meetingCsrfToken(scope);
+  const hidden =
+    `<input type="hidden" name="_scope" value="${esc(scope)}">` +
+    `<input type="hidden" name="_csrf" value="${esc(csrf)}">` +
+    `<input type="hidden" name="_tab" value="${esc(tab)}">`;
+
+  const rows = filtered
+    .map((board) => {
+      const items = itemsByBoard[board.id] ?? [];
+      const counts = board.columns.map((col) => `${col.label} ${items.filter((i) => i.columnId === col.id).length}`).join(" · ");
+      return (
+        `<tr><td class="strong"><a href="/admin/boards?tab=${esc(tab)}&board=${esc(board.id)}">${esc(board.title)}</a></td>` +
+        `<td class="muted clip">${esc(board.purpose || "—")}</td>` +
+        `<td class="muted">${esc(board.columns.map((c) => c.label).join(" / "))}</td>` +
+        `<td class="muted">${esc(counts || "0")}</td>` +
+        `<td class="mono muted">${esc((board.closedAt ?? board.createdAt).slice(0, 10))}</td>` +
+        `<td class="mono muted">${esc(tab === "archived" ? ttlRemainingLabel(board.ttl, board.updatedAt) : "—")}</td>` +
+        (canWrite && board.status === "open"
+          ? `<td><form method="post" action="/admin/boards">${hidden}` +
+            `<input type="hidden" name="id" value="${esc(board.id)}">` +
+            `<button class="ghost" type="submit" name="_action" value="close">Close</button></form></td>`
+          : "<td></td>") +
+        `</tr>`
+      );
+    })
+    .join("");
+
+  let detail = `<section class="panel"><h2>Board</h2><p class="pad muted">Select a board to see items grouped by its columns.</p></section>`;
+  if (selected) {
+    const items = itemsByBoard[selected.id] ?? [];
+    const groups = selected.columns
+      .map((col) => {
+        const colItems = items.filter((item) => item.columnId === col.id);
+        const itemRows = colItems
+          .map((item) => {
+            const extras = selected.fields
+              .map((field) => (item.fieldValues[field.id] ? `${field.label}: ${item.fieldValues[field.id]}` : ""))
+              .filter(Boolean)
+              .join("; ");
+            return (
+              `<tr><td class="strong">${esc(item.title)}</td>` +
+              `<td>${esc(personName(item.ownerPersonId))}</td>` +
+              `<td class="mono muted">${esc(item.due ?? "—")}</td>` +
+              `<td class="muted clip">${esc(extras || "—")}</td></tr>`
+            );
+          })
+          .join("");
+        return `<h3 class="pad">${esc(col.label)} (${colItems.length})</h3>${table(
+          ["Item", "Owner", "Due", "Fields"],
+          itemRows,
+          "No items in this column."
+        )}`;
+      })
+      .join("");
+    detail = `<section class="panel">
+      <h2>${esc(selected.title)}</h2>
+      <p class="pad muted">${esc(selected.purpose || "No purpose recorded.")} · ${esc(selected.id)} · ${esc(selected.status)}</p>
+      ${groups}
+    </section>`;
+  }
+
+  const body = `${tabBar}${pmoNoticeHtml(notice)}
+    <section class="panel">
+      <h2>${tab === "archived" ? "Archived boards" : "Active boards"}</h2>
+      ${table(["Board", "Purpose", "Columns", "Counts", tab === "archived" ? "Closed" : "Created", "TTL", ""], rows, tab === "archived" ? "No archived boards." : "No active PMO boards.")}
+    </section>
+    ${detail}`;
+
+  return renderShell({
+    section: "boards",
+    signedIn,
+    title: "Boards",
+    subtitle: "ephemeral PMO working lists",
+    body,
+  });
+}
+
+export async function savePmoBoard(req: Request, res: Response): Promise<void> {
+  const actor = requireAdminPrincipal(req, res);
+  if (!actor) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const tab = field(body, "_tab") === "archived" ? "archived" : "active";
+  const redirect = (notice: string) => {
+    res.header("Location", `/admin/boards?tab=${tab}&notice=${notice}`);
+    res.send(303);
+  };
+  const scope = field(body, "_scope");
+  if (!verifyMeetingCsrf(field(body, "_csrf"), scope)) {
+    res.send(403, "invalid or expired request");
+    return;
+  }
+  const allowed = new Set(
+    Buffer.from(scope, "base64url").toString("utf8").split("\n").filter(Boolean)
+  );
+  if (!allowed.has("boards:close")) {
+    res.send(403, "invalid request scope");
+    return;
+  }
+  const id = field(body, "id");
+  if (!id || !allowed.has(id)) {
+    res.send(403, "invalid request scope");
+    return;
+  }
+  try {
+    const board = await getPmoBoard(id);
+    if (!board) return redirect("missing");
+    if (board.status === "closed") return redirect("archived");
+    await archivePmoBoard(board);
+    return redirect("archived");
+  } catch (err) {
+    console.error("[admin] pmo board close failed:", err);
+    return redirect("error");
+  }
 }
 
 function requireAdminPrincipal(req: Request, res: Response): DashboardPrincipal | "local" | undefined {

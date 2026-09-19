@@ -231,6 +231,8 @@ SCHEDULER — jobs-as-data
 | `commitments` | `/ownerKey` | 180d (14d after done) | tiny follow-through records (no embeddings) |
 | `meeting-checkpoints` | `/organizerId` | — | Graph deltaLink per organizer + ingest health (`latest` / `_system`) |
 | `org` | `/kind` | — | org directory: teams (`unit`), people, named roles. Mandates only; no transcript or Smartsheet copies. |
+| `work` | `/ownerPersonId` | — | person-centric work fanout (Teams / To Do / Planner / Smartsheet copies) |
+| `pmo-boards` | `/boardId` | 90d after close | ephemeral PMO boards and items; schema is per board. Do not create Cosmos containers at runtime. |
 | `graph-nodes` | `/workspaceId` | source-derived only | shared projects/tasks plus projected people, meetings, and evidence; 1536-dim embedding for hybrid recall |
 | `graph-edges` | `/workspaceId` | source-derived only | typed relationships and review state (`accepted`, `proposed`, `rejected`) |
 | `memory-facts` | `/bankId` | — | Hindsight-style facts (`world`, `experience`, `opinion`, `observation`) plus TEMPR entity edges; 1536-dim embedding. Banks: `user:{entraId}` and `org`. |
@@ -330,8 +332,21 @@ someone *should* be doing). Admins maintain it on `/admin/org`. Meeting
 commitments remain what people *are* doing. A compact snapshot is injected
 only for meeting viewers; everyone else uses `lookup_org` (same viewer
 gate). New features that "remember" something must pick the store: user
-knowledge, agent operating knowledge, org structure, shared execution, or
-dated memory facts?
+knowledge, agent operating knowledge, org structure, shared execution,
+ephemeral PMO boards, or dated memory facts?
+
+**PMO boards** (`pmo-boards`) are short-lived working lists. One Cosmos
+container holds many boards as documents; the app never provisions a container
+per board. Schema (columns and optional extra text fields) is defined when the
+board is created. If a user asks to create a board without naming columns, the
+agent asks **one** question instead of inventing schema. A normal kanban
+(To do / Doing / Blocked / Done) is used only when they ask for that. Items
+may assign org people; `assign_work` fans out to stored queues, but TaskBrain
+is the system of record. Close archives the board for 90 days (TTL). Admins
+inspect active and archived boards on `/admin/boards`. Use a board for a named
+effort; use `assign_work` alone for a single obligation; use the execution
+graph for durable org-wide project state; use meeting commitments for what
+was promised in a transcript.
 
 The reviewed baseline org chart is versioned at
 `data/org/ryalto-org-lite.json`; it is an operator input and is excluded from

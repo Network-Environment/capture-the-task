@@ -37,6 +37,7 @@ export const SECTIONS = [
   { id: "usage", href: "/admin/usage", label: "Usage" },
   { id: "graph", href: "/admin/graph", label: "Execution graph" },
   { id: "org", href: "/admin/org", label: "Org" },
+  { id: "boards", href: "/admin/boards", label: "Boards" },
   { id: "meetings", href: "/admin/meetings", label: "Meetings" },
   { id: "jobs", href: "/admin/jobs", label: "Jobs" },
   { id: "memory", href: "/admin/memory", label: "Memory" },

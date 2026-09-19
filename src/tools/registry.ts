@@ -47,6 +47,15 @@ import { deterministicGraphId } from "../graph/validation";
 import type { GraphEdgeType, GraphNodeStatus } from "../graph/types";
 import { canViewMeetings, denyMeetings } from "../meetings/access";
 import { assignWorkForUser, completeWork, nudgeWork } from "../work/assign";
+import {
+  addPmoColumn,
+  addPmoItem,
+  closePmoBoard,
+  listPmoBoardForUser,
+  listPmoBoardsForUser,
+  openPmoBoard,
+  updatePmoItem,
+} from "../pmo/boards";
 import { searchMyCalendar } from "../services/graphCalendar";
 import {
   evaluateOperation,
@@ -99,6 +108,13 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   create_graph_task: { effect: "shared_write", reversible: true },
   update_graph_item: { effect: "shared_write", reversible: true },
   propose_graph_relationship: { effect: "shared_write", reversible: true },
+  open_pmo_board: { effect: "shared_write", reversible: true },
+  list_pmo_boards: { effect: "read", reversible: true },
+  list_pmo_board: { effect: "read", reversible: true },
+  add_pmo_item: { effect: "shared_write", reversible: true },
+  update_pmo_item: { effect: "shared_write", reversible: true },
+  add_pmo_column: { effect: "shared_write", reversible: true },
+  close_pmo_board: { effect: "shared_write", reversible: true },
 };
 const scheduledNativeReads = new Set([
   "recall_notes",
@@ -109,6 +125,8 @@ const scheduledNativeReads = new Set([
   "list_commitments",
   "lookup_org",
   "list_jobs",
+  "list_pmo_boards",
+  "list_pmo_board",
 ]);
 
 export function operationMetadata(name: string): OperationMetadata {
@@ -549,6 +567,124 @@ const nativeDefs: ChatCompletionTool[] = [
           confidence: { type: "number" },
         },
         required: ["fromId", "toId", "type", "evidence"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "open_pmo_board",
+      description:
+        "Create a short-lived shared PMO board. Columns are required. If the user asked to create a board " +
+        "without naming columns, ask one question for the board name, columns, and any extra fields instead of calling this. " +
+        "Pass kanban=true only when they asked for a normal kanban (To do / Doing / Blocked / Done). " +
+        "Returns an existing open board with the same title. Do not invent schema.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          purpose: { type: "string" },
+          columns: { type: "array", items: { type: "string" }, description: "Ordered column labels" },
+          fields: { type: "array", items: { type: "string" }, description: "Optional extra text fields" },
+          kanban: { type: "boolean", description: "Use the default kanban columns" },
+        },
+        required: ["title"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_pmo_boards",
+      description: "List TaskBrain PMO boards. Default is active/open boards; pass status=closed for archived.",
+      parameters: {
+        type: "object",
+        properties: {
+          status: { type: "string", enum: ["open", "closed", "all"] },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_pmo_board",
+      description: "Show one PMO board grouped by its own columns, with owners, dues, and extra fields.",
+      parameters: {
+        type: "object",
+        properties: { board: { type: "string", description: "Board id or title" } },
+        required: ["board"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_pmo_item",
+      description:
+        "Add an item to an open PMO board. Column must match that board. Owner must be an org directory person.",
+      parameters: {
+        type: "object",
+        properties: {
+          board: { type: "string" },
+          title: { type: "string" },
+          detail: { type: "string" },
+          column: { type: "string" },
+          owner: { type: "string" },
+          due: { type: "string" },
+          fields: { type: "object", additionalProperties: { type: "string" } },
+        },
+        required: ["board", "title"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_pmo_item",
+      description: "Move, retitle, reassign, or update fields on a PMO board item. Column must exist on that board.",
+      parameters: {
+        type: "object",
+        properties: {
+          board: { type: "string" },
+          item: { type: "string", description: "Item id or title" },
+          title: { type: "string" },
+          detail: { type: "string" },
+          column: { type: "string" },
+          owner: { type: "string" },
+          due: { type: "string" },
+          fields: { type: "object", additionalProperties: { type: "string" } },
+        },
+        required: ["board", "item"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_pmo_column",
+      description: "Append a column or extra text field to an open PMO board. Does not remove existing columns.",
+      parameters: {
+        type: "object",
+        properties: {
+          board: { type: "string" },
+          label: { type: "string" },
+          kind: { type: "string", enum: ["column", "field"] },
+        },
+        required: ["board", "label"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "close_pmo_board",
+      description:
+        "Archive a PMO board. It stays listed for 90 days. Does not complete To Do / Planner copies unless items were already moved to Done.",
+      parameters: {
+        type: "object",
+        properties: { board: { type: "string" } },
+        required: ["board"],
       },
     },
   },
@@ -1010,6 +1146,52 @@ export async function dispatch(
         );
         return `Proposed ${edge.type} relationship ${edge.id} for team review.`;
       }
+      case "open_pmo_board":
+        return await openPmoBoard(ctx.userId, {
+          title: args.title ? String(args.title) : undefined,
+          purpose: args.purpose ? String(args.purpose) : undefined,
+          columns: args.columns,
+          fields: args.fields,
+          kanban: args.kanban,
+        });
+      case "list_pmo_boards":
+        return await listPmoBoardsForUser(
+          ctx.userId,
+          args.status === "closed" || args.status === "all" || args.status === "open"
+            ? args.status
+            : "open"
+        );
+      case "list_pmo_board":
+        return await listPmoBoardForUser(ctx.userId, String(args.board ?? ""));
+      case "add_pmo_item":
+        return await addPmoItem(ctx.userId, {
+          board: args.board ? String(args.board) : undefined,
+          title: args.title ? String(args.title) : undefined,
+          detail: args.detail ? String(args.detail) : undefined,
+          column: args.column ? String(args.column) : undefined,
+          owner: args.owner ? String(args.owner) : undefined,
+          due: args.due ? String(args.due) : undefined,
+          fields: args.fields,
+        });
+      case "update_pmo_item":
+        return await updatePmoItem(ctx.userId, {
+          board: args.board ? String(args.board) : undefined,
+          item: args.item ? String(args.item) : undefined,
+          title: args.title ? String(args.title) : undefined,
+          detail: args.detail ? String(args.detail) : undefined,
+          column: args.column ? String(args.column) : undefined,
+          owner: args.owner ? String(args.owner) : undefined,
+          due: args.due ? String(args.due) : undefined,
+          fields: args.fields,
+        });
+      case "add_pmo_column":
+        return await addPmoColumn(ctx.userId, {
+          board: args.board ? String(args.board) : undefined,
+          label: args.label ? String(args.label) : undefined,
+          kind: args.kind ? String(args.kind) : undefined,
+        });
+      case "close_pmo_board":
+        return await closePmoBoard(ctx.userId, String(args.board ?? ""));
       default:
         return `Unknown tool: ${name}`;
     }

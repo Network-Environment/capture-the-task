@@ -541,6 +541,18 @@ resource workColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers
   }
 }
 
+resource pmoBoardsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'pmo-boards'
+  properties: {
+    resource: {
+      id: 'pmo-boards'
+      partitionKey: { paths: ['/boardId'], kind: 'Hash' }
+      defaultTtl: -1
+    }
+  }
+}
+
 resource graphNodesColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
   parent: cosmosDb
   name: 'graph-nodes'
@@ -804,7 +816,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
     }
   }
   identity: { type: 'SystemAssigned' }
-  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, agentRequestsColl, workColl ]
+  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, agentRequestsColl, workColl, pmoBoardsColl ]
 }
 
 resource adminPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
@@ -831,7 +843,7 @@ resource adminApp 'Microsoft.Web/sites@2024-04-01' = {
     }
   }
   identity: { type: 'SystemAssigned' }
-  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, agentRequestsColl, workColl ]
+  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, agentRequestsColl, workColl, pmoBoardsColl ]
 }
 
 resource workerPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
@@ -860,7 +872,7 @@ resource workerApp 'Microsoft.Web/sites@2024-04-01' = {
     }
   }
   identity: { type: 'SystemAssigned' }
-  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, agentRequestsColl, workColl ]
+  dependsOn: [ graphNodesColl, graphEdgesColl, memoryFactsColl, agentRequestsColl, workColl, pmoBoardsColl ]
 }
 
 // App Service pulls from ACR without registry credentials or stored secrets.
@@ -1024,6 +1036,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     meetingsColl
     commitmentsColl
     workColl
+    pmoBoardsColl
     meetingCheckpointsColl
     graphNodesColl
     graphEdgesColl

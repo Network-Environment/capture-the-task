@@ -171,6 +171,7 @@ describe("risk policy", () => {
     assert.equal(operationMetadata("assign_work").effect, "personal_write");
     assert.equal(operationMetadata("remember_org_preference").effect, "shared_write");
     assert.equal(operationMetadata("create_graph_task").effect, "shared_write");
+    assert.equal(operationMetadata("open_pmo_board").effect, "shared_write");
     assert.equal(operationMetadata("smartsheet__get_sheet_summary").effect, "read");
     assert.equal(operationMetadata("future__mutate_everything").effect, "shared_write");
   });

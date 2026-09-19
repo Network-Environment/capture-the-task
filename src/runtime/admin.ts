@@ -9,6 +9,7 @@ import {
   readMemoryFactsApi,
   readMcpHealthApi,
   saveOrgDirectory,
+  savePmoBoard,
 } from "../admin/dashboard";
 import { cosmosConfigured } from "../services/cosmos";
 
@@ -41,6 +42,7 @@ server.get("/admin/api/mcp-health", readMcpHealthApi);
 server.get("/admin/:section", adminPage);
 server.post("/admin/meetings/summarize", queueMeetingSummaries);
 server.post("/admin/org", saveOrgDirectory);
+server.post("/admin/boards", savePmoBoard);
 server.get("/healthz", (_req, res, next) => {
   res.send(200, { ok: true, role: "admin", cosmos: cosmosConfigured() });
   return next();
