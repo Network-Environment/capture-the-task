@@ -245,15 +245,26 @@ function change(
   return { kind, id, label, fields };
 }
 
+function skipDirectoryMatch(person: SeedPerson): string | undefined {
+  const note = person.sourceNote?.toLowerCase() ?? "";
+  if (note.includes("surname was not provided")) {
+    return `${person.displayName}: incomplete source identity`;
+  }
+  if (note.includes("do not identity-match automatically")) {
+    return `${person.displayName}: source forbids automatic directory matching`;
+  }
+  return undefined;
+}
+
 function exactDirectoryId(
   person: SeedPerson,
   directory: DirectoryIdentity[],
-  conflicts: string[],
   unresolved: string[]
 ): string | undefined {
   if (person.entraId) return person.entraId;
-  if (person.sourceNote?.toLowerCase().includes("surname was not provided")) {
-    unresolved.push(`${person.displayName}: incomplete source identity`);
+  const skipped = skipDirectoryMatch(person);
+  if (skipped) {
+    unresolved.push(skipped);
     return undefined;
   }
   const matches = directory.filter(
@@ -262,7 +273,7 @@ function exactDirectoryId(
       normalizeOrgName(user.displayName) === normalizeOrgName(person.displayName)
   );
   if (matches.length > 1) {
-    conflicts.push(`${person.displayName}: multiple exact Microsoft 365 directory matches`);
+    unresolved.push(`${person.displayName}: multiple exact Microsoft 365 directory matches`);
     return undefined;
   }
   if (!matches.length) {
@@ -350,12 +361,7 @@ export function planOrgImport(
 
   for (const person of seed.people) {
     const directoryId = directory.length
-      ? exactDirectoryId(
-          person,
-          directory,
-          plan.conflicts,
-          plan.unresolvedIdentities
-        )
+      ? exactDirectoryId(person, directory, plan.unresolvedIdentities)
       : person.entraId;
     const byId = existing.people.find((row) => row.id === person.id);
     const byEntra = (person.entraId ?? directoryId)

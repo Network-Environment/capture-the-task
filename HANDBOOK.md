@@ -263,7 +263,7 @@ the same owner + work mark the prior commitment done.
 
 Chat tools `recall_meetings`, `list_commitments`, `complete_commitment`, and `lookup_org` are org-wide but **viewer-gated**. Access is the union of the Bicep `MEETING_VIEWERS` bootstrap list (Adam and Valerie) and active org people who hold a role titled `Meeting viewer` (or whose person title is that string) and have an Entra object id. Other TaskBrain users get a deny string. Personal notes stay user-scoped.
 
-Tenant setup that Bicep cannot do: `./scripts/setup-meeting-ingest.sh` assigns Graph application roles on the Function managed identity. A Teams admin must then grant a tenant-wide application access policy and set `EnableGraphTranscriptAccess` / `EnableAttributedTranscripts` (MicrosoftTeams PowerShell **7.9.0+**, or Teams admin center → Meetings → Meeting settings → Transcript API access). Existing meeting transcription does **not** enable Graph export.
+Tenant setup that Bicep cannot do: `./scripts/setup-meeting-ingest.sh` assigns Graph application roles on the Function managed identity. `./scripts/setup-followthrough.sh` assigns Tasks.ReadWrite.All, Chat.Create, Chat.ReadWrite.All, and Mail.Send on **every** TaskBrain App Service identity (gateway, worker, admin) plus the Function. The worker must have those roles or `assign_work` Graph 1:1 / To Do fanout fails even when org people have Entra ids. A Teams admin must then grant a tenant-wide application access policy and set `EnableGraphTranscriptAccess` / `EnableAttributedTranscripts` (MicrosoftTeams PowerShell **7.9.0+**, or Teams admin center → Meetings → Meeting settings → Transcript API access). Existing meeting transcription does **not** enable Graph export.
 
 Discovery repeats are deduped by transcript ID. Existing meeting summaries
 are recognized and marked summarized without another model call.
@@ -356,12 +356,22 @@ and unresolved identity, then apply the same input with
 `npm run org:import -- --resolve-entra --apply`. Omit `--resolve-entra` when
 Microsoft 365 directory access is unavailable. The importer matches stable
 IDs first, then unique exact names/Entra IDs, never fuzzy-matches people, and
-aborts all writes on ambiguity. It only fills empty fields on existing
-records: admin-curated names, mandates, aliases, preferences, queues, status,
-and timestamps remain authoritative. Re-running an applied seed must report
-only unchanged records. Edit and review the source JSON for future baseline
-changes; use `/admin/org` for later operational curation. Do not add reporting
-lines or titles that the source did not state.
+aborts all writes on seed/reference conflicts. Duplicate Microsoft 365 display
+names (for example two Elisa Amador accounts) and incomplete identities
+(Shelly) are skipped as unresolved and do not block unique fills. It only fills
+empty fields on existing records: admin-curated names, mandates, aliases,
+preferences, queues, status, and timestamps remain authoritative. Re-running
+an applied seed must report only unchanged records. Edit and review the source
+JSON for future baseline changes; use `/admin/org` for later operational
+curation. Do not add reporting lines or titles that the source did not state.
+
+Outbound work fanout (`assign_work`) needs an org `entraId` plus, for Teams
+cards, a stored 1:1 conversation reference (the person opened TaskBrain once).
+Graph 1:1 / To Do / Planner / Mail.Send run on the **worker** managed identity.
+Grant those application roles with `./scripts/setup-followthrough.sh` after a
+runtime split so worker, gateway, and admin are all covered. Follow-through
+team/channel, Planner plan, and `FOLLOWTHROUGH_MAIL_FROM` remain optional
+Bicep parameters and stay unset until those resource IDs exist.
 
 The **execution graph** (`graph-nodes` + `graph-edges`) is shared operational
 state: projects, tasks, owners, dependencies, source meetings, and evidence.

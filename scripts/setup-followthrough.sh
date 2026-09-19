@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 # Tenant Graph application roles for M365 follow-through (work bus).
-# Grants the App Service AND Function system-assigned identities:
+# Grants every TaskBrain App Service identity in the resource group
+# (gateway, worker, admin) AND the Function system-assigned identity:
 #   Tasks.ReadWrite.All  (To Do + Planner write for another person)
 #   Chat.Create
 #   Chat.ReadWrite.All   (1:1 Adaptive Card when no conversationRef)
@@ -25,10 +26,10 @@ ROLE_CHAT_CREATE="d9c48af6-9ad9-47ad-82c3-63757137b9af"
 ROLE_CHAT_READWRITE_ALL="294ce7c9-31ba-490a-ad7d-97a7d075e4ed"
 ROLE_MAIL_SEND="b633e1c5-b582-4048-a93e-9f11b44c7e96"
 
-WEB_NAME=$(az webapp list -g "$RG" --query "[?starts_with(name, 'app-taskbrain')].name | [0]" -o tsv)
 FUNC_NAME=$(az functionapp list -g "$RG" --query "[?starts_with(name, 'func-taskbrain')].name | [0]" -o tsv)
-if [[ -z "$WEB_NAME" ]]; then
-  echo "No App Service matching app-taskbrain* in $RG. Deploy infra first." >&2
+APPS=$(az webapp list -g "$RG" --query "[?contains(name, 'taskbrain')].name" -o tsv)
+if [[ -z "$APPS" ]]; then
+  echo "No App Service matching *taskbrain* in $RG. Deploy infra first." >&2
   exit 1
 fi
 
@@ -64,8 +65,11 @@ grant_principal() {
   assign_role "$principal_id" "$ROLE_MAIL_SEND" "Mail.Send"
 }
 
-WEB_PID=$(az webapp identity show -g "$RG" -n "$WEB_NAME" --query principalId -o tsv)
-grant_principal "App Service $WEB_NAME" "$WEB_PID"
+# Grant every TaskBrain webapp identity (gateway, worker, admin).
+while IFS=$'\t' read -r name pid; do
+  [[ -z "$pid" || "$pid" == "None" ]] && continue
+  grant_principal "App Service $name" "$pid"
+done < <(az webapp list -g "$RG" --query "[?contains(name, 'taskbrain')].[name, identity.principalId]" -o tsv)
 
 if [[ -n "$FUNC_NAME" ]]; then
   FUNC_PID=$(az functionapp identity show -g "$RG" -n "$FUNC_NAME" --query principalId -o tsv)
@@ -81,6 +85,7 @@ Graph application roles are assigned. Still needed in the tenant:
   3. Optional: a Planner plan id (plannerPlanId) for people with a planner queue.
   4. Optional: followthroughMailFrom (a mailbox UPN) if Teams delivery fails.
 
-Until those ids are set, assignments still store in Cosmos and send via a stored
-Teams conversation reference when the owner has chatted with the bot.
+Until those ids are set, the worker still fans out via a stored Teams
+conversation reference when the owner has opened the 1:1 bot. Graph 1:1 / To Do
+writes run on the worker identity, which must have the roles above.
 EOF

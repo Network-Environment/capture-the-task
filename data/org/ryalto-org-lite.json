@@ -216,7 +216,7 @@
       "aliases": ["Elisa"],
       "unitId": "unt-admin-ryalto",
       "mandate": "Bookkeeping; meeting minutes; expense reports.",
-      "sourceNote": "Additional responsibilities are maintained in Valerie Moraru's grid and were not included in the source email."
+      "sourceNote": "Do not identity-match automatically; two enabled Microsoft 365 accounts share this display name. Additional responsibilities are maintained in Valerie Moraru's grid and were not included in the source email."
     },
     {
       "id": "per-sheena-barton",

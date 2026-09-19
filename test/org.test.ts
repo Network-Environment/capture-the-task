@@ -180,6 +180,11 @@ describe("org directory", () => {
     assert.equal(joe?.entraId, "entra-joe");
     assert.equal(shelly?.entraId, undefined);
     assert.ok(first.unresolvedIdentities.some((item) => item.startsWith("Shelly:")));
+    const elisa = first.writes.find(
+      (row): row is OrgPerson => row.kind === "person" && row.id === "per-elisa-amador"
+    );
+    assert.equal(elisa?.entraId, undefined);
+    assert.ok(first.unresolvedIdentities.some((item) => item.startsWith("Elisa Amador:")));
 
     const imported: OrgDirectory = {
       units: first.writes.filter((row) => row.kind === "unit"),
@@ -235,7 +240,7 @@ describe("org directory", () => {
     assert.equal(updated?.prefSource, "admin");
   });
 
-  it("fails closed on bad references, cycles, and ambiguous directory identities", () => {
+  it("fails closed on bad references and cycles, and skips duplicate directory identities", () => {
     const seed = parseOrgSeed(
       JSON.parse(
         readFileSync(resolve(process.cwd(), "data/org/ryalto-org-lite.json"), "utf8")
@@ -255,9 +260,19 @@ describe("org directory", () => {
       [
         { id: "joe-1", displayName: "Joe Ryan" },
         { id: "joe-2", displayName: "Joe Ryan" },
+        { id: "entra-val", displayName: "Valerie Moraru" },
       ]
     );
-    assert.ok(ambiguous.conflicts.some((error) => error.includes("multiple exact")));
-    assert.equal(ambiguous.writes.length, 0);
+    assert.deepEqual(ambiguous.conflicts, []);
+    assert.ok(ambiguous.unresolvedIdentities.some((item) => item.includes("Joe Ryan")));
+    const valerie = ambiguous.writes.find(
+      (row): row is OrgPerson => row.kind === "person" && row.id === "per-valerie-moraru"
+    );
+    assert.equal(valerie?.entraId, "entra-val");
+    const joe = ambiguous.writes.find(
+      (row): row is OrgPerson => row.kind === "person" && row.id === "per-joe-ryan"
+    );
+    assert.equal(joe?.entraId, undefined);
+    assert.ok(ambiguous.writes.length > 0);
   });
 });
