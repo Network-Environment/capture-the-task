@@ -40,6 +40,7 @@ import {
 } from "../tools/mcpClient";
 import { catalogSheets } from "../services/smartsheet";
 import { agentSkillCatalog } from "../services/agentSkills";
+import { listRecentCheckIns, type CheckInDoc } from "../org/checkins";
 import { requiresApproval } from "../services/approvals";
 import { imessageEnabled } from "../channels/types";
 import {
@@ -273,8 +274,15 @@ async function renderSection(
       );
     }
     case "jobs": {
-      const jobs = await cosmosContainer("jobs").items.query("SELECT * FROM c ORDER BY c.nextRun").fetchAll();
-      return renderJobs(signedIn, jobs.resources as Record<string, unknown>[]);
+      const [jobs, checkIns] = await Promise.all([
+        cosmosContainer("jobs").items.query("SELECT * FROM c ORDER BY c.nextRun").fetchAll(),
+        listRecentCheckIns().catch(() => []),
+      ]);
+      return renderJobs(
+        signedIn,
+        jobs.resources as Record<string, unknown>[],
+        checkIns
+      );
     }
     case "memory": {
       const lessons = await cosmosContainer("agent-memory")
@@ -1739,7 +1747,11 @@ function isGraphNodeStatus(value: string): value is GraphNodeStatus {
   return ["planned", "active", "blocked", "done", "cancelled", "open", "stale"].includes(value);
 }
 
-export function renderJobs(signedIn: string, jobs: Record<string, unknown>[]): string {
+export function renderJobs(
+  signedIn: string,
+  jobs: Record<string, unknown>[],
+  checkIns: CheckInDoc[] = []
+): string {
   const jobRows = jobs
     .map((j) => {
       const status = String(j.lastStatus ?? "");
@@ -1749,13 +1761,34 @@ export function renderJobs(signedIn: string, jobs: Record<string, unknown>[]): s
         `<td><span class="mono muted">${esc(String(j.nextRun ?? "—"))}</span></td>` +
         `<td>${j.enabled ? pill("on", "ok") : pill("paused", "idle")}</td>` +
         `<td>${status ? pill(status, statusTone(status)) : '<span class="muted">—</span>'}</td>` +
+        `<td class="muted clip">${esc(
+          [
+            ...(Array.isArray(j.actionTools) ? j.actionTools.map(String) : []),
+            String(j.prompt ?? "").slice(0, 120),
+          ].filter(Boolean).join(" · ")
+        )}</td>` +
         `<td class="muted clip">${esc(String(j.lastResultPreview ?? ""))}</td></tr>`
       );
     })
     .join("");
+  const checkInRows = checkIns
+    .map(
+      (checkIn) =>
+        `<tr><td class="mono">${esc(checkIn.runId)}</td>` +
+        `<td>${esc(checkIn.personId)}</td>` +
+        `<td>${pill(checkIn.status, checkIn.status === "completed" ? "ok" : checkIn.status === "undelivered" ? "warn" : "info")}</td>` +
+        `<td>${checkIn.items.length}</td>` +
+        `<td class="mono muted">${esc(checkIn.askedAt)}</td>` +
+        `<td class="muted clip">${esc(checkIn.delivery?.error ?? checkIn.response ?? "")}</td></tr>`
+    )
+    .join("");
   const body = `<section class="panel">
     <h2>Scheduled jobs</h2>
-    ${table(["Name", "Cron", "Next run", "State", "Last", "Last result"], jobRows, "No jobs scheduled.")}
+    ${table(["Name", "Cron", "Next run", "State", "Last", "Actions / scope", "Last result"], jobRows, "No jobs scheduled.")}
+  </section>
+  <section class="panel">
+    <h2>Recent daily check-ins</h2>
+    ${table(["Run", "Person", "Status", "Items", "Asked", "Response / delivery"], checkInRows, "No daily check-ins yet.")}
   </section>`;
   return renderShell({ section: "jobs", signedIn, title: "Jobs", subtitle: "scheduled agent work", body });
 }

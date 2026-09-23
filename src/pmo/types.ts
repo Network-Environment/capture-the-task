@@ -43,6 +43,8 @@ export interface PmoItem {
   columnId: string;
   ownerPersonId?: string;
   due?: string;
+  lastProgressAt?: string;
+  progressNote?: string;
   fieldValues: Record<string, string>;
   workId?: string;
   source?: { kind: PmoItemSourceKind; id?: string };

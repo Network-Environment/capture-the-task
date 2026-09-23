@@ -128,6 +128,15 @@ export function mergeGraphNodePatch(
     ownerPersonId:
       patch.ownerPersonId === undefined ? current.ownerPersonId : patch.ownerPersonId ?? undefined,
     due: patch.due === undefined ? current.due : patch.due ?? undefined,
+    effort: patch.effort === undefined ? current.effort : patch.effort ?? undefined,
+    lastProgressAt:
+      patch.lastProgressAt === undefined
+        ? current.lastProgressAt
+        : patch.lastProgressAt ?? undefined,
+    progressNote:
+      patch.progressNote === undefined
+        ? current.progressNote
+        : patch.progressNote ?? undefined,
     source: current.source,
     provenance: current.provenance,
   };

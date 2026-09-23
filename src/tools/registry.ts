@@ -12,7 +12,16 @@ import { mcpToolDefinitions, isMcpTool, callMcpTool } from "./mcpClient";
 import { requiresApproval, parkAction, type PendingAction } from "../services/approvals";
 import { approvalMessage } from "../services/smartsheet";
 import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
-import { assessAssignment, listWorkload, lookupOrg, rememberOrgPreference, rememberOrgResponsibility } from "../org/store";
+import {
+  assessAssignment,
+  findAtRiskWork,
+  listOrgWorkload,
+  listWorkload,
+  lookupOrg,
+  rememberOrgPreference,
+  rememberOrgResponsibility,
+  suggestAssignee,
+} from "../org/store";
 import { retainFromText } from "../memory/retain";
 import { recallMemory, recallPromptBlock } from "../memory/recall";
 import { reflectMemory } from "../memory/reflect";
@@ -45,6 +54,11 @@ import {
 } from "../graph/store";
 import { deterministicGraphId } from "../graph/validation";
 import type { GraphEdgeType, GraphNodeStatus } from "../graph/types";
+import {
+  createProposedTimeline,
+  explainGraphTimeline,
+  type TimelineTaskInput,
+} from "../graph/timeline";
 import { canViewMeetings, denyMeetings } from "../meetings/access";
 import { assignWorkForUser, completeWork, nudgeWork } from "../work/assign";
 import {
@@ -63,6 +77,12 @@ import {
   type OperationMetadata,
 } from "../services/intent";
 import { channelPolicy } from "../channels/types";
+import {
+  applyCheckInUpdates,
+  proposeCheckInUpdates,
+  sendFollowthroughBriefings,
+  type CheckInUpdate,
+} from "../org/checkins";
 
 export interface ToolContext {
   userId: string;
@@ -81,6 +101,8 @@ export interface ToolContext {
   dryRunTools?: boolean;
   /** Immutable tool envelope, primarily for approved scheduled jobs. */
   allowedTools?: string[];
+  /** Scheduled actions explicitly approved when the job was created. */
+  preapprovedTools?: string[];
 }
 
 const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversible">> = {
@@ -96,7 +118,13 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   complete_commitment: { effect: "shared_write", reversible: true },
   lookup_org: { effect: "read", reversible: true },
   list_workload: { effect: "read", reversible: true },
+  list_org_workload: { effect: "read", reversible: true },
+  find_at_risk_work: { effect: "read", reversible: true },
+  send_followthrough_briefings: { effect: "shared_write", reversible: true },
+  propose_checkin_updates: { effect: "personal_write", reversible: true },
+  apply_checkin_updates: { effect: "shared_write", reversible: true },
   assess_assignment: { effect: "read", reversible: true },
+  suggest_assignee: { effect: "read", reversible: true },
   assign_work: { effect: "personal_write", reversible: true },
   nudge_work: { effect: "personal_write", reversible: true },
   complete_work: { effect: "personal_write", reversible: true },
@@ -107,10 +135,12 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   recall_memory: { effect: "read", reversible: true },
   reflect_memory: { effect: "personal_write", reversible: true },
   search_execution_graph: { effect: "read", reversible: true },
+  explain_timeline: { effect: "read", reversible: true },
   create_graph_project: { effect: "shared_write", reversible: true },
   create_graph_task: { effect: "shared_write", reversible: true },
   update_graph_item: { effect: "shared_write", reversible: true },
   propose_graph_relationship: { effect: "shared_write", reversible: true },
+  propose_timeline: { effect: "shared_write", reversible: true },
   open_pmo_board: { effect: "shared_write", reversible: true },
   list_pmo_boards: { effect: "read", reversible: true },
   list_pmo_board: { effect: "read", reversible: true },
@@ -122,13 +152,17 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
 const scheduledNativeReads = new Set([
   "recall_notes",
   "search_execution_graph",
+  "explain_timeline",
   "recall_memory",
   "search_my_calendar",
   "recall_meetings",
   "list_commitments",
   "lookup_org",
   "list_workload",
+  "list_org_workload",
+  "find_at_risk_work",
   "assess_assignment",
+  "suggest_assignee",
   "list_jobs",
   "list_pmo_boards",
   "list_pmo_board",
@@ -154,6 +188,13 @@ export async function scheduledReadToolEnvelope(): Promise<string[]> {
         operationMetadata(tool).effect === "read" &&
         (scheduledNativeReads.has(tool) || tool.startsWith("smartsheet__"))
     );
+}
+
+const scheduledActionTools = new Set(["send_followthrough_briefings"]);
+
+export function scheduledActionToolEnvelope(requested: unknown): string[] {
+  if (!Array.isArray(requested)) return [];
+  return [...new Set(requested.map(String).filter((tool) => scheduledActionTools.has(tool)))];
 }
 
 const nativeDefs: ChatCompletionTool[] = [
@@ -211,6 +252,12 @@ const nativeDefs: ChatCompletionTool[] = [
           },
           runOnce: { type: "string", description: "ISO datetime for a one-time job (omit cron)" },
           prompt: { type: "string", description: "The instruction to execute at each run" },
+          actionTools: {
+            type: "array",
+            items: { type: "string", enum: ["send_followthrough_briefings"] },
+            description:
+              "Narrow actions to approve with the schedule. Use send_followthrough_briefings only for requested recurring org check-ins.",
+          },
         },
         required: ["name", "prompt"],
       },
@@ -340,6 +387,7 @@ const nativeDefs: ChatCompletionTool[] = [
           title: { type: "string" },
           detail: { type: "string" },
           due: { type: "string", description: "ISO date" },
+          effort: { type: "number", enum: [1, 2, 3, 5, 8] },
         },
         required: ["owner", "title"],
       },
@@ -453,6 +501,102 @@ const nativeDefs: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "list_org_workload",
+      description:
+        "Summarize current TaskBrain workload for all active people, one team, or a manager and direct reports.",
+      parameters: {
+        type: "object",
+        properties: {
+          team: { type: "string" },
+          manager: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_at_risk_work",
+      description:
+        "Find overdue, due-soon, blocked, or inactive TaskBrain work across the org, one team, or a manager and direct reports.",
+      parameters: {
+        type: "object",
+        properties: {
+          team: { type: "string" },
+          manager: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_followthrough_briefings",
+      description:
+        "Send risk-based daily asks to scoped org people and manager rollups. Use only from an explicitly approved scheduled job.",
+      parameters: {
+        type: "object",
+        properties: {
+          team: { type: "string" },
+          manager: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "propose_checkin_updates",
+      description:
+        "For the current user's pending daily check-in, prepare exact status, due-date, blocker, completion, or progress-note changes and return one approval command. Does not apply changes.",
+      parameters: {
+        type: "object",
+        properties: {
+          checkInId: { type: "string" },
+          response: { type: "string" },
+          updates: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                source: { type: "string", enum: ["work", "commitment", "graph", "pmo"] },
+                id: { type: "string" },
+                status: {
+                  type: "string",
+                  enum: ["open", "accepted", "blocked", "done"],
+                },
+                due: { type: "string", description: "ISO date; empty string clears it" },
+                progressNote: { type: "string" },
+              },
+              required: ["source", "id"],
+            },
+          },
+        },
+        required: ["updates"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "apply_checkin_updates",
+      description:
+        "Apply a previously proposed daily check-in update. This tool is invoked only through approve pa-x.",
+      parameters: {
+        type: "object",
+        properties: {
+          personId: { type: "string" },
+          checkInId: { type: "string" },
+          response: { type: "string" },
+          updates: { type: "array", items: { type: "object" } },
+        },
+        required: ["personId", "checkInId", "updates"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "assess_assignment",
       description:
         "Before assign_work, check whether a named org person is a mandate fit and whether their plate/capacity " +
@@ -465,6 +609,23 @@ const nativeDefs: ChatCompletionTool[] = [
           detail: { type: "string" },
         },
         required: ["owner", "title"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "suggest_assignee",
+      description:
+        "For work without a named owner, rank up to three active org people by mandate fit, capacity, risk-weighted load, effort, and recent assignment share. Advisory only.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          detail: { type: "string" },
+          effort: { type: "number", enum: [1, 2, 3, 5, 8] },
+        },
+        required: ["title"],
       },
     },
   },
@@ -549,6 +710,58 @@ const nativeDefs: ChatCompletionTool[] = [
           depth: { type: "number", description: "Relationship hops, 0-2 (default 1)" },
         },
         required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "explain_timeline",
+      description:
+        "Explain dependency order, capacity/effort-based likely finish, due conflicts, and target-date feasibility for a graph project. Missing effort is clearly labeled as an estimate.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          startDate: { type: "string" },
+          targetDate: { type: "string" },
+        },
+        required: ["projectId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "propose_timeline",
+      description:
+        "Propose and, after shared-write approval, create graph tasks and accepted dependencies under an existing project with calculated business-day dates.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          startDate: { type: "string" },
+          targetDate: { type: "string" },
+          tasks: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                title: { type: "string" },
+                description: { type: "string" },
+                ownerPersonId: { type: "string" },
+                effort: { type: "number", enum: [1, 2, 3, 5, 8] },
+                dependsOn: {
+                  type: "array",
+                  items: { type: "number" },
+                  description: "Zero-based indexes of prerequisite tasks in this tasks array",
+                },
+              },
+              required: ["title"],
+            },
+          },
+        },
+        required: ["projectId", "tasks"],
       },
     },
   },
@@ -767,13 +980,14 @@ export async function allToolDefinitions(): Promise<ChatCompletionTool[]> {
   return [...enabledNativeDefs(), ...(await mcpToolDefinitions())];
 }
 
-const graphReadTools = new Set(["search_execution_graph"]);
+const graphReadTools = new Set(["search_execution_graph", "explain_timeline"]);
 const memoryTools = new Set(["retain_memory", "recall_memory", "reflect_memory"]);
 const graphWriteTools = new Set([
   "create_graph_project",
   "create_graph_task",
   "update_graph_item",
   "propose_graph_relationship",
+  "propose_timeline",
 ]);
 
 function enabledNativeDefs(): ChatCompletionTool[] {
@@ -913,15 +1127,20 @@ export async function dispatch(
           .join("\n---\n");
       }
       case "schedule_job": {
+        const actionTools = scheduledActionToolEnvelope(args.actionTools);
+        const readTools = Array.isArray(args.allowedTools)
+          ? (args.allowedTools as string[]).filter(
+              (tool) => operationMetadata(tool).effect === "read"
+            )
+          : await scheduledReadToolEnvelope();
         const job = await scheduleJob(ctx.userId, {
           name: String(args.name),
           cron: args.cron ? String(args.cron) : undefined,
           runOnce: args.runOnce ? String(args.runOnce) : undefined,
           prompt: String(args.prompt),
           conversationRef: ctx.conversationRef,
-          allowedTools: (args.allowedTools as string[]).filter(
-            (tool) => operationMetadata(tool).effect === "read"
-          ),
+          allowedTools: [...new Set([...readTools, ...actionTools])],
+          actionTools,
         });
         return `Scheduled "${job.name}" — next run ${job.nextRun}.`;
       }
@@ -973,6 +1192,7 @@ export async function dispatch(
           title: String(args.title ?? ""),
           detail: args.detail ? String(args.detail) : undefined,
           due: args.due ? String(args.due) : undefined,
+          effort: parseEffort(args.effort),
           source: "chat",
           requesterUserId: ctx.userId,
         });
@@ -1006,11 +1226,46 @@ export async function dispatch(
         return await lookupOrg(ctx.userId, String(args.query ?? ""));
       case "list_workload":
         return await listWorkload(ctx.userId, String(args.person ?? ""));
+      case "list_org_workload":
+        return await listOrgWorkload(ctx.userId, {
+          team: args.team ? String(args.team) : undefined,
+          manager: args.manager ? String(args.manager) : undefined,
+        });
+      case "find_at_risk_work":
+        return await findAtRiskWork(ctx.userId, {
+          team: args.team ? String(args.team) : undefined,
+          manager: args.manager ? String(args.manager) : undefined,
+        });
+      case "send_followthrough_briefings":
+        if (!canViewMeetings(ctx.userId)) return denyMeetings();
+        return await sendFollowthroughBriefings(ctx.userId, {
+          team: args.team ? String(args.team) : undefined,
+          manager: args.manager ? String(args.manager) : undefined,
+        });
+      case "propose_checkin_updates":
+        return await proposeCheckInUpdates(ctx.userId, {
+          checkInId: args.checkInId ? String(args.checkInId) : undefined,
+          response: args.response ? String(args.response) : undefined,
+          updates: parseCheckInUpdates(args.updates),
+        }, ctx.authorization);
+      case "apply_checkin_updates":
+        return await applyCheckInUpdates(ctx.userId, {
+          personId: String(args.personId ?? ""),
+          checkInId: String(args.checkInId ?? ""),
+          response: args.response ? String(args.response) : undefined,
+          updates: parseCheckInUpdates(args.updates),
+        });
       case "assess_assignment":
         return await assessAssignment(ctx.userId, {
           owner: String(args.owner ?? ""),
           title: String(args.title ?? ""),
           detail: args.detail ? String(args.detail) : undefined,
+        });
+      case "suggest_assignee":
+        return await suggestAssignee(ctx.userId, {
+          title: String(args.title ?? ""),
+          detail: args.detail ? String(args.detail) : undefined,
+          effort: parseEffort(args.effort),
         });
       case "retain_memory": {
         const bank = String(args.bank ?? "user") === "org" ? "org" : "user";
@@ -1080,6 +1335,25 @@ export async function dispatch(
           ...(graph.truncated ? ["Result truncated; narrow the query."] : []),
         ].join("\n");
       }
+      case "explain_timeline":
+        if (!canViewMeetings(ctx.userId)) return denyMeetings();
+        if (!graphEnabled()) return "Execution graph is disabled.";
+        return await explainGraphTimeline(ctx.userId, {
+          projectId: String(args.projectId ?? ""),
+          startDate: args.startDate ? String(args.startDate) : undefined,
+          targetDate: args.targetDate ? String(args.targetDate) : undefined,
+        });
+      case "propose_timeline":
+        if (!canViewMeetings(ctx.userId)) return denyMeetings();
+        if (!graphWritesEnabled()) {
+          return "Execution graph writes are disabled during read-only rollout.";
+        }
+        return await createProposedTimeline(ctx.userId, {
+          projectId: String(args.projectId ?? ""),
+          startDate: args.startDate ? String(args.startDate) : undefined,
+          targetDate: args.targetDate ? String(args.targetDate) : undefined,
+          tasks: parseTimelineTasks(args.tasks),
+        });
       case "create_graph_project": {
         if (!canViewMeetings(ctx.userId)) return denyMeetings();
         if (!graphWritesEnabled()) return "Execution graph writes are disabled during read-only rollout.";
@@ -1311,6 +1585,55 @@ export async function executeApprovedAction(
     action.args,
     { approved: true }
   );
+}
+
+function parseCheckInUpdates(value: unknown): CheckInUpdate[] {
+  if (!Array.isArray(value)) return [];
+  const allowedSources = new Set(["work", "commitment", "graph", "pmo"]);
+  const allowedStatuses = new Set(["open", "accepted", "blocked", "done"]);
+  return value.flatMap((raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const row = raw as Record<string, unknown>;
+    const source = String(row.source ?? "");
+    const id = String(row.id ?? "").trim();
+    if (!allowedSources.has(source) || !id) return [];
+    const status = row.status ? String(row.status) : undefined;
+    return [{
+      source: source as CheckInUpdate["source"],
+      id,
+      status: status && allowedStatuses.has(status)
+        ? status as CheckInUpdate["status"]
+        : undefined,
+      due: "due" in row ? String(row.due ?? "").trim() || null : undefined,
+      progressNote: row.progressNote ? String(row.progressNote) : undefined,
+    }];
+  });
+}
+
+function parseEffort(value: unknown): 1 | 2 | 3 | 5 | 8 | undefined {
+  const effort = Number(value);
+  return [1, 2, 3, 5, 8].includes(effort)
+    ? effort as 1 | 2 | 3 | 5 | 8
+    : undefined;
+}
+
+function parseTimelineTasks(value: unknown): TimelineTaskInput[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const row = raw as Record<string, unknown>;
+    const title = String(row.title ?? "").trim();
+    if (!title) return [];
+    return [{
+      title,
+      description: row.description ? String(row.description) : undefined,
+      ownerPersonId: row.ownerPersonId ? String(row.ownerPersonId) : undefined,
+      effort: parseEffort(row.effort),
+      dependsOn: Array.isArray(row.dependsOn)
+        ? row.dependsOn.map(Number).filter(Number.isInteger)
+        : undefined,
+    }];
+  });
 }
 
 function normalizePersonGraphId(id: string): string {

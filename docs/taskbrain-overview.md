@@ -32,15 +32,17 @@ Voice memos are transcribed. Replies stay short. High-impact writes come back as
 
 **Org directory.** People, teams, reporting, mandates (what they should be doing), capacity (available / stretched / overloaded / unavailable), and how someone prefers to receive work (Teams, To Do, Planner). Ambiguous or duplicate directory names stay unmatched. Ambiguous first names get one clarifying question.
 
-**Work follow-through.** Create, nudge, or complete assignments for named people. Destinations come from the org record, not a guess. Before assigning, it checks mandate fit and the TaskBrain plate (open work, commitments, graph tasks, PMO items) — not Microsoft To Do or calendar. Open meeting commitments can be listed and marked done.
+**Work follow-through.** See each active person's normalized TaskBrain plate across open work, commitments, graph tasks, and PMO items. TaskBrain flags overdue, due-soon, blocked, and inactive work. Manager rollups cover only the manager and explicitly configured direct reports. Open meeting commitments can be listed and marked done.
 
-**Shared projects.** The execution graph is the source of truth for project/task status, owners, blockers, and dependencies. Inferred relationships are proposed for team review, not silently written.
+Before named work is assigned, it checks mandate fit and current capacity/load. If no owner is named, it recommends people using fit, stated capacity, current risk-weighted effort, and recent assignment share so work does not always flow to the same person. It does not read colleagues' calendars.
+
+**Shared projects.** The execution graph is the source of truth for project/task status, owners, blockers, and dependencies. It can explain a prerequisite-first business-day timeline, including effort assumptions, owner capacity, cycles, and due-date conflicts. New timeline tasks and inferred relationships are proposed for team review, not silently written.
 
 **PMO / Smartsheet.** Search sheets, read status and risks, propose row changes. Writes park until you approve. It will not invent sheet IDs.
 
 **Memory.** Dated facts from captures and meetings; personal opinions stay personal. It will not write org-wide judgments about people.
 
-**Scheduling.** Recurring or one-shot jobs (digests, lookups) delivered back to the same conversation. Timezone is US Central.
+**Scheduling and daily follow-through.** Recurring or one-shot jobs (digests, lookups) are delivered back to the same conversation. A user-created daily follow-through job can send risk-first asks to each person and rollups to managers through saved routes. Replies become readable proposed source-record updates and require explicit `approve pa-…` before they are applied. Delivery and reply status is visible to operators. Timezone is US Central.
 
 **Public web.** Search the public web, or open a named public URL for a page snapshot. Not used for private org, calendar, meeting, or sheet data.
 

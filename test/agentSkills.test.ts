@@ -16,9 +16,19 @@ describe("TaskBrain runtime skills", () => {
     assert.ok(skill.skill.tools.includes("assign_work"));
 
     const prompt = agentSkillsPromptBlock(["work-followthrough"]);
-    assert.match(prompt, /Before assign_work, call assess_assignment/);
+    assert.match(prompt, /Before named assign_work, call assess_assignment/);
     assert.match(prompt, /never guess an Entra id/i);
     assert.match(prompt, /assign only if they still want that owner/i);
+  });
+
+  it("loads daily and timeline workflows as runtime skills", () => {
+    const prompt = agentSkillsPromptBlock([
+      "daily-followthrough",
+      "timeline-planning",
+    ]);
+    assert.match(prompt, /never invent or hard-code a daily timer/i);
+    assert.match(prompt, /Individuals receive only their own plate/i);
+    assert.match(prompt, /Distinguish committed due dates from calculated estimates/i);
   });
 
   it("fails closed when a profile names an unknown skill", () => {

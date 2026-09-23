@@ -1,7 +1,8 @@
 import type { ExecutionQueue } from "../org/types";
 
 export type WorkSource = "chat" | "meeting" | "agent";
-export type WorkStatus = "open" | "accepted" | "done" | "cancelled";
+export type WorkStatus = "open" | "accepted" | "blocked" | "done" | "cancelled";
+export type WorkEffort = 1 | 2 | 3 | 5 | 8;
 export type DestinationKind = "teams" | "todo" | "planner" | "smartsheet" | "email" | "imessage";
 
 export interface WorkDestination {
@@ -18,6 +19,9 @@ export interface WorkAssignment {
   title: string;
   detail?: string;
   due?: string;
+  effort?: WorkEffort;
+  lastProgressAt?: string;
+  progressNote?: string;
   source: WorkSource;
   sourceId?: string;
   requesterUserId?: string;

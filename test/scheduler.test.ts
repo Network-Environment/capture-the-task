@@ -2,6 +2,7 @@ import "./setup";
 import { test } from "node:test";
 import assert from "node:assert";
 import { computeNextRun } from "../src/services/scheduler";
+import { scheduledActionToolEnvelope } from "../src/tools/registry";
 
 test("cron: Fridays 4pm advances to a Friday", () => {
   const next = new Date(computeNextRun("0 16 * * 5", undefined, new Date("2026-09-03T12:00:00Z")));
@@ -17,4 +18,15 @@ test("runOnce passes through", () => {
 
 test("missing schedule throws", () => {
   assert.throws(() => computeNextRun(undefined, undefined));
+});
+
+test("scheduled actions allow only narrow follow-through fanout", () => {
+  assert.deepEqual(
+    scheduledActionToolEnvelope([
+      "send_followthrough_briefings",
+      "assign_work",
+      "send_followthrough_briefings",
+    ]),
+    ["send_followthrough_briefings"]
+  );
 });

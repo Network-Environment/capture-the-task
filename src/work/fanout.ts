@@ -9,11 +9,11 @@ import { graphAppFetch, graphAppJson } from "./graphApp";
 import { upsertWork } from "./store";
 import type { WorkAssignment, WorkDestination } from "./types";
 
-async function notifyUserText(userId: string, text: string): Promise<void> {
+async function notifyUserText(userId: string, text: string): Promise<boolean> {
   const adapter = getDeliveryAdapter();
   const appId = getDeliveryAppId();
   const ref = await getConversationRef(userId, "teams");
-  if (!adapter || !appId || !ref?.teamsRef) return;
+  if (!adapter || !appId || !ref?.teamsRef) return false;
   try {
     await adapter.continueConversationAsync(
       appId,
@@ -22,12 +22,36 @@ async function notifyUserText(userId: string, text: string): Promise<void> {
         await ctx.sendActivity(text);
       }
     );
+    return true;
   } catch (err) {
     console.error("[work] requester notify failed:", err);
+    return false;
   }
 }
 
 export { notifyUserText };
+
+export async function notifyPersonText(
+  person: OrgPerson,
+  text: string
+): Promise<WorkDestination> {
+  if (person.nudgeChannel === "silent") return { kind: "teams", error: "silent" };
+  if (!person.entraId) return { kind: "teams", error: "missing Entra id" };
+  if (person.nudgeChannel === "imessage") {
+    try {
+      const { sendIMessage } = await import("../channels/photon.js");
+      if (await sendIMessage(person.entraId, text)) {
+        return { kind: "imessage", id: person.entraId };
+      }
+    } catch (err) {
+      console.error("[work] check-in iMessage failed:", err);
+    }
+  }
+  if (person.nudgeChannel !== "email" && await notifyUserText(person.entraId, text)) {
+    return { kind: "teams", id: person.entraId };
+  }
+  return { kind: "teams", error: "no stored personal delivery route" };
+}
 
 function adaptiveAttachment(work: WorkAssignment, notice?: string) {
   return {

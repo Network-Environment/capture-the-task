@@ -50,6 +50,27 @@ export async function listOpenWork(ownerPersonId?: string): Promise<WorkAssignme
   return resources;
 }
 
+export async function listRecentWork(
+  since: string,
+  ownerPersonId?: string
+): Promise<WorkAssignment[]> {
+  const clauses = ["c.createdAt >= @since"];
+  const parameters: { name: string; value: string }[] = [
+    { name: "@since", value: since },
+  ];
+  if (ownerPersonId) {
+    clauses.push("c.ownerPersonId = @owner");
+    parameters.push({ name: "@owner", value: ownerPersonId });
+  }
+  const { resources } = await work().items
+    .query<WorkAssignment>({
+      query: `SELECT * FROM c WHERE ${clauses.join(" AND ")}`,
+      parameters,
+    })
+    .fetchAll();
+  return resources;
+}
+
 export async function listOverdueWork(now = Date.now()): Promise<WorkAssignment[]> {
   const open = await listOpenWork();
   return open.filter((w) => {

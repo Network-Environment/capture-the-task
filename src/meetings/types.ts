@@ -48,6 +48,8 @@ export interface CommitmentDoc {
   personId?: string;
   text: string;
   due?: string;
+  lastProgressAt?: string;
+  progressNote?: string;
   status: CommitmentStatus;
   sourceMeetingId: string;
   sourceTitle: string;

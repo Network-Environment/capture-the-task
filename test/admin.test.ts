@@ -413,6 +413,32 @@ describe("admin portal", () => {
 
   it("jobs, memory, and usage empty states render", () => {
     assert.match(renderJobs("local", []), /No jobs scheduled/);
+    const jobs = renderJobs(
+      "local",
+      [{
+        name: "Daily follow-through",
+        schedule: "0 9 * * 1-5",
+        enabled: true,
+        actionTools: ["send_followthrough_briefings"],
+        prompt: "Send the daily asks for the whole organization",
+      }],
+      [{
+        id: "ci-1",
+        personId: "per-val",
+        runId: "run-1",
+        kind: "individual",
+        status: "undelivered",
+        items: [{ source: "work", id: "w-1", title: "Risk review" }],
+        askedAt: "2026-09-23T14:00:00Z",
+        expiresAt: "2026-09-25T02:00:00Z",
+        snapshotHash: "hash",
+        delivery: { error: "No saved route" },
+        ttl: 2592000,
+      }]
+    );
+    assert.match(jobs, /send_followthrough_briefings/);
+    assert.match(jobs, /Recent daily check-ins/);
+    assert.match(jobs, /No saved route/);
     const mem = renderMemory("local", [
       { userId: "org", kind: "self", text: "Watch ops follow-through", createdAt: "2026-09-06" },
     ]);

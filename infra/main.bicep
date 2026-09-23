@@ -541,6 +541,18 @@ resource workColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers
   }
 }
 
+resource checkInsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'check-ins'
+  properties: {
+    resource: {
+      id: 'check-ins'
+      partitionKey: { paths: ['/personId'], kind: 'Hash' }
+      defaultTtl: 2592000 // 30 days; individual docs may override
+    }
+  }
+}
+
 resource pmoBoardsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
   parent: cosmosDb
   name: 'pmo-boards'

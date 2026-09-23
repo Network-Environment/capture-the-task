@@ -2,6 +2,7 @@ import { normalizeOrgName } from "./resolve";
 import type { OrgDirectory, OrgPerson, OrgRole, OrgUnit } from "./types";
 import type { PersonWorkload } from "./workload";
 import { loadPressure, plateCountsLine } from "./workload";
+import { riskForItem } from "./followthrough";
 
 export type AssignmentFit = "strong" | "weak" | "unknown";
 
@@ -50,9 +51,14 @@ export function overlapScore(taskTokens: Set<string>, corpus: Set<string>): numb
   return n;
 }
 
-export function classifyFit(score: number, corpusSize: number): AssignmentFit {
-  if (corpusSize === 0) return "unknown";
-  return score >= 1 ? "strong" : "weak";
+export function classifyFit(
+  score: number,
+  corpusSize: number,
+  taskSize = 1
+): AssignmentFit {
+  if (corpusSize === 0 || taskSize === 0) return "unknown";
+  const normalized = score / Math.max(1, taskSize);
+  return score >= 2 || normalized >= 0.5 ? "strong" : "weak";
 }
 
 export function scorePeople(
@@ -70,8 +76,94 @@ export function scorePeople(
         person.unitId ? unitById.get(person.unitId) : undefined
       );
       const score = overlapScore(taskTokens, corpus);
-      return { person, score, fit: classifyFit(score, corpus.size) };
+      return { person, score, fit: classifyFit(score, corpus.size, taskTokens.size) };
     });
+}
+
+export interface AssigneeRank {
+  person: OrgPerson;
+  score: number;
+  fit: AssignmentFit;
+  fitScore: number;
+  loadPoints: number;
+  riskPoints: number;
+  capacityPenalty: number;
+  recentAssignments: number;
+  total: number;
+}
+
+export function rankAssignees(input: {
+  taskText: string;
+  effort?: 1 | 2 | 3 | 5 | 8;
+  dir: OrgDirectory;
+  workloads: Map<string, PersonWorkload>;
+  recentAssignments: Map<string, number>;
+  now?: Date;
+}): AssigneeRank[] {
+  const taskTokens = tokenize(input.taskText);
+  const base = scorePeople(input.taskText, input.dir);
+  const now = input.now ?? new Date();
+  return base
+    .map(({ person, score, fit }) => {
+      const load = input.workloads.get(person.id);
+      const loadPoints = load
+        ? load.items.reduce((sum, item) => sum + (item.effort ?? 1), 0)
+        : 0;
+      const riskPoints = load
+        ? load.items.reduce(
+            (sum, item) =>
+              sum +
+              riskForItem(item, now).reduce(
+                (riskSum, risk) =>
+                  riskSum +
+                  (risk === "overdue" ? 3 : risk === "blocked" ? 2 : 1),
+                0
+              ),
+            0
+          )
+        : 0;
+      const capacityPenalty =
+        person.capacityStatus === "unavailable"
+          ? 100
+          : person.capacityStatus === "overloaded"
+            ? 12
+            : person.capacityStatus === "stretched"
+              ? 5
+              : person.capacityStatus === "available"
+                ? 0
+                : 2;
+      const recentAssignments = input.recentAssignments.get(person.id) ?? 0;
+      const fitScore = taskTokens.size ? (score / taskTokens.size) * 20 : 0;
+      const total =
+        fitScore -
+        loadPoints -
+        riskPoints -
+        capacityPenalty -
+        recentAssignments * 0.5 -
+        (input.effort ?? 1) * (person.capacityStatus === "stretched" ? 0.5 : 0);
+      return {
+        person,
+        score,
+        fit,
+        fitScore,
+        loadPoints,
+        riskPoints,
+        capacityPenalty,
+        recentAssignments,
+        total,
+      };
+    })
+    .filter((row) => row.person.capacityStatus !== "unavailable")
+    .sort((a, b) => b.total - a.total || b.fitScore - a.fitScore);
+}
+
+export function formatAssigneeSuggestions(rows: AssigneeRank[]): string {
+  if (!rows.length) return "No active, available org people can take this work.";
+  return rows.slice(0, 3).map((row, index) =>
+    `${index + 1}. ${row.person.displayName} — fit ${row.fit} (${row.fitScore.toFixed(1)}), ` +
+    `load ${row.loadPoints}, risk ${row.riskPoints}, capacity ${row.person.capacityStatus ?? "unset"}, ` +
+    `recent assignments ${row.recentAssignments}.`
+  ).join("\n");
 }
 
 export function formatAssessment(input: {

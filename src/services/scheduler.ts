@@ -25,6 +25,8 @@ export interface Job {
   conversationRef?: unknown; // where to deliver results proactively
   /** Snapshot of read-only tools approved when the job was created. */
   allowedTools?: string[];
+  /** Narrow write tools approved with the schedule itself. */
+  actionTools?: string[];
   lastRun?: string;
   lastStatus?: "ok" | "error";
   lastResultPreview?: string;

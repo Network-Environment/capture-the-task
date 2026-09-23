@@ -98,6 +98,11 @@ export async function putGraphNode(
     ownerPersonId:
       "ownerPersonId" in input ? input.ownerPersonId : existing?.ownerPersonId,
     due: "due" in input ? input.due : existing?.due,
+    effort: "effort" in input ? input.effort : existing?.effort,
+    lastProgressAt:
+      "lastProgressAt" in input ? input.lastProgressAt : existing?.lastProgressAt,
+    progressNote:
+      "progressNote" in input ? input.progressNote?.trim() || undefined : existing?.progressNote,
     visibility: input.visibility ?? existing?.visibility ?? "workspace",
     privateOwnerId: input.privateOwnerId ?? existing?.privateOwnerId,
     source: input.source ?? existing?.source,
@@ -563,6 +568,9 @@ function sameNodeContent(a: GraphNode, b: GraphNode): boolean {
     status: a.status,
     ownerPersonId: a.ownerPersonId,
     due: a.due,
+    effort: a.effort,
+    lastProgressAt: a.lastProgressAt,
+    progressNote: a.progressNote,
     visibility: a.visibility,
     privateOwnerId: a.privateOwnerId,
     source: a.source,
@@ -575,6 +583,9 @@ function sameNodeContent(a: GraphNode, b: GraphNode): boolean {
     status: b.status,
     ownerPersonId: b.ownerPersonId,
     due: b.due,
+    effort: b.effort,
+    lastProgressAt: b.lastProgressAt,
+    progressNote: b.progressNote,
     visibility: b.visibility,
     privateOwnerId: b.privateOwnerId,
     source: b.source,

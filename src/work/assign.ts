@@ -7,13 +7,19 @@ import { resolvePerson } from "../org/resolve";
 import { defaultQueues } from "../org/prefs";
 import { commentPlannerNudge, completeDestinations, fanOutWork, notifyOwnerCard, notifyUserText } from "./fanout";
 import { findWork, findWorkBySource, getWork, listOpenWork, listOverdueWork, upsertWork } from "./store";
-import { newWorkId, type WorkAssignment, type WorkSource } from "./types";
+import {
+  newWorkId,
+  type WorkAssignment,
+  type WorkEffort,
+  type WorkSource,
+} from "./types";
 
 export interface AssignWorkInput {
   owner: string;
   title: string;
   detail?: string;
   due?: string;
+  effort?: WorkEffort;
   source?: WorkSource;
   sourceId?: string;
   requesterUserId?: string;
@@ -37,6 +43,7 @@ export async function assignWork(input: AssignWorkInput): Promise<WorkAssignment
     title: input.title.trim().slice(0, 200),
     detail: input.detail?.trim().slice(0, 2000) || undefined,
     due: input.due?.slice(0, 10) || undefined,
+    effort: input.effort,
     source: input.source ?? "agent",
     sourceId: input.sourceId,
     requesterUserId: input.requesterUserId,

@@ -222,13 +222,14 @@ SCHEDULER — jobs-as-data
 | `sessions` | `/userId` | 900s | conversation-scoped structured turns plus pending clarification |
 | `inbound-receipts` | `/channel` | 2d | hashed source event receipts preventing duplicate execution |
 | `agent-requests` | `/bucket` | 2d delivered / 7d pending or failed | durable FIFO for interactive Teams/iMessage requests; ETag claims, leases, retries, result delivery state |
-| `jobs` | `/userId` | — | scheduled jobs plus immutable read-only tool envelope |
+| `jobs` | `/userId` | — | scheduled jobs plus immutable read-only tool envelope and narrowly approved action tools |
 | `activity` | `/day` | 30d | event stream incl. model calls with token counts |
 | `agent-memory` | `/userId` | — | agent lessons (≤40/user, auto-consolidated) |
 | `conversations` | `/userId` | — | per-channel references: Teams conversationRef or iMessage phone/space; `:latest` pointer |
 | `pending` | `/userId` | 1h pending / 7d terminal | parked high-impact action plans and audit state |
 | `meetings` | `/organizerId` | 90d | one compact summary + one 1536-dim embedding per meeting. No raw VTT. |
 | `commitments` | `/ownerKey` | 180d (14d after done) | tiny follow-through records (no embeddings) |
+| `check-ins` | `/personId` | 30d | daily ask delivery, exact source item references, reply/proposal status, and delivery failures |
 | `meeting-checkpoints` | `/organizerId` | — | Graph deltaLink per organizer + ingest health (`latest` / `_system`) |
 | `org` | `/kind` | — | org directory: teams (`unit`), people, named roles. Mandates only; no transcript or Smartsheet copies. |
 | `work` | `/ownerPersonId` | — | person-centric work fanout (Teams / To Do / Planner / Smartsheet copies) |
@@ -370,6 +371,35 @@ preferences, queues, capacity, status, and timestamps remain authoritative. Re-r
 an applied seed must report only unchanged records. Edit and review the source
 JSON for future baseline changes; use `/admin/org` for later operational
 curation. Do not add reporting lines or titles that the source did not state.
+
+### Lean-team follow-through
+
+TaskBrain builds a normalized plate from assignments, commitments, task graph
+work, and PMO boards. It classifies overdue, due-soon, blocked, and inactive
+items. Manager views include the manager and people whose org records
+explicitly name that manager; reporting lines are never inferred from titles.
+Thresholds use `FOLLOWTHROUGH_DUE_SOON_DAYS` (default `2`) and
+`FOLLOWTHROUGH_INACTIVE_DAYS` (default `5`).
+
+Daily follow-through is a user-created scheduled job. The job may preapprove
+only `send_followthrough_briefings`; the scheduler keeps the rest of the action
+catalog blocked. Each run sends risk-first individual asks through saved
+delivery routes, sends manager rollups, stores exact source-item references,
+and records missing routes or delivery failures in `check-ins`. A reply creates
+a readable proposal scoped to that person's referenced items. Shared records
+change only after `approve pa-…`; updates are written to their authoritative
+work, commitment, graph, or PMO source.
+
+For new work without an owner, `suggest_assignee` ranks active people using
+mandate fit, stated capacity, current effort/risk load, and recent assignment
+share. These are recommendations, not autonomous assignments. TaskBrain has no
+colleague-calendar access; availability comes from the org capacity fields.
+
+`explain_timeline` computes a prerequisite-first, business-day schedule from
+graph dependencies, effort, ownership, capacity, and committed due dates. It
+reports cycles, unavailable owners, missing-effort assumptions, and target-date
+conflicts. `propose_timeline` remains approval-gated before it creates project
+tasks and dependency edges.
 
 Outbound work fanout (`assign_work`) needs an org `entraId` plus, for Teams
 cards, a stored 1:1 conversation reference (the person opened TaskBrain once).

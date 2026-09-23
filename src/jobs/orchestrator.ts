@@ -19,7 +19,6 @@ import { logActivity } from "../services/activityLog";
 import { alertUser, alertAdmin } from "../services/alerts";
 import { channelPolicy } from "../channels/types";
 import { scheduledReadToolEnvelope } from "../tools/registry";
-import { nudgeOverdueWork } from "../work/assign";
 import { maybeConsolidateObservations } from "../memory/observe";
 
 const POLL_MS = 60_000;
@@ -41,7 +40,6 @@ export async function tick(adapter: CloudAdapter, botAppId: string): Promise<voi
       if (!claimed) continue; // another instance got it
       await runJob(adapter, botAppId, claimed);
     }
-    await maybeNudgeOverdueWork();
     await maybeConsolidateObservations();
   } catch (err) {
     console.error("[orchestrator] tick failed:", err);
@@ -82,6 +80,7 @@ async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Prom
         channel: "internal",
         trigger: `job:${job.name}`,
         allowedTools: job.allowedTools,
+        preapprovedTools: job.actionTools,
         authorization: {
           explicit: true,
           confidence: 1,
@@ -150,29 +149,3 @@ async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Prom
   }
 }
 
-async function maybeNudgeOverdueWork(): Promise<void> {
-  const tz = process.env.JOBS_TIMEZONE ?? "America/Chicago";
-  const today = new Date().toLocaleDateString("en-CA", { timeZone: tz });
-  const checkpointId = "_nudge_checkpoint";
-  try {
-    const { resource } = await cosmosContainer("work")
-      .item(checkpointId, "_system")
-      .read<{ lastDay?: string }>();
-    if (resource?.lastDay === today) return;
-  } catch {
-    // first run
-  }
-  try {
-    const n = await nudgeOverdueWork();
-    await cosmosContainer("work").items.upsert({
-      id: checkpointId,
-      ownerPersonId: "_system",
-      lastDay: today,
-      lastCount: n,
-      updatedAt: new Date().toISOString(),
-    });
-    if (n) console.log(`[orchestrator] overdue work nudges: ${n}`);
-  } catch (err) {
-    console.error("[orchestrator] overdue work nudge failed:", err);
-  }
-}

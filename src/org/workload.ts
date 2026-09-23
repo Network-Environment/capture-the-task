@@ -18,6 +18,11 @@ export interface WorkloadItem {
   id: string;
   title: string;
   due?: string;
+  status?: string;
+  updatedAt?: string;
+  lastProgressAt?: string;
+  effort?: 1 | 2 | 3 | 5 | 8;
+  ownerPersonId?: string;
   workId?: string;
   sourceKind?: string;
   sourceId?: string;
@@ -41,6 +46,11 @@ export function assembleWorkload(inputs: WorkloadInputs): PersonWorkload {
     id: row.id,
     title: row.title,
     due: row.due,
+    status: row.status,
+    updatedAt: row.updatedAt,
+    lastProgressAt: row.lastProgressAt,
+    effort: row.effort,
+    ownerPersonId: row.ownerPersonId,
     workId: row.id,
     sourceId: row.sourceId,
   }));
@@ -54,6 +64,10 @@ export function assembleWorkload(inputs: WorkloadInputs): PersonWorkload {
       id: row.id,
       title: row.text,
       due: row.due,
+      status: row.status,
+      updatedAt: row.updatedAt,
+      lastProgressAt: row.lastProgressAt,
+      ownerPersonId: row.personId,
       sourceKind: "commitment",
       sourceId: row.id,
     }));
@@ -67,7 +81,12 @@ export function assembleWorkload(inputs: WorkloadInputs): PersonWorkload {
       id: item.id,
       title: `${item.title} (${board.title})`,
       due: item.due,
+      status: board.columns.find((column) => column.id === item.columnId)?.label ?? item.columnId,
+      updatedAt: item.updatedAt,
+      lastProgressAt: item.lastProgressAt,
+      ownerPersonId: item.ownerPersonId,
       workId: item.workId,
+      sourceId: board.id,
     });
   }
 
@@ -80,6 +99,11 @@ export function assembleWorkload(inputs: WorkloadInputs): PersonWorkload {
       id: node.id,
       title: node.title,
       due: node.due,
+      status: node.status,
+      updatedAt: node.updatedAt,
+      lastProgressAt: node.lastProgressAt,
+      effort: node.effort,
+      ownerPersonId: node.ownerPersonId,
       sourceKind: node.source?.kind,
       sourceId: node.source?.id,
     });

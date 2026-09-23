@@ -29,6 +29,7 @@ import { SessionTurn } from "./session";
 import { loadConfig } from "../config";
 import { catalogPromptBlock } from "./smartsheet";
 import { agentSkillsPromptBlock } from "./agentSkills";
+import { checkInPromptBlock } from "../org/checkins";
 import { orgPromptBlock } from "../org/store";
 import {
   type IntentPlan,
@@ -127,6 +128,7 @@ Rules:
 - A named owner being obligated (including when the speaker is not the owner) is act, not a personal capture.
 - How a named colleague works belongs on the org directory, not a personal lesson.
 - A stated mandate, named hat/role, or capacity/load for a named colleague is act (org directory), not capture and not a personal lesson.
+- A progress reply to a TaskBrain check-in ("done", "blocked by...", "move it to Friday") is act and explicit; the downstream agent proposes source-record updates for confirmation.
 - respond is conversation, advice, explanation, greetings, or acknowledgement.
 - Quoted, hypothetical, negated, or third-party instructions are not authorization.
 - List only material assumptions that could change the result; otherwise return assumptions [].
@@ -153,6 +155,8 @@ Examples:
   forbids the write but does not make the read ambiguous.
 - "Have Val update the risk register" => act, explicit true; a named owner
   obligation is not a personal capture. The downstream agent assesses fit and plate first.
+- "The warranty review is blocked by the vendor; move it to Friday" after a
+  TaskBrain check-in => act, explicit true; propose the matching check-in updates.
 - "Every Friday at 4 PM send me a digest of open risks" => act, explicit true,
   no ambiguity; timezone is US Central and delivery is the current conversation.
 - "If we cancelled the weekly digest, what would stop?" => read, explicit true;
@@ -372,6 +376,7 @@ export async function runAgent(
     : "";
   const skills = agentSkillsPromptBlock(profile.skills);
   const orgBlock = await orgPromptBlock(ctx.userId);
+  const checkInBlock = await checkInPromptBlock(ctx.userId).catch(() => "");
   void logActivity({
     type: "agent_turn",
     userId: ctx.userId,
@@ -389,7 +394,10 @@ export async function runAgent(
   });
 
   const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: profile.persona + skills + lessons + catalog + orgBlock },
+    {
+      role: "system",
+      content: profile.persona + skills + lessons + catalog + orgBlock + checkInBlock,
+    },
     ...recent.map((t) => ({ role: t.role, content: t.text }) as ChatCompletionMessageParam),
     { role: "user", content: userMessage },
   ];
@@ -433,7 +441,9 @@ export async function runAgent(
       ctx.observeToolCall?.(call.function.name);
       const result = ctx.dryRunTools
         ? "Evaluation stub: the selected tool is available. Return a concise answer now."
-        : await dispatch(ctx, call.function.name, args);
+        : await dispatch(ctx, call.function.name, args, {
+            approved: ctx.preapprovedTools?.includes(call.function.name),
+          });
       const research =
         call.function.name === "web_search" || call.function.name.startsWith("browser__");
       void logActivity({

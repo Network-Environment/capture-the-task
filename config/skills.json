@@ -10,6 +10,7 @@
       ],
       "tools": [
         "lookup_org",
+        "suggest_assignee",
         "assess_assignment",
         "list_workload",
         "assign_work",
@@ -18,13 +19,56 @@
       ],
       "instructions": [
         "Resolve the named person from the org directory. Ask one focused question if the name has multiple matches; never guess an Entra id.",
-        "Before assign_work, call assess_assignment. If unavailable, use lookup_org plus list_workload.",
+        "For unnamed work, call suggest_assignee and explain the top choices. Before named assign_work, call assess_assignment. If unavailable, use lookup_org plus list_workload.",
         "Compare the task with the person's mandate and named roles, then inspect org capacity and the TaskBrain plate.",
         "If fit is weak or capacity is stretched, overloaded, or unavailable, tell the speaker and assign only if they still want that owner.",
         "Assignment destinations always come from the org record; never choose Teams, To Do, Planner, Smartsheet, or mail by guess.",
         "Use remember_org_responsibility for a stated mandate, named role, or capacity. Use remember_org_preference for queues, nudges, and working style.",
         "Treat the plate as TaskBrain work, commitments, execution-graph tasks/projects, and PMO items. Do not claim it includes live Microsoft To Do, Planner, or calendar.",
         "Keep unmatched, incomplete, or duplicate Microsoft 365 identities unresolved. Never map Joe Ryan to Joseph Ryan or choose among duplicate Elisa Amador accounts."
+      ]
+    },
+    "daily-followthrough": {
+      "description": "Run risk-based individual daily asks and manager rollups from a user-created schedule, then turn replies into confirmed source-record updates.",
+      "when": [
+        "A scheduled job asks for daily team follow-through",
+        "Someone asks for an org workload or at-risk-work report",
+        "Someone replies to a pending TaskBrain daily check-in"
+      ],
+      "tools": [
+        "list_org_workload",
+        "find_at_risk_work",
+        "send_followthrough_briefings",
+        "propose_checkin_updates",
+        "apply_checkin_updates"
+      ],
+      "instructions": [
+        "Business cadence comes from schedule_job; never invent or hard-code a daily timer.",
+        "Use risk-based reminders: overdue, due soon, blocked, or inactive work. Do not spam every open item.",
+        "Individuals receive only their own plate. Managers receive their own work plus explicit direct reports; never infer reporting lines.",
+        "When a person replies to a pending check-in, call propose_checkin_updates and show one readable confirmation. Apply nothing until that person approves.",
+        "Report undelivered recipients and incomplete identities to the job owner; never guess a destination."
+      ]
+    },
+    "timeline-planning": {
+      "description": "Explain or propose dependency-aware project timelines using graph tasks, effort, owner capacity, business days, and explicit target dates.",
+      "when": [
+        "Someone asks when a project or body of work can finish",
+        "Someone asks for a timeline, sequence, milestones, or critical dependencies",
+        "Someone asks TaskBrain to create a project plan"
+      ],
+      "tools": [
+        "search_execution_graph",
+        "explain_timeline",
+        "propose_timeline",
+        "suggest_assignee"
+      ],
+      "instructions": [
+        "Use accepted graph dependencies as authoritative ordering.",
+        "Distinguish committed due dates from calculated estimates and label default effort assumptions.",
+        "Ask for a target date or key estimate only when it materially changes feasibility.",
+        "Never use colleagues' calendars or present a fake-precision Gantt from missing data.",
+        "Timeline creation is a shared write and must remain a proposal until approved."
       ]
     }
   }

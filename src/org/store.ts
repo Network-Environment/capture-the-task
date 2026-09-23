@@ -20,10 +20,20 @@ import {
   workingStyleLine,
 } from "./prefs";
 import { applyHat, applyPersonResponsibility } from "./responsibility";
-import { formatAssessment, scorePeople } from "./assess";
+import {
+  formatAssessment,
+  formatAssigneeSuggestions,
+  rankAssignees,
+  scorePeople,
+} from "./assess";
 import { capacityLine, formatWorkload, personWorkload, plateCountsLine } from "./workload";
+import {
+  buildOrgFollowthrough,
+  formatOrgFollowthrough,
+} from "./followthrough";
 import { projectPerson } from "../graph/project";
 import { cosmosContainer } from "../services/cosmos";
+import { listRecentWork } from "../work/store";
 
 function org() {
   return cosmosContainer("org");
@@ -411,6 +421,62 @@ export async function listWorkload(userId: string, owner: string): Promise<strin
   return formatWorkload(person, await personWorkload(person.id));
 }
 
+export async function listOrgWorkload(
+  userId: string,
+  input: { team?: string; manager?: string } = {}
+): Promise<string> {
+  if (!canViewMeetings(userId)) return denyMeetings();
+  const dir = await listOrgDirectory();
+  let scope:
+    | { kind: "all" }
+    | { kind: "team"; unitId: string }
+    | { kind: "manager"; managerPersonId: string } = { kind: "all" };
+  if (input.team) {
+    const q = input.team.trim().toLowerCase();
+    const unit = dir.units.find(
+      (row) => row.status === "active" && (row.id === input.team || row.name.toLowerCase() === q)
+    );
+    if (!unit) return `No org team matching "${input.team}".`;
+    scope = { kind: "team", unitId: unit.id };
+  } else if (input.manager) {
+    const manager = resolvePerson(dir.people, {
+      ownerId: input.manager,
+      ownerName: input.manager,
+    });
+    if (!manager) return `No org person matching "${input.manager}".`;
+    scope = { kind: "manager", managerPersonId: manager.id };
+  }
+  return formatOrgFollowthrough(await buildOrgFollowthrough(dir, scope));
+}
+
+export async function findAtRiskWork(
+  userId: string,
+  input: { team?: string; manager?: string } = {}
+): Promise<string> {
+  if (!canViewMeetings(userId)) return denyMeetings();
+  const dir = await listOrgDirectory();
+  let scope:
+    | { kind: "all" }
+    | { kind: "team"; unitId: string }
+    | { kind: "manager"; managerPersonId: string } = { kind: "all" };
+  if (input.team) {
+    const q = input.team.trim().toLowerCase();
+    const unit = dir.units.find(
+      (row) => row.status === "active" && (row.id === input.team || row.name.toLowerCase() === q)
+    );
+    if (!unit) return `No org team matching "${input.team}".`;
+    scope = { kind: "team", unitId: unit.id };
+  } else if (input.manager) {
+    const manager = resolvePerson(dir.people, {
+      ownerId: input.manager,
+      ownerName: input.manager,
+    });
+    if (!manager) return `No org person matching "${input.manager}".`;
+    scope = { kind: "manager", managerPersonId: manager.id };
+  }
+  return formatOrgFollowthrough(await buildOrgFollowthrough(dir, scope), true);
+}
+
 export async function assessAssignment(
   userId: string,
   input: { owner: string; title: string; detail?: string }
@@ -437,6 +503,38 @@ export async function assessAssignment(
     load,
     dir,
   });
+}
+
+export async function suggestAssignee(
+  userId: string,
+  input: { title: string; detail?: string; effort?: 1 | 2 | 3 | 5 | 8 }
+): Promise<string> {
+  if (!canViewMeetings(userId)) return denyMeetings();
+  const dir = await listOrgDirectory();
+  const active = dir.people.filter((person) => person.status === "active");
+  const workloads = new Map(
+    await Promise.all(
+      active.map(async (person) => [person.id, await personWorkload(person.id)] as const)
+    )
+  );
+  const since = new Date(Date.now() - 30 * 86400_000).toISOString();
+  const recent = await listRecentWork(since).catch(() => []);
+  const recentAssignments = new Map<string, number>();
+  for (const work of recent) {
+    recentAssignments.set(
+      work.ownerPersonId,
+      (recentAssignments.get(work.ownerPersonId) ?? 0) + 1
+    );
+  }
+  return formatAssigneeSuggestions(
+    rankAssignees({
+      taskText: [input.title, input.detail ?? ""].join(" "),
+      effort: input.effort,
+      dir,
+      workloads,
+      recentAssignments,
+    })
+  );
 }
 
 export { resolvePerson };

@@ -33,6 +33,9 @@ export interface GraphNode {
   status?: GraphNodeStatus;
   ownerPersonId?: string;
   due?: string;
+  effort?: 1 | 2 | 3 | 5 | 8;
+  lastProgressAt?: string;
+  progressNote?: string;
   visibility: GraphVisibility;
   privateOwnerId?: string;
   source?: GraphSourceRef;
@@ -90,6 +93,9 @@ export interface CreateGraphNode {
   status?: GraphNodeStatus;
   ownerPersonId?: string;
   due?: string;
+  effort?: 1 | 2 | 3 | 5 | 8;
+  lastProgressAt?: string;
+  progressNote?: string;
   visibility?: GraphVisibility;
   privateOwnerId?: string;
   source?: GraphSourceRef;
@@ -115,6 +121,9 @@ export interface GraphNodePatch {
   status?: GraphNodeStatus;
   ownerPersonId?: string | null;
   due?: string | null;
+  effort?: 1 | 2 | 3 | 5 | 8 | null;
+  lastProgressAt?: string | null;
+  progressNote?: string | null;
 }
 
 export interface GraphFilters {
