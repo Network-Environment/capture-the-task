@@ -84,6 +84,7 @@ import {
   type CheckInUpdate,
 } from "../org/checkins";
 import { formatUserGuide, USER_GUIDE_TOPICS } from "../services/userGuide";
+import { envFlag } from "../config";
 
 export interface ToolContext {
   userId: string;
@@ -1057,7 +1058,7 @@ export async function dispatch(
           allowActions: false,
         }),
       } satisfies AuthorizationContext);
-    if (!options.approved && process.env.UNIFIED_ACTION_POLICY_ENABLED === "true") {
+    if (!options.approved && envFlag("UNIFIED_ACTION_POLICY_ENABLED", false)) {
       const policy = evaluateOperation(operation, authorization);
       void logActivity({
         type: "policy",
@@ -1090,7 +1091,7 @@ export async function dispatch(
     }
     if (
       !options.approved &&
-      process.env.UNIFIED_ACTION_POLICY_ENABLED !== "true" &&
+      !envFlag("UNIFIED_ACTION_POLICY_ENABLED", false) &&
       isMcpTool(name) &&
       requiresApproval(name)
     ) {

@@ -14,6 +14,23 @@ export function isPersonalTeamsConversation(conversationType?: string): boolean 
   return !conversationType || conversationType === "personal";
 }
 
+/**
+ * Same-turn replies land in the Teams thread automatically. A later proactive
+ * send does not, unless the conversation id names the thread root.
+ */
+export function pinTeamsThread<T extends { conversation?: { id?: string } }>(
+  reference: T,
+  activity: { id?: string; conversation?: { id?: string; conversationType?: string } }
+): T {
+  if (isPersonalTeamsConversation(activity.conversation?.conversationType)) return reference;
+  const current = reference.conversation?.id ?? "";
+  if (!current || current.includes(";messageid=") || !activity.id) return reference;
+  return {
+    ...reference,
+    conversation: { ...reference.conversation, id: `${current};messageid=${activity.id}` },
+  };
+}
+
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

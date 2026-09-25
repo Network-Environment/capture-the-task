@@ -2,7 +2,12 @@ import "./setup";
 import { test } from "node:test";
 import assert from "node:assert";
 import { resolveIMessageUser, phoneForUser, toPlainText } from "../src/channels/types";
-import { botWasMentioned, isPersonalTeamsConversation, stripBotMention } from "../src/channels/teamsText";
+import {
+  botWasMentioned,
+  isPersonalTeamsConversation,
+  pinTeamsThread,
+  stripBotMention,
+} from "../src/channels/teamsText";
 
 test("unknown phone numbers resolve to nobody (allowlist)", () => {
   assert.strictEqual(resolveIMessageUser("+19999999999"), undefined);
@@ -37,4 +42,24 @@ test("Teams @mention markup is stripped; other people are left intact", () => {
   );
   assert.equal(isPersonalTeamsConversation("channel"), false);
   assert.equal(isPersonalTeamsConversation("personal"), true);
+});
+
+test("channel replies pin the Teams thread without touching a 1:1 chat", () => {
+  const channel = pinTeamsThread(
+    { conversation: { id: "19:chan@thread.tacv2" } },
+    { id: "111", conversation: { id: "19:chan@thread.tacv2", conversationType: "channel" } }
+  );
+  assert.equal(channel.conversation?.id, "19:chan@thread.tacv2;messageid=111");
+
+  const alreadyThreaded = pinTeamsThread(
+    { conversation: { id: "19:chan@thread.tacv2;messageid=111" } },
+    { id: "222", conversation: { conversationType: "channel" } }
+  );
+  assert.equal(alreadyThreaded.conversation?.id, "19:chan@thread.tacv2;messageid=111");
+
+  const personal = pinTeamsThread(
+    { conversation: { id: "a:personal" } },
+    { id: "333", conversation: { id: "a:personal", conversationType: "personal" } }
+  );
+  assert.equal(personal.conversation?.id, "a:personal");
 });

@@ -15,6 +15,18 @@ const candidates = [
 
 const cache = new Map<string, unknown>();
 
+/**
+ * Boolean app setting. Bicep's string(bool) writes "True"/"False", operators
+ * type "true"/"false", so parsing must be case-insensitive. Unset or
+ * unrecognized values return the default.
+ */
+export function envFlag(name: string, defaultValue: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
+  if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
+  return defaultValue;
+}
+
 export function loadConfig<T = unknown>(name: string): T {
   const key = name.endsWith(".json") ? name : `${name}.json`;
   if (cache.has(key)) return cache.get(key) as T;

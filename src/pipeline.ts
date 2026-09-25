@@ -48,6 +48,7 @@ import { channelPolicy } from "./channels/types";
 import { executeApprovedAction, scheduledReadToolEnvelope } from "./tools/registry";
 import { claimInboundEvent, finishInboundEvent } from "./services/inboundReceipts";
 import { assessInboundQuality } from "./services/inboundQuality";
+import { envFlag } from "./config";
 
 export interface CaptureInput {
   userId: string; // canonical user id (Entra object id) — channels must resolve to this
@@ -265,8 +266,8 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     detail: { source, channel, chars: text.length },
   });
 
-  const shadow = process.env.INTENT_SHADOW_MODE !== "false";
-  const enabled = process.env.INTENT_GATEWAY_ENABLED !== "false";
+  const shadow = envFlag("INTENT_SHADOW_MODE", true);
+  const enabled = envFlag("INTENT_GATEWAY_ENABLED", true);
   let plan: IntentPlan | undefined;
   if (enabled || shadow) {
     const interpretationText = pending
@@ -343,7 +344,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     }
     if (
       planNeedsClarification(plan) &&
-      process.env.CLARIFICATION_ENFORCEMENT_ENABLED === "true"
+      envFlag("CLARIFICATION_ENFORCEMENT_ENABLED", false)
     ) {
       const question =
         plan.clarification ??
@@ -401,7 +402,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
 
   const captureKinds = new Set(["task", "idea", "reference"]);
   if (
-    process.env.LEGACY_TRIAGE_WRITES_ENABLED !== "true" &&
+    !envFlag("LEGACY_TRIAGE_WRITES_ENABLED", false) &&
     (captureKinds.has(kind.kind) || kind.kind === "followup")
   ) {
     const body =

@@ -12,6 +12,7 @@ import { transcribeBuffer } from "./services/transcription";
 import {
   botWasMentioned,
   isPersonalTeamsConversation,
+  pinTeamsThread,
   stripBotMention,
 } from "./channels/teamsText";
 import { handleWorkCardAction } from "./work/assign";
@@ -28,7 +29,10 @@ export class TaskBrainBot extends ActivityHandler {
     this.onMessage(async (context, next) => {
       const userId = context.activity.from.aadObjectId ?? context.activity.from.id;
       const personal = isPersonalTeamsConversation(context.activity.conversation?.conversationType);
-      const convRef = TurnContext.getConversationReference(context.activity);
+      const convRef = pinTeamsThread(
+        TurnContext.getConversationReference(context.activity),
+        context.activity
+      );
       const bot = { id: context.activity.recipient?.id, name: context.activity.recipient?.name };
       const entities = context.activity.entities as { type?: string; text?: string; mentioned?: { id?: string; name?: string } }[] | undefined;
 

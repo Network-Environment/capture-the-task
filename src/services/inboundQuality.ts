@@ -1,4 +1,5 @@
 import type { SessionTurn } from "./session";
+import { envFlag } from "../config";
 
 export type MessageDisposition = "proceed" | "clarify" | "help" | "refuse";
 
@@ -112,7 +113,7 @@ export function assessInboundQuality(
   hasPendingClarification = false
 ): InboundQualityResult {
   const trimmed = text.trim();
-  if (process.env.INBOUND_QUALITY_GATE_ENABLED === "false") {
+  if (!envFlag("INBOUND_QUALITY_GATE_ENABLED", true)) {
     return { disposition: "proceed", reason: "understood" };
   }
 
