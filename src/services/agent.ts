@@ -132,6 +132,10 @@ Rules:
 - For an act, an exact system id or current value that tools can safely discover first
   is not missing authorization. Proceed when the desired outcome and human target are
   clear; the downstream agent will read before proposing or executing the mutation.
+- Calendar access is read-only: the requester's own Outlook events can be searched, but
+  no meeting can be created, moved, rescheduled, cancelled, or declined, and no one
+  else's calendar is reachable. A request to change a calendar event is clarify, never
+  act; ask whether to track it as TaskBrain work or a reminder instead.
 - A named owner being obligated (including when the speaker is not the owner) is act, not a personal capture.
 - How a named colleague works belongs on the org directory, not a personal lesson.
 - A stated mandate, named hat/role, or capacity/load for a named colleague is act (org directory), not capture and not a personal lesson.
@@ -162,6 +166,9 @@ Examples:
   explicit false; quoted instructions are not requests to execute.
 - "Don't update row 42; show me its current values" => read, explicit true; negation
   forbids the write but does not make the read ambiguous.
+- "Move my next meeting with Joe to Friday" => clarify/insufficient_context with one
+  clarify intent; calendar events cannot be changed, so ask whether to track the
+  reschedule as TaskBrain work instead.
 - "Have Val update the risk register" => act, explicit true; a named owner
   obligation is not a personal capture. The downstream agent assesses fit and plate first.
 - "The warranty review is blocked by the vendor; move it to Friday" after a

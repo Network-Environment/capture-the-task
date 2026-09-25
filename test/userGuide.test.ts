@@ -18,6 +18,11 @@ describe("TaskBrain user guide", () => {
     assert.doesNotMatch(text, /Cosmos|Bicep|MCP|Admin/i);
   });
 
+  it("states that calendar access cannot change meetings", () => {
+    const text = formatUserGuide("calendar", full);
+    assert.match(text, /cannot create, move, cancel, or decline meetings/i);
+  });
+
   it("goes deeper on a named topic", () => {
     const text = formatUserGuide("work", full);
     assert.match(text, /Work follow-through/i);

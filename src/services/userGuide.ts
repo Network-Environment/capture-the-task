@@ -75,7 +75,7 @@ function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideC
         "Your calendar",
         "I can search your Outlook calendar for whether and when you met someone, subjects, and attendees. First use may prompt a one-time Microsoft sign-in.",
         ["When did I last meet with Joe?", "Did I have anything with Val this week?"],
-        "I never open another person’s mailbox or calendar."
+        "Read-only: I never open another person’s mailbox or calendar, and I cannot create, move, cancel, or decline meetings. I can track the follow-up as work instead."
       );
     case "meetings":
       if (!ctx.canViewMeetings) {
