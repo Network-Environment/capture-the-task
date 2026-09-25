@@ -83,6 +83,7 @@ import {
   sendFollowthroughBriefings,
   type CheckInUpdate,
 } from "../org/checkins";
+import { formatUserGuide, USER_GUIDE_TOPICS } from "../services/userGuide";
 
 export interface ToolContext {
   userId: string;
@@ -108,6 +109,7 @@ export interface ToolContext {
 const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversible">> = {
   save_note: { effect: "personal_write", reversible: true },
   recall_notes: { effect: "read", reversible: true },
+  explain_taskbrain: { effect: "read", reversible: true },
   schedule_job: { effect: "scheduled", reversible: true },
   list_jobs: { effect: "read", reversible: true },
   remember_lesson: { effect: "personal_write", reversible: true },
@@ -150,6 +152,7 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   close_pmo_board: { effect: "shared_write", reversible: true },
 };
 const scheduledNativeReads = new Set([
+  "explain_taskbrain",
   "recall_notes",
   "search_execution_graph",
   "explain_timeline",
@@ -213,6 +216,24 @@ const nativeDefs: ChatCompletionTool[] = [
           links: { type: "array", items: { type: "string" } },
         },
         required: ["kind", "title", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "explain_taskbrain",
+      description:
+        "Return the user-facing TaskBrain capability guide for a topic. Call this before answering what TaskBrain can do, how it works, or whether a kind of request is in scope. Do not invent capabilities the guide omitted.",
+      parameters: {
+        type: "object",
+        properties: {
+          topic: {
+            type: "string",
+            enum: [...USER_GUIDE_TOPICS],
+            description: "Guide chapter. Default overview for new users and general help.",
+          },
+        },
       },
     },
   },
@@ -1114,6 +1135,14 @@ export async function dispatch(
         );
         return `Saved: ${path}`;
       }
+      case "explain_taskbrain":
+        return formatUserGuide(args.topic ? String(args.topic) : "overview", {
+          channel: ctx.channel,
+          scope: ctx.authorization?.channel.scope,
+          canViewMeetings: canViewMeetings(ctx.userId),
+          graphEnabled: graphEnabled(),
+          graphWritesEnabled: graphWritesEnabled(),
+        });
       case "recall_notes": {
         const hits = await recall(
           ctx.userId,

@@ -5,6 +5,7 @@ import {
   agentSkillCatalog,
   agentSkillsPromptBlock,
 } from "../src/services/agentSkills";
+import { loadConfig } from "../src/config";
 
 describe("TaskBrain runtime skills", () => {
   it("loads work follow-through as instructions rather than a tool", () => {
@@ -29,6 +30,19 @@ describe("TaskBrain runtime skills", () => {
     assert.match(prompt, /never invent or hard-code a daily timer/i);
     assert.match(prompt, /Individuals receive only their own plate/i);
     assert.match(prompt, /Distinguish committed due dates from calculated estimates/i);
+  });
+
+  it("loads user orientation as a capture skill that calls the guide tool", () => {
+    const skill = agentSkillCatalog().find((entry) => entry.name === "user-orientation");
+    assert.ok(skill);
+    assert.deepEqual(skill.skill.tools, ["explain_taskbrain"]);
+    const prompt = agentSkillsPromptBlock(["user-orientation"]);
+    assert.match(prompt, /Always call explain_taskbrain/i);
+    assert.match(prompt, /Never capture, schedule, or assign from a help request/i);
+    const agents = loadConfig<{
+      profiles: Record<string, { skills?: string[] }>;
+    }>("agents");
+    assert.ok(agents.profiles.capture.skills?.includes("user-orientation"));
   });
 
   it("fails closed when a profile names an unknown skill", () => {

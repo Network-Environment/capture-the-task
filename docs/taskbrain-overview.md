@@ -8,7 +8,7 @@ It is not a general chatbot, a transcript archive, or a replacement for Outlook,
 
 ## How to talk to it
 
-Send a complete thought. It infers the outcome and chooses tools; you do not need magic phrases.
+Send a complete thought. It infers the outcome and chooses tools; you do not need magic phrases. If you are new, ask **what can you do?** and it will walk the map, then go deeper on one area.
 
 | You want… | Say something like… |
 |---|---|

@@ -1,5 +1,22 @@
 {
   "skills": {
+    "user-orientation": {
+      "description": "Help a new or unsure user understand what TaskBrain can do, using the in-chat capability guide instead of improvising.",
+      "when": [
+        "Someone says they are new or asks what TaskBrain is",
+        "Someone asks what it can do, how it works, or for help using it",
+        "Someone asks whether TaskBrain can assign work, search meetings, schedule a job, or similar"
+      ],
+      "tools": ["explain_taskbrain"],
+      "instructions": [
+        "Always call explain_taskbrain before answering a capability or how-to-use question. Never invent a capability the guide omitted.",
+        "Use topic overview unless the user named a domain (capture, calendar, meetings, org, work, projects, pmo, schedule, memory, web, guardrails).",
+        "Paraphrase into a short chat reply. Do not dump every topic or operator internals.",
+        "End with two example phrases from the guide and offer to go deeper on one area.",
+        "Never capture, schedule, or assign from a help request.",
+        "If the guide hid a gated area (meetings, shared projects, group-chat writes), say it is not available for this user rather than describing it as if it were."
+      ]
+    },
     "work-followthrough": {
       "description": "Assess who should own work, inspect their current TaskBrain plate, preserve org identity boundaries, and assign through the owner's configured queues.",
       "when": [

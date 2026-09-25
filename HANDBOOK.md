@@ -128,7 +128,8 @@ PIPELINE — processCapture()  (channel-agnostic)
         ├── audio bytes ──► Azure AI Speech fast transcription
         ▼
 QUALITY GATE  (no model)  — inboundQuality.ts
-        probes / fragments / gibberish / credential-bypass → help | clarify | refuse
+        probes / greetings / fragments / gibberish / credential-bypass → help | clarify | refuse
+        "what can you do" / help using TaskBrain → proceed (explain_taskbrain)
         never saveNote. Reason codes only in the activity log.
         ▼
 INTENT  (cheap model tier)  — agent.ts::interpretIntent
@@ -479,11 +480,14 @@ Photon delivery. Never consolidate these roles onto one plan: separate apps on
 one plan still share CPU and do not form a failure boundary.
 
 The worker then runs the deterministic quality gate for probes (`test`, `ping`),
-repeated noise, punctuation/gibberish, and context-free single words without a
-model call or durable note. It asks one focused question, explains how to use
-TaskBrain, or refuses credential/identity/policy bypass attempts. The gate
-judges the requested operation rather than threat-related vocabulary, so
-quoted security analysis and explicit incident notes remain valid inputs.
+greetings (`hi` / `hello`), repeated noise, punctuation/gibberish, and
+context-free single words without a model call or durable note. Capability
+questions (`help`, `what can you do`, `how does this work`) proceed to the
+capture agent, which must call `explain_taskbrain` via the `user-orientation`
+skill. It asks one focused question, or refuses credential/identity/policy
+bypass attempts. The gate judges the requested operation rather than
+threat-related vocabulary, so quoted security analysis and explicit incident
+notes remain valid inputs.
 
 The shared intent interpreter then resolves recent references, splits
 genuinely separate requests, records explicitness and confidence, and assigns
@@ -491,7 +495,7 @@ genuinely separate requests, records explicitness and confidence, and assigns
 closed to clarification. Clear reversible personal captures proceed; shared,
 destructive, scheduled, costly, or broad operations are parked with a preview
 for approval. Read requests go to the tool-capable agent with a read-only
-envelope; the model chooses among live calendar, meeting summaries, memory,
+envelope; the model chooses among the user guide, live calendar, meeting summaries, memory,
 execution graph, org, and PMO tools from their capability descriptions rather
 than from phrase-specific routing. Production enforcement is on:
 `INTENT_SHADOW_MODE=false`, `CLARIFICATION_ENFORCEMENT_ENABLED=true`, and

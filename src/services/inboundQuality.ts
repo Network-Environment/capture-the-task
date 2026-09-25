@@ -20,8 +20,9 @@ export interface InboundQualityResult {
 
 const EXPLICIT_CAPTURE =
   /^(?:task|idea|reference|remember|save|note|capture)\s*:/i;
-const HELP =
-  /^(?:hi|hello|hey|help|what can you do|how does this work)[\s.!?]*$/i;
+const GREETING = /^(?:hi|hello|hey)(?:\s+there)?[\s.!?]*$/i;
+const CAPABILITY_ASK =
+  /^(?:help|what can you do|how does this work|what are you|i(?:['’]m| am) new(?: here)?)[\s.!?]*$/i;
 const PROBE =
   /^(?:(?:this is|send|sending)\s+(?:a\s+)?)?(?:test|testing|ping)(?:\s+(?:message|prompt|the bot|taskbrain))?[\s.!?]*$/i;
 const LOW_SIGNAL_WORDS = /^(?:asdf|qwerty|zxcv|blah|foobar|lorem|ipsum)$/i;
@@ -118,13 +119,16 @@ export function assessInboundQuality(
   const denied = refusal(trimmed);
   if (denied) return denied;
 
-  if (HELP.test(trimmed)) {
+  if (GREETING.test(trimmed)) {
     return {
       disposition: "help",
       reason: "probe",
       response:
-        "I’m here. You can send a task (“buy milk”), an idea (“idea: offline sync”), ask what you previously captured, or ask me to work with an enabled system.",
+        "I’m here. Ask me what I can do, or send a complete thought — a task, a question, or work you want followed through.",
     };
+  }
+  if (CAPABILITY_ASK.test(trimmed)) {
+    return { disposition: "proceed", reason: "understood" };
   }
   const words = normalized(trimmed)
     .replace(/[.!?]+$/g, "")

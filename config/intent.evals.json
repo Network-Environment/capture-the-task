@@ -97,8 +97,8 @@
   {
     "name": "help request",
     "input": "What can you do?",
-    "expectedDisposition": "help",
-    "expectedKinds": ["respond"],
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["read"],
     "mustClarify": false
   },
   {

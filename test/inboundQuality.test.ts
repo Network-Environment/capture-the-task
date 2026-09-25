@@ -31,9 +31,14 @@ describe("inbound message quality", () => {
     }
   });
 
-  it("answers greetings and help without persistence", () => {
-    for (const text of ["hello", "help", "what can you do?"]) {
-      assert.equal(assessInboundQuality(text).disposition, "help", text);
+  it("answers greetings without persistence and lets capability questions through", () => {
+    for (const text of ["hello", "hi", "hey"]) {
+      const result = assessInboundQuality(text);
+      assert.equal(result.disposition, "help", text);
+      assert.match(result.response ?? "", /what I can do/i);
+    }
+    for (const text of ["help", "what can you do?", "how does this work", "I'm new"]) {
+      assert.equal(assessInboundQuality(text).disposition, "proceed", text);
     }
   });
 

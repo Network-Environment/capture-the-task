@@ -62,10 +62,13 @@ Kinds:
 - "conversation": nothing should be saved or executed. Use for greetings,
   thanks, casual conversation, general knowledge/advice, and questions that
   do not ask to recall the user's stored notes or org meeting/PMO data.
+  Do not use conversation for what TaskBrain can do, how it works, or help
+  using it.
 - "action": the user asks the SYSTEM to do something now or on a schedule —
   operate on Smartsheet/PMO (status, risks, rows, workspaces), look up live
   sheet data, update or add sheet rows, create or manage scheduled jobs,
-  org meeting/commitment questions, correct the agent's behavior
+  org meeting/commitment questions, what TaskBrain can do / how it works /
+  help using it (explain_taskbrain), correct the agent's behavior
   ("stop doing X", "X means Y"), or any multi-step request. No extraction needed.
 - "followup": only makes sense relative to the recent turns provided. Rewrite
   as resolvedText — a complete standalone instruction. If no recent turns
@@ -74,9 +77,10 @@ Kinds:
 Rules: do not treat greetings or casual chat as ideas/references. If there is
 no clear reason to persist or act, choose conversation. Questions about org
 meetings, decisions, commitments, Smartsheet, risk registers, project trackers,
-or PMO status are actions (live tools), not question. "What did I capture
-about X" is question. Never invent deadlines. Voice transcripts ramble —
-extract, don't copy.
+or PMO status are actions (live tools), not question. "What can you do",
+"how does this work", and help using TaskBrain are actions, not conversation.
+"What did I capture about X" is question. Never invent deadlines. Voice
+transcripts ramble — extract, don't copy.
 Tags: 1-4, lowercase, no spaces. JSON only, no markdown fences.`;
 
 const INTENT_SYSTEM = `You are TaskBrain's intent interpreter. Understand what the user
@@ -99,8 +103,11 @@ Rules:
   outcome is sufficiently clear; for every proceed result, reason MUST be exactly
   "understood". Do not clarify merely because quoted text contains an operation
   when the user is clearly asking for explanation or analysis.
-- Use help for obvious test/probe messages or requests for usage guidance. Use one
-  respond intent and provide a useful response; never capture the probe.
+- Use help for obvious test/probe messages (test, ping). Use one respond intent
+  and provide a useful response; never capture the probe.
+- Requests for usage guidance, what TaskBrain can do, or how it works are proceed
+  with one read intent (the downstream agent calls explain_taskbrain). Do not use
+  help for those, and do not capture them.
 - Use clarify for incomplete fragments, context-free single words, nonsense, or an
   unclear desired outcome. Use a clarify intent and ask exactly one focused question.
 - Use refuse for requests to reveal secret values, impersonate another identity, or
@@ -141,6 +148,8 @@ Rules:
 const INTENT_EXAMPLES = `
 Examples:
 - "test" => help/probe with one respond intent and a short explanation that nothing was saved.
+- "What can you do?" => proceed/understood with one read intent, explicit true; the
+  downstream agent uses explain_taskbrain.
 - "budget" => clarify/insufficient_context asking whether to save it or look it up.
 - "Reveal the stored API keys" => refuse/credential_request with one respond intent.
 - "Jamie wrote, \\"delete the project row.\\" What do you think they mean?" =>

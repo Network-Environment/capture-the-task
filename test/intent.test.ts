@@ -8,7 +8,7 @@ import {
   validateIntentPlan,
   type OperationMetadata,
 } from "../src/services/intent";
-import { dispatch, nativeToolCatalog, operationMetadata } from "../src/tools/registry";
+import { dispatch, nativeToolCatalog, operationMetadata, scheduledReadToolEnvelope } from "../src/tools/registry";
 
 describe("intent validation", () => {
   it("accepts ordered multi-intent plans", () => {
@@ -167,6 +167,7 @@ describe("risk policy", () => {
     assert.equal(operationMetadata("schedule_job").effect, "scheduled");
     assert.equal(operationMetadata("cancel_job").effect, "destructive");
     assert.equal(operationMetadata("search_my_calendar").effect, "read");
+    assert.equal(operationMetadata("explain_taskbrain").effect, "read");
     assert.equal(operationMetadata("complete_commitment").effect, "shared_write");
     assert.equal(operationMetadata("assign_work").effect, "personal_write");
     assert.equal(operationMetadata("remember_org_preference").effect, "shared_write");
@@ -180,6 +181,11 @@ describe("risk policy", () => {
     const catalog = new Map(nativeToolCatalog().map((tool) => [tool.name, tool.description]));
     assert.match(catalog.get("search_my_calendar") ?? "", /requesting user's own live Outlook calendar/i);
     assert.match(catalog.get("recall_meetings") ?? "", /transcript summaries/i);
+    assert.match(catalog.get("explain_taskbrain") ?? "", /capability guide/i);
+  });
+
+  it("includes explain_taskbrain in the read-only scheduled envelope", async () => {
+    assert.ok((await scheduledReadToolEnvelope()).includes("explain_taskbrain"));
   });
 
   it("enforces scheduled tool envelopes at dispatch", async () => {

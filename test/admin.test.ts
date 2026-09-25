@@ -195,6 +195,7 @@ describe("admin portal", () => {
   it("capabilities lists a profile and a native tool", () => {
     const skills = renderCapabilities("local", "skills");
     assert.match(skills, /work-followthrough/);
+    assert.match(skills, /user-orientation/);
     assert.match(skills, /Runtime skills/);
     assert.match(skills, /Agent profiles/);
     assert.match(skills, /repeatable workflows/i);
@@ -206,6 +207,7 @@ describe("admin portal", () => {
       { name: "browser__navigate", description: "Open URL", status: "down" },
     ]);
     assert.match(tools, /save_note/);
+    assert.match(tools, /explain_taskbrain/);
     assert.match(tools, /lookup_org/);
     assert.match(tools, /web_search/);
     assert.match(tools, /smartsheet__search/);
