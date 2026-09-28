@@ -143,7 +143,7 @@ export function assessInboundQuality(
       disposition: "help",
       reason: "probe",
       response:
-        "Test received — TaskBrain is responding. Nothing was saved. Try “task: call Pat tomorrow,” “idea: offline sync,” or “what did I capture about the budget?”",
+        "Test received — TaskBrain is responding. Nothing was saved. Ask what I can do, or send a complete thought.",
     };
   }
 
@@ -152,7 +152,7 @@ export function assessInboundQuality(
       disposition: "clarify",
       reason: "repeated_unresolved",
       response:
-        "I received that again, but I still can’t tell what outcome you want. Should I save it as a task, idea, or reference, or were you asking a question?",
+        "I received that again, but I still can’t tell what outcome you want. Say what you want done, or ask me what I can do.",
     };
   }
 
@@ -186,7 +186,7 @@ export function assessInboundQuality(
     return {
       disposition: "clarify",
       reason: "insufficient_context",
-      response: `What would you like me to do with “${trimmed.replace(/[.!?]+$/g, "")}” — save it as a task, idea, or reference, or look something up?`,
+      response: `What would you like me to do with “${trimmed.replace(/[.!?]+$/g, "")}”?`,
     };
   }
   return { disposition: "proceed", reason: "understood" };

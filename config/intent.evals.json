@@ -142,5 +142,33 @@
     "expectedDisposition": "proceed",
     "expectedKinds": ["respond"],
     "mustClarify": false
+  },
+  {
+    "name": "short answer continues a board request",
+    "input": "Pending original request: Make a board to track tasks\nPending question: What should it be called, which columns should it have, or should it be a normal kanban?\nCurrent message: kanban",
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["act"],
+    "mustClarify": false
+  },
+  {
+    "name": "short answer continues an assignment",
+    "input": "Pending original request: Have someone update the risk register\nPending question: Which person should own this?\nCurrent message: Val",
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["act"],
+    "mustClarify": false
+  },
+  {
+    "name": "short answer continues a schedule",
+    "input": "Pending original request: Send me a digest of open risks\nPending question: What day and time should I send it?\nCurrent message: Friday at 4",
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["act"],
+    "mustClarify": false
+  },
+  {
+    "name": "check-in done continues",
+    "input": "Pending original request: Daily check-in for the warranty review\nPending question: What changed on the warranty review?\nCurrent message: done",
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["act"],
+    "mustClarify": false
   }
 ]

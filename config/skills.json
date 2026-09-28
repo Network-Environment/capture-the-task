@@ -31,11 +31,12 @@
         "assess_assignment",
         "list_workload",
         "assign_work",
+        "ask_user",
         "remember_org_responsibility",
         "remember_org_preference"
       ],
       "instructions": [
-        "Resolve the named person from the org directory. Ask one focused question if the name has multiple matches; never guess an Entra id.",
+        "Resolve the named person from the org directory. If the name has multiple matches, call ask_user with one question; never guess an Entra id.",
         "For unnamed work, call suggest_assignee and explain the top choices. Before named assign_work, call assess_assignment. If unavailable, use lookup_org plus list_workload.",
         "Compare the task with the person's mandate and named roles, then inspect org capacity and the TaskBrain plate.",
         "If fit is weak or capacity is stretched, overloaded, or unavailable, tell the speaker and assign only if they still want that owner.",

@@ -53,6 +53,57 @@ export function retryDelayMs(attempts: number): number {
   return Math.min(5 * 60_000, 30_000 * 2 ** Math.max(0, attempts - 1));
 }
 
+export function mergeRequestText(existing: string, extra: string): string {
+  const next = extra.trim();
+  if (!next || existing.trim() === next || existing.endsWith(`\n${next}`)) return existing;
+  return `${existing.trim()}\n${next}`;
+}
+
+export async function getAgentRequest(id: string): Promise<QueuedAgentRequest | undefined> {
+  try {
+    const { resource } = await requests().item(id, BUCKET).read<QueuedAgentRequest>();
+    return resource ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function attachToInFlight(
+  userId: string,
+  conversationId: string,
+  text: string
+): Promise<QueuedAgentRequest | undefined> {
+  const { resources } = await requests()
+    .items.query<QueuedAgentRequest>({
+      query:
+        "SELECT TOP 1 * FROM c WHERE c.bucket = @bucket AND c.userId = @user " +
+        "AND c.conversationId = @conv AND c.status IN ('queued', 'processing') " +
+        "ORDER BY c.createdAt DESC",
+      parameters: [
+        { name: "@bucket", value: BUCKET },
+        { name: "@user", value: userId },
+        { name: "@conv", value: conversationId },
+      ],
+    })
+    .fetchAll();
+  const open = resources[0];
+  if (!open) return undefined;
+  const merged = mergeRequestText(open.text, text);
+  if (merged === open.text) return open;
+  try {
+    const { resource } = await requests()
+      .item(open.id, BUCKET)
+      .replace(
+        { ...open, text: merged },
+        { accessCondition: { type: "IfMatch", condition: open._etag ?? "" } }
+      );
+    return (resource as unknown as QueuedAgentRequest | undefined) ?? { ...open, text: merged };
+  } catch (err) {
+    if ((err as { code?: number }).code !== 412) throw err;
+    return undefined;
+  }
+}
+
 export async function enqueueAgentRequest(
   input: Omit<
     QueuedAgentRequest,
@@ -66,6 +117,8 @@ export async function enqueueAgentRequest(
     | "_etag"
   >
 ): Promise<{ request: QueuedAgentRequest; created: boolean }> {
+  const attached = await attachToInFlight(input.userId, input.conversationId, input.text);
+  if (attached) return { request: attached, created: false };
   const now = new Date().toISOString();
   const request: QueuedAgentRequest = {
     ...input,

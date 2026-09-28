@@ -98,6 +98,14 @@ export async function listRecentCheckIns(limit = 80): Promise<CheckInDoc[]> {
   return resources;
 }
 
+export async function userHasPendingCheckIn(userId: string): Promise<boolean> {
+  const dir = await listOrgDirectory().catch(() => undefined);
+  if (!dir) return false;
+  const person = resolvePerson(dir.people, { ownerId: userId });
+  if (!person) return false;
+  return Boolean(await pendingCheckIn(person.id).catch(() => undefined));
+}
+
 export async function checkInPromptBlock(userId: string): Promise<string> {
   const dir = await listOrgDirectory();
   const person = resolvePerson(dir.people, { ownerId: userId });

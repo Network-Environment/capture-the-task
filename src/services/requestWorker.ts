@@ -9,6 +9,7 @@ import { logActivity } from "./activityLog";
 import {
   claimNextAgentRequest,
   completeAgentRequest,
+  getAgentRequest,
   markAgentRequestFailed,
   retryAgentRequest,
   type QueuedAgentRequest,
@@ -85,18 +86,27 @@ async function processRequest(
   request: QueuedAgentRequest
 ): Promise<void> {
   try {
-    const work =
-      request.channel === "teams"
-        ? processTeamsRequest(adapter, botAppId, request)
+    const current = (await getAgentRequest(request.id)) ?? request;
+    const run = (item: QueuedAgentRequest) =>
+      item.channel === "teams"
+        ? processTeamsRequest(adapter, botAppId, item)
         : processCapture({
-            userId: request.userId,
+            userId: item.userId,
             channel: "imessage",
-            text: request.text,
-            conversationId: request.conversationId,
-            policy: request.policy,
-            conversationRef: request.conversationRef,
+            text: item.text,
+            conversationId: item.conversationId,
+            policy: item.policy,
+            conversationRef: item.conversationRef,
           });
-    const out = await withDeadline(work, REQUEST_DEADLINE_MS, request.id);
+    let out = await withDeadline(run(current), REQUEST_DEADLINE_MS, request.id);
+    const latest = await getAgentRequest(request.id);
+    if (
+      out.title === "Need one detail" &&
+      latest &&
+      latest.text !== current.text
+    ) {
+      out = await withDeadline(run(latest), REQUEST_DEADLINE_MS, request.id);
+    }
     await completeAgentRequest(request, out);
     void logActivity({
       type: "request_queue",

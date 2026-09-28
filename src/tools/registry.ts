@@ -85,6 +85,7 @@ import {
 } from "../org/checkins";
 import { formatUserGuide, USER_GUIDE_TOPICS } from "../services/userGuide";
 import { envFlag } from "../config";
+import { setPendingClarification } from "../services/session";
 
 export interface ToolContext {
   userId: string;
@@ -105,12 +106,19 @@ export interface ToolContext {
   allowedTools?: string[];
   /** Scheduled actions explicitly approved when the job was created. */
   preapprovedTools?: string[];
+  /** Conversation whose open question ask_user should continue. */
+  conversationId?: string;
+  /** The request this turn is trying to finish. */
+  requestText?: string;
+  /** Set when ask_user records the one thing only the user knows. */
+  askedQuestion?: string;
 }
 
 const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversible">> = {
   save_note: { effect: "personal_write", reversible: true },
   recall_notes: { effect: "read", reversible: true },
   explain_taskbrain: { effect: "read", reversible: true },
+  ask_user: { effect: "read", reversible: true },
   schedule_job: { effect: "scheduled", reversible: true },
   list_jobs: { effect: "read", reversible: true },
   remember_lesson: { effect: "personal_write", reversible: true },
@@ -154,6 +162,7 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
 };
 const scheduledNativeReads = new Set([
   "explain_taskbrain",
+  "ask_user",
   "recall_notes",
   "search_execution_graph",
   "explain_timeline",
@@ -217,6 +226,25 @@ const nativeDefs: ChatCompletionTool[] = [
           links: { type: "array", items: { type: "string" } },
         },
         required: ["kind", "title", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ask_user",
+      description:
+        "Ask the user the one thing only they know, and stop. Call this instead of asking in prose. " +
+        "Put every missing blank in one question. Do not use it for facts tools can look up.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: {
+            type: "string",
+            description: "The single question the user will see, including any default they can accept.",
+          },
+        },
+        required: ["question"],
       },
     },
   },
@@ -1135,6 +1163,32 @@ export async function dispatch(
           ctx
         );
         return `Saved: ${path}`;
+      }
+      case "ask_user": {
+        const question = String(args.question ?? "").trim().slice(0, 500);
+        if (!question) return "Say the one question you need the user to answer.";
+        const original = String(ctx.requestText ?? "").trim() || question;
+        await setPendingClarification(ctx.userId, ctx.conversationId, {
+          plan: {
+            disposition: "clarify",
+            reason: "insufficient_context",
+            confidence: 1,
+            assumptions: [],
+            clarification: question,
+            intents: [{
+              kind: "clarify",
+              standalone: original,
+              confidence: 1,
+              explicit: true,
+              question,
+            }],
+          },
+          originalText: original,
+          question,
+          createdAt: new Date().toISOString(),
+        });
+        ctx.askedQuestion = question;
+        return "Question recorded. Stop and do not call more tools.";
       }
       case "explain_taskbrain":
         return formatUserGuide(args.topic ? String(args.topic) : "overview", {

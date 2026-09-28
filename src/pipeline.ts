@@ -22,15 +22,7 @@ import {
 import { saveNote, recall, deleteNote } from "./services/brain";
 import { retainFromCapture } from "./memory/retain";
 import { recallMemory, recallPromptBlock } from "./memory/recall";
-import {
-  getRecentTurns,
-  appendTurn,
-  getPendingClarification,
-  setPendingClarification,
-  isUndoCommand,
-  getLastCapture,
-  setLastCapture,
-} from "./services/session";
+import { getOpenQuestion, getRecentTurns, appendTurn, setPendingClarification, openQuestionExpired, isUndoCommand, getLastCapture, setLastCapture } from "./services/session";
 import { logActivity } from "./services/activityLog";
 import { handleApprovalCommand } from "./services/approvals";
 import { maybeProposeSheetUpdate } from "./services/smartsheet";
@@ -45,9 +37,10 @@ import {
   type IntentPlan,
 } from "./services/intent";
 import { channelPolicy } from "./channels/types";
-import { executeApprovedAction, scheduledReadToolEnvelope } from "./tools/registry";
+import { executeApprovedAction, scheduledReadToolEnvelope, type ToolContext } from "./tools/registry";
 import { claimInboundEvent, finishInboundEvent } from "./services/inboundReceipts";
 import { assessInboundQuality } from "./services/inboundQuality";
+import { userHasPendingCheckIn } from "./org/checkins";
 import { envFlag } from "./config";
 
 export interface CaptureInput {
@@ -180,7 +173,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   };
   // 2. Short follow-up window only (never the full thread).
   const recent = await getRecentTurns(userId, input.conversationId);
-  let pending = await getPendingClarification(userId, input.conversationId);
+  let pending = await getOpenQuestion(userId, input.conversationId);
   if (pending && /^(never mind|nevermind|cancel|forget (it|that))[\s.!]*$/i.test(text)) {
     await setPendingClarification(userId, input.conversationId, undefined);
     return {
@@ -190,12 +183,13 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
       summaryLine: "Cancelled pending clarification",
     };
   }
-  if (pending && Date.now() - Date.parse(pending.createdAt) > 15 * 60_000) {
+  if (pending && openQuestionExpired(pending)) {
     await setPendingClarification(userId, input.conversationId, undefined);
     pending = undefined;
   }
 
-  const quality = assessInboundQuality(text, recent, Boolean(pending));
+  const checkInOpen = await userHasPendingCheckIn(userId).catch(() => false);
+  const quality = assessInboundQuality(text, recent, Boolean(pending) || checkInOpen);
   if (quality.disposition !== "proceed") {
     const response =
       quality.response ??
@@ -255,7 +249,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
         ? "TaskBrain"
         : quality.disposition === "refuse"
           ? "I can’t do that"
-          : "Quick clarification";
+          : "Need one detail";
     return { title, body: response, tags: [], summaryLine: response.slice(0, 200) };
   }
 
@@ -371,7 +365,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
           reason: plan.intents.find((i) => i.ambiguity)?.ambiguity ?? "low_confidence",
         },
       });
-      return { title: "Quick clarification", body: question, tags: [], summaryLine: question };
+      return { title: "Need one detail", body: question, tags: [], summaryLine: question };
     }
     if (pending) await setPendingClarification(userId, input.conversationId, undefined);
     const out = await executePlan(input, plan, recent, source);
@@ -406,7 +400,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     (captureKinds.has(kind.kind) || kind.kind === "followup")
   ) {
     const body =
-      "I didn’t save that automatically. Tell me if this is a task, an idea, or a question — or prefix it with `task:` / `idea:`.";
+      "I didn’t take that as a request to do something. Say what you want done, or ask me what I can do.";
     await appendTurn(userId, "assistant", body, input.conversationId, {
       intent: "clarify",
       outcome: "legacy_triage_write_blocked",
@@ -419,7 +413,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
       detail: { kind: kind.kind },
     });
     return {
-      title: "Quick clarification",
+      title: "Need one detail",
       body,
       tags: [],
       summaryLine: body,
@@ -461,6 +455,18 @@ async function executePlan(
   };
 }
 
+function agentOutbound(ctx: ToolContext, result: string, doneTitle: string): Outbound {
+  if (ctx.askedQuestion) {
+    return {
+      title: "Need one detail",
+      body: ctx.askedQuestion,
+      tags: [],
+      summaryLine: ctx.askedQuestion.slice(0, 200),
+    };
+  }
+  return { title: doneTitle, body: result, tags: [], summaryLine: result.slice(0, 500) };
+}
+
 async function executeIntent(
   input: CaptureInput,
   intent: InterpretedIntent,
@@ -475,9 +481,10 @@ async function executeIntent(
     return execute(input, intent.standalone, source, { kind: "conversation" }, recent);
   }
   if (intent.kind === "read") {
-    const result = await runAgent(
-      {
+    const ctx: ToolContext = {
         userId: input.userId,
+        conversationId: input.conversationId,
+        requestText: intent.standalone,
         conversationRef: input.conversationRef,
         origin: "user_message",
         channel: input.channel,
@@ -486,12 +493,9 @@ async function executeIntent(
         allowedTools: await scheduledReadToolEnvelope(),
         getGraphToken: input.getGraphToken,
         traceId: input.traceId,
-      },
-      intent.standalone,
-      undefined,
-      recent
-    );
-    return { title: "TaskBrain", body: result, tags: [], summaryLine: result.slice(0, 500) };
+    };
+    const result = await runAgent(ctx, intent.standalone, undefined, recent);
+    return agentOutbound(ctx, result, "TaskBrain");
   }
   if (intent.kind === "capture") {
     const decision = evaluateOperation(
@@ -549,9 +553,10 @@ async function executeIntent(
         summaryLine: "Action blocked by channel policy",
       };
     }
-    const result = await runAgent(
-      {
+    const ctx: ToolContext = {
         userId: input.userId,
+        conversationId: input.conversationId,
+        requestText: intent.standalone,
         conversationRef: input.conversationRef,
         origin: "user_message",
         channel: input.channel,
@@ -559,15 +564,12 @@ async function executeIntent(
         authorization: auth,
         getGraphToken: input.getGraphToken,
         traceId: input.traceId,
-      },
-      intent.standalone,
-      undefined,
-      recent
-    );
-    return { title: "TaskBrain", body: result, tags: [], summaryLine: result.slice(0, 500) };
+    };
+    const result = await runAgent(ctx, intent.standalone, undefined, recent);
+    return agentOutbound(ctx, result, "Done");
   }
   return {
-    title: "Quick clarification",
+    title: "Need one detail",
     body: intent.question ?? intent.ambiguity ?? "What would you like me to do?",
     tags: [],
     summaryLine: "Waiting for clarification",
@@ -714,9 +716,10 @@ async function execute(
           summaryLine: "Action deferred (channel policy)",
         };
       }
-      const result = await runAgent(
-        {
+      const ctx: ToolContext = {
           userId,
+          conversationId: input.conversationId,
+          requestText: text,
           conversationRef: input.conversationRef,
           ...attribution,
           authorization: {
@@ -726,12 +729,9 @@ async function execute(
           },
           getGraphToken: input.getGraphToken,
           traceId: input.traceId,
-        },
-        text,
-        undefined,
-        recent
-      );
-      return { title: "Done", body: result, tags: [], summaryLine: result.slice(0, 200) };
+      };
+      const result = await runAgent(ctx, text, undefined, recent);
+      return agentOutbound(ctx, result, "Done");
     }
 
     case "followup": {

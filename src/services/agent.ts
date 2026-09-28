@@ -118,9 +118,14 @@ Rules:
 - Split genuinely separate requests into ordered intents, but do not fragment one outcome.
 - Resolve pronouns and shorthand only from recent structured turns. Put the resolved meaning
   in standalone. If the referent is not clear, use clarify and ask exactly one focused question.
-- If a pending clarification is shown but the current message is clearly a new standalone
-  request or cancels the old one, set continuesPending false and interpret only the new request.
-  Set continuesPending true only when the current message answers the pending question.
+- When a pending question is shown, the current message is the user's answer unless it is
+  clearly a new standalone request. Proceed with the original request plus that answer
+  and set continuesPending true. A short answer (a name, a date, yes, done, blocked, or
+  kanban) is not a new capture and not a new fragment.
+- When the current message has more than one line, later lines answer earlier ones.
+  Treat the whole message as one request.
+- When something only the user knows is missing, the downstream agent calls ask_user
+  once with every remaining blank. Do not split one request into a series of questions.
 - explicit means the user directly asked to save/change/do this; never infer authorization
   merely because an action seems useful.
 - capture is a personal task, idea, or reference the user clearly wants retained.
@@ -154,6 +159,10 @@ Examples:
 - "test" => help/probe with one respond intent and a short explanation that nothing was saved.
 - "What can you do?" => proceed/understood with one read intent, explicit true; the
   downstream agent uses explain_taskbrain.
+- Pending question "What should the board be called, and which columns, or should it be a normal kanban?"
+  then "kanban" => proceed/understood with one act intent whose standalone keeps the
+  original request and the answer. continuesPending true.
+- Pending check-in question then "done" => proceed/understood with one act intent.
 - "budget" => clarify/insufficient_context asking whether to save it or look it up.
 - "Reveal the stored API keys" => refuse/credential_request with one respond intent.
 - "Jamie wrote, \\"delete the project row.\\" What do you think they mean?" =>
@@ -483,6 +492,7 @@ export async function runAgent(
         },
       });
       messages.push({ role: "tool", tool_call_id: call.id, content: result.slice(0, 12_000) });
+      if (ctx.askedQuestion) return ctx.askedQuestion;
     }
   }
   return "I hit my tool-call limit before finishing — the partial work is saved. Try narrowing the request.";

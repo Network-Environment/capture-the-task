@@ -111,11 +111,44 @@ export async function setLastCapture(
   });
 }
 
+export const OPEN_QUESTION_TTL_MS = 15 * 60_000;
+const OPEN_QUESTION_SCOPE = "open-question";
+
+export function openQuestionExpired(
+  pending: PendingClarification,
+  now = Date.now()
+): boolean {
+  return now - Date.parse(pending.createdAt) > OPEN_QUESTION_TTL_MS;
+}
+
+/** Newest unexpired question, preferring this chat and falling back to the person. */
+export function pickOpenQuestion(
+  local: PendingClarification | undefined,
+  shared: PendingClarification | undefined,
+  now = Date.now()
+): PendingClarification | undefined {
+  return [local, shared]
+    .filter((item): item is PendingClarification => item !== undefined)
+    .filter((item) => !openQuestionExpired(item, now))
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+}
+
 export async function getPendingClarification(
   userId: string,
   conversationId?: string
 ): Promise<PendingClarification | undefined> {
   return (await readSession(userId, conversationId))?.pendingClarification;
+}
+
+export async function getOpenQuestion(
+  userId: string,
+  conversationId?: string
+): Promise<PendingClarification | undefined> {
+  const local = conversationId
+    ? await getPendingClarification(userId, conversationId)
+    : undefined;
+  const shared = await getPendingClarification(userId, OPEN_QUESTION_SCOPE);
+  return pickOpenQuestion(local, shared);
 }
 
 export async function setPendingClarification(
@@ -132,4 +165,15 @@ export async function setPendingClarification(
     turns: current?.turns ?? [],
     pendingClarification,
   });
+  if (conversationId !== OPEN_QUESTION_SCOPE) {
+    const shared = await readSession(userId, OPEN_QUESTION_SCOPE);
+    await sessions().items.upsert({
+      ...shared,
+      id: sessionId(userId, OPEN_QUESTION_SCOPE),
+      userId,
+      conversationId: OPEN_QUESTION_SCOPE,
+      turns: shared?.turns ?? [],
+      pendingClarification,
+    });
+  }
 }

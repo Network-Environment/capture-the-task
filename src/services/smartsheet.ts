@@ -135,11 +135,19 @@ export function formatWriteApproval(tool: string, args: Record<string, unknown>)
 export function approvalMessage(id: string, tool: string, args: Record<string, unknown>): string {
   const detail = tool.startsWith("smartsheet__")
     ? formatWriteApproval(tool, args)
-    : `**${tool}**\n\`\`\`\n${JSON.stringify(args, null, 2).slice(0, 800)}\n\`\`\``;
+    : readableChange(args);
   return (
-    `Write action held for approval:\n${detail}\n\n` +
+    `This change is waiting for you.\n${detail}\n\n` +
     `Reply **approve ${id}** or **deny ${id}** (expires in 1 hour).`
   );
+}
+
+function readableChange(args: Record<string, unknown>): string {
+  const lines = Object.entries(args)
+    .filter(([key, value]) => key !== "authorization" && value != null && typeof value !== "object")
+    .slice(0, 6)
+    .map(([key, value]) => `${key.replaceAll("_", " ")}: ${String(value).slice(0, 160)}`);
+  return lines.length ? lines.join("\n") : "Shared records will be updated.";
 }
 
 interface ParsedSearchHit {
