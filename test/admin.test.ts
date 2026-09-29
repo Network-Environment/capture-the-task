@@ -8,6 +8,7 @@ import {
   renderMeetings,
   renderMemory,
   renderOverview,
+  renderUnmet,
   renderUsage,
   renderOrg,
   meetingCsrfScope,
@@ -190,6 +191,37 @@ describe("admin portal", () => {
     assert.match(html, /No discovery run yet/);
     assert.doesNotMatch(html, /No meetings in the 90-day index yet/);
     assert.doesNotMatch(html, /No commitments ingested yet/);
+  });
+
+  it("unmet page shows the ask and overview and usage redact it", () => {
+    const ask = "please move the secret board meeting";
+    const event = {
+      type: "capability_gap",
+      at: "2026-09-29T12:00:00.000Z",
+      channel: "teams",
+      agent: "capture",
+      detail: {
+        capability: "move the Friday meeting",
+        limit: "I can only read your calendar.",
+        alternative: "track the follow-up as work",
+        request: ask,
+        channel: "teams",
+      },
+    };
+    const overview = renderOverview({
+      stats: emptyStats,
+      events: [event],
+      signedIn: "local",
+      today: "2026-09-29",
+    });
+    const usage = renderUsage("local", emptyUsage, [event]);
+    const unmet = renderUnmet("local", [event]);
+    assert.doesNotMatch(overview, /secret board meeting/);
+    assert.doesNotMatch(usage, /secret board meeting/);
+    assert.match(unmet, /secret board meeting/);
+    assert.match(unmet, /move the Friday meeting/);
+    assert.match(unmet, /href="\/admin\/unmet"/);
+    assert.match(unmet, />1</);
   });
 
   it("capabilities lists a profile and a native tool", () => {

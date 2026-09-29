@@ -1,6 +1,6 @@
 /**
  * Admin portal — server-rendered HTML, zero frontend build.
- * Sidebar sections: overview, capabilities, integrations, usage, org, boards, meetings, jobs, memory.
+ * Sidebar sections: overview, capabilities, integrations, usage, unmet, org, boards, meetings, jobs, memory.
  *
  * In Azure, App Service Easy Auth (Entra) gates /admin*. Locally the page is open.
  */
@@ -10,6 +10,7 @@ import {
   dayStats,
   logActivity,
   normalizeAttribution,
+  recentCapabilityGaps,
   recentEvents,
   usageBreakdown,
   type DayStats,
@@ -222,6 +223,10 @@ async function renderSection(
       const [usage, events] = await Promise.all([usageBreakdown(), recentEvents(80)]);
       return renderUsage(signedIn, usage, events);
     }
+    case "unmet": {
+      const gaps = await recentCapabilityGaps(80).catch(() => []);
+      return renderUnmet(signedIn, gaps);
+    }
     case "graph":
       return renderExecutionGraph(signedIn, canWrite);
     case "org": {
@@ -338,6 +343,13 @@ function budgetBlock(totalTokens: number): string {
     </section>`;
 }
 
+function eventDetailText(detail: unknown): string {
+  if (!detail || typeof detail !== "object") return JSON.stringify(detail ?? {}).slice(0, 160);
+  const copy = { ...(detail as Record<string, unknown>) };
+  delete copy.request;
+  return JSON.stringify(copy).slice(0, 160);
+}
+
 function eventRowsHtml(events: Record<string, unknown>[]): string {
   return events
     .map((e) => {
@@ -349,7 +361,7 @@ function eventRowsHtml(events: Record<string, unknown>[]): string {
         `<td>${pill(attribution.origin, "info")}</td>` +
         `<td>${pill(attribution.channel, "idle")}</td>` +
         `<td class="muted">${esc(String(e.agent ?? "—"))}</td>` +
-        `<td class="mono muted clip">${esc(JSON.stringify(e.detail ?? {}).slice(0, 160))}</td></tr>`
+        `<td class="mono muted clip">${esc(eventDetailText(e.detail))}</td></tr>`
       );
     })
     .join("");
@@ -653,6 +665,47 @@ export function renderUsage(
     title: "Usage",
     subtitle: "how people are using it",
     body,
+  });
+}
+
+export function renderUnmet(signedIn: string, events: Record<string, unknown>[]): string {
+  const counts: Record<string, number> = {};
+  for (const event of events) {
+    const detail = (event.detail ?? {}) as Record<string, unknown>;
+    const capability = String(detail.capability ?? "unknown");
+    counts[capability] = (counts[capability] ?? 0) + 1;
+  }
+  const rows = events
+    .map((event) => {
+      const detail = (event.detail ?? {}) as Record<string, unknown>;
+      const channel = String(event.channel ?? detail.channel ?? "internal");
+      return (
+        `<tr><td class="mono muted">${esc(String(event.at ?? "").slice(0, 16).replace("T", " "))}</td>` +
+        `<td>${pill(channel, "idle")}</td>` +
+        `<td>${esc(String(detail.capability ?? ""))}</td>` +
+        `<td>${esc(String(detail.request ?? ""))}</td>` +
+        `<td>${esc(String(detail.limit ?? ""))}</td></tr>`
+      );
+    })
+    .join("");
+  const body = `
+  <p class="lede">Requests people made that TaskBrain could not perform. Policy refusals stay reason codes and are not listed here.</p>
+  ${countTable("By capability", counts, "No unmet requests yet.")}
+  <section class="panel">
+    <h2>Recent gaps</h2>
+    ${table(
+      ["Time", "Channel", "Capability", "Ask", "Limit"],
+      rows,
+      "No unmet requests yet."
+    )}
+  </section>`;
+  return renderShell({
+    section: "unmet",
+    signedIn,
+    title: "Unmet",
+    subtitle: "what people asked for that TaskBrain cannot do",
+    body,
+    autoRefresh: false,
   });
 }
 
@@ -1989,5 +2042,6 @@ function eventTone(type: string): Tone {
   if (type === "capture") return "accent";
   if (type === "job_run") return "warn";
   if (type === "tool_call") return "ok";
+  if (type === "capability_gap") return "warn";
   return "info";
 }

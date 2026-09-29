@@ -8,7 +8,7 @@ import {
   validateIntentPlan,
   type OperationMetadata,
 } from "../src/services/intent";
-import { dispatch, nativeToolCatalog, operationMetadata, scheduledReadToolEnvelope } from "../src/tools/registry";
+import { dispatch, interactiveReadToolEnvelope, nativeToolCatalog, operationMetadata, scheduledReadToolEnvelope } from "../src/tools/registry";
 
 describe("intent validation", () => {
   it("accepts ordered multi-intent plans", () => {
@@ -185,7 +185,10 @@ describe("risk policy", () => {
   });
 
   it("includes explain_taskbrain in the read-only scheduled envelope", async () => {
-    assert.ok((await scheduledReadToolEnvelope()).includes("explain_taskbrain"));
+    const scheduled = await scheduledReadToolEnvelope();
+    assert.ok(scheduled.includes("explain_taskbrain"));
+    assert.equal(scheduled.includes("note_unmet_request"), false);
+    assert.ok((await interactiveReadToolEnvelope()).includes("note_unmet_request"));
   });
 
   it("enforces scheduled tool envelopes at dispatch", async () => {
@@ -194,6 +197,8 @@ describe("risk policy", () => {
       "save_note",
       { kind: "idea", title: "should not save", body: "blocked" }
     );
-    assert.match(result, /outside this job's approved tool envelope/);
+    assert.match(result, /What I can do is/);
+    assert.doesNotMatch(result, /save_note/);
+    assert.doesNotMatch(result, /NOT_ALLOWED/);
   });
 });

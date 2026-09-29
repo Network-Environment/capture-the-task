@@ -493,6 +493,7 @@ export async function runAgent(
       });
       messages.push({ role: "tool", tool_call_id: call.id, content: result.slice(0, 12_000) });
       if (ctx.askedQuestion) return ctx.askedQuestion;
+      if (ctx.unmetReply) return ctx.unmetReply;
     }
   }
   return "I hit my tool-call limit before finishing — the partial work is saved. Try narrowing the request.";

@@ -35,6 +35,7 @@ export const SECTIONS = [
   { id: "capabilities", href: "/admin/capabilities", label: "Capabilities" },
   { id: "integrations", href: "/admin/integrations", label: "Integrations" },
   { id: "usage", href: "/admin/usage", label: "Usage" },
+  { id: "unmet", href: "/admin/unmet", label: "Unmet" },
   { id: "graph", href: "/admin/graph", label: "Execution graph" },
   { id: "org", href: "/admin/org", label: "Org" },
   { id: "boards", href: "/admin/boards", label: "Boards" },

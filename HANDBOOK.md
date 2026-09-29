@@ -502,7 +502,7 @@ than from phrase-specific routing. Production enforcement is on:
 `UNIFIED_ACTION_POLICY_ENABLED=true`. `LEGACY_TRIAGE_WRITES_ENABLED` stays
 false so a shadow-mode rollback cannot persist ideas. Set `INBOUND_QUALITY_GATE_ENABLED=false`
 only as a narrow rollback; intent and action policy remain independently
-controlled. Activity stores the disposition/reason code, never rejected text.
+controlled. Activity stores the disposition and reason code for policy refusals, never the rejected text. Capability gaps are the exception: operators read unmet asks on `/admin/unmet`, which keeps the ask, the limit, and the alternative for about 30 days. Policy refusals stay reason codes and are not listed there.
 
 ### Context-rot policy (why the bot stays fast forever)
 

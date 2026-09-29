@@ -80,6 +80,14 @@ export async function tick(
   }
 }
 
+export function shouldRerunAfterDetail(
+  title: string,
+  previousText: string,
+  latestText: string | undefined
+): boolean {
+  return title === "Need one detail" && Boolean(latestText) && latestText !== previousText;
+}
+
 async function processRequest(
   adapter: CloudAdapter,
   botAppId: string,
@@ -100,11 +108,7 @@ async function processRequest(
           });
     let out = await withDeadline(run(current), REQUEST_DEADLINE_MS, request.id);
     const latest = await getAgentRequest(request.id);
-    if (
-      out.title === "Need one detail" &&
-      latest &&
-      latest.text !== current.text
-    ) {
+    if (latest && shouldRerunAfterDetail(out.title, current.text, latest.text)) {
       out = await withDeadline(run(latest), REQUEST_DEADLINE_MS, request.id);
     }
     await completeAgentRequest(request, out);

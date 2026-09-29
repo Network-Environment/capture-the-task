@@ -27,6 +27,7 @@ export type ActivityType =
   | "request_queue"
   | "meeting_discovery"
   | "meeting_summary"
+  | "capability_gap"
   | "error";
 
 export type ActivityOrigin =
@@ -128,6 +129,28 @@ export interface DayStats {
   shadowMismatches?: number;
   duplicates?: number;
   byModel: Record<string, { calls: number; inputTokens: number; outputTokens: number }>;
+}
+
+export async function recentCapabilityGaps(limit = 80): Promise<Record<string, unknown>[]> {
+  const rows: Record<string, unknown>[] = [];
+  const start = new Date();
+  for (let i = 0; i < 14 && rows.length < limit; i++) {
+    const day = new Date(start);
+    day.setUTCDate(start.getUTCDate() - i);
+    const key = day.toISOString().slice(0, 10);
+    const { resources } = await activity().items
+      .query({
+        query: "SELECT * FROM c WHERE c.day = @day AND c.type = @type",
+        parameters: [
+          { name: "@day", value: key },
+          { name: "@type", value: "capability_gap" },
+        ],
+      })
+      .fetchAll();
+    rows.push(...resources);
+  }
+  rows.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  return rows.slice(0, limit);
 }
 
 export async function recentEvents(limit = 100): Promise<Record<string, unknown>[]> {

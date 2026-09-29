@@ -34,6 +34,13 @@ import type {
 } from "../services/activityLog";
 import { logActivity } from "../services/activityLog";
 import {
+  CALENDAR_UNAVAILABLE,
+  GRAPH_DISABLED,
+  GRAPH_WRITES_OFF,
+  classifyCapabilityBoundary,
+  recordCapabilityGap,
+} from "../services/capabilityGap";
+import {
   assertPublicHttpUrl,
   consumeBrowserBudget,
   consumeSearchBudget,
@@ -112,6 +119,10 @@ export interface ToolContext {
   requestText?: string;
   /** Set when ask_user records the one thing only the user knows. */
   askedQuestion?: string;
+  /** Set when this turn cannot do what was asked. The user sees this reply. */
+  unmetReply?: string;
+  /** This context already recorded a capability gap. */
+  unmetNoted?: boolean;
 }
 
 const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversible">> = {
@@ -119,6 +130,7 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   recall_notes: { effect: "read", reversible: true },
   explain_taskbrain: { effect: "read", reversible: true },
   ask_user: { effect: "read", reversible: true },
+  note_unmet_request: { effect: "read", reversible: true },
   schedule_job: { effect: "scheduled", reversible: true },
   list_jobs: { effect: "read", reversible: true },
   remember_lesson: { effect: "personal_write", reversible: true },
@@ -203,6 +215,12 @@ export async function scheduledReadToolEnvelope(): Promise<string[]> {
     );
 }
 
+/** Read tools for a live user turn. Scheduled jobs stay on the envelope above. */
+export async function interactiveReadToolEnvelope(): Promise<string[]> {
+  const reads = await scheduledReadToolEnvelope();
+  return reads.includes("note_unmet_request") ? reads : [...reads, "note_unmet_request"];
+}
+
 const scheduledActionTools = new Set(["send_followthrough_briefings"]);
 
 export function scheduledActionToolEnvelope(requested: unknown): string[] {
@@ -226,6 +244,36 @@ const nativeDefs: ChatCompletionTool[] = [
           links: { type: "array", items: { type: "string" } },
         },
         required: ["kind", "title", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "note_unmet_request",
+      description:
+        "Record that the user asked for an outcome you cannot perform, then stop. " +
+        "capability is a short verb phrase such as \"move the Friday meeting\". " +
+        "limit is one sentence the user can read, such as \"I can only read your calendar.\" " +
+        "alternative is a verb phrase for something the available tools can actually do. " +
+        "Do not call this for a missing detail (use ask_user), a policy refusal, or a question about what TaskBrain can do.",
+      parameters: {
+        type: "object",
+        properties: {
+          capability: {
+            type: "string",
+            description: "Short verb phrase for what they wanted, such as \"move the Friday meeting\".",
+          },
+          limit: {
+            type: "string",
+            description: "One sentence the user can read that states the limit.",
+          },
+          alternative: {
+            type: "string",
+            description: "Verb phrase for the closest thing available tools can actually do.",
+          },
+        },
+        required: ["capability", "limit"],
       },
     },
   },
@@ -1050,6 +1098,12 @@ function enabledNativeDefs(): ChatCompletionTool[] {
   });
 }
 
+async function presentToolResult(ctx: ToolContext, result: string): Promise<string> {
+  const gap = classifyCapabilityBoundary(result);
+  if (!gap) return result;
+  return recordCapabilityGap(ctx, gap);
+}
+
 export async function dispatch(
   ctx: ToolContext,
   name: string,
@@ -1058,7 +1112,10 @@ export async function dispatch(
 ): Promise<string> {
   try {
     if (ctx.allowedTools && !ctx.allowedTools.includes(name)) {
-      return `NOT_ALLOWED: ${name} is outside this job's approved tool envelope.`;
+      return presentToolResult(
+        ctx,
+        `NOT_ALLOWED: ${name} is outside this job's approved tool envelope.`
+      );
     }
     if (isMcpTool(name)) {
       const [server, ...rest] = name.split("__");
@@ -1164,6 +1221,15 @@ export async function dispatch(
         );
         return `Saved: ${path}`;
       }
+      case "note_unmet_request": {
+        const capability = String(args.capability ?? "").trim();
+        const limit = String(args.limit ?? "").trim();
+        const alternative = String(args.alternative ?? "").trim();
+        if (!capability || !limit) {
+          return "Say what they wanted and the limit, as short phrases, then call note_unmet_request again.";
+        }
+        return recordCapabilityGap(ctx, { capability, limit, alternative });
+      }
       case "ask_user": {
         const question = String(args.question ?? "").trim().slice(0, 500);
         if (!question) return "Say the one question you need the user to answer.";
@@ -1252,7 +1318,7 @@ export async function dispatch(
         );
       case "search_my_calendar": {
         if (!ctx.getGraphToken) {
-          return "The requester's live Outlook calendar is unavailable on this channel.";
+          return presentToolResult(ctx, CALENDAR_UNAVAILABLE);
         }
         try {
           return await searchMyCalendar(await ctx.getGraphToken(), {
@@ -1396,7 +1462,7 @@ export async function dispatch(
       }
       case "search_execution_graph": {
         if (!canViewMeetings(ctx.userId)) return denyMeetings();
-        if (!graphEnabled()) return "Execution graph is disabled.";
+        if (!graphEnabled()) return presentToolResult(ctx, GRAPH_DISABLED);
         const graph = await searchExecutionGraph(
           String(args.query ?? ""),
           ctx.userId,
@@ -1421,7 +1487,7 @@ export async function dispatch(
       }
       case "explain_timeline":
         if (!canViewMeetings(ctx.userId)) return denyMeetings();
-        if (!graphEnabled()) return "Execution graph is disabled.";
+        if (!graphEnabled()) return presentToolResult(ctx, GRAPH_DISABLED);
         return await explainGraphTimeline(ctx.userId, {
           projectId: String(args.projectId ?? ""),
           startDate: args.startDate ? String(args.startDate) : undefined,
@@ -1430,7 +1496,7 @@ export async function dispatch(
       case "propose_timeline":
         if (!canViewMeetings(ctx.userId)) return denyMeetings();
         if (!graphWritesEnabled()) {
-          return "Execution graph writes are disabled during read-only rollout.";
+          return presentToolResult(ctx, GRAPH_WRITES_OFF);
         }
         return await createProposedTimeline(ctx.userId, {
           projectId: String(args.projectId ?? ""),
@@ -1440,7 +1506,7 @@ export async function dispatch(
         });
       case "create_graph_project": {
         if (!canViewMeetings(ctx.userId)) return denyMeetings();
-        if (!graphWritesEnabled()) return "Execution graph writes are disabled during read-only rollout.";
+        if (!graphWritesEnabled()) return presentToolResult(ctx, GRAPH_WRITES_OFF);
         const ownerPersonId = args.ownerPersonId
           ? normalizePersonGraphId(String(args.ownerPersonId))
           : undefined;
@@ -1472,7 +1538,7 @@ export async function dispatch(
       }
       case "create_graph_task": {
         if (!canViewMeetings(ctx.userId)) return denyMeetings();
-        if (!graphWritesEnabled()) return "Execution graph writes are disabled during read-only rollout.";
+        if (!graphWritesEnabled()) return presentToolResult(ctx, GRAPH_WRITES_OFF);
         const ownerPersonId = args.ownerPersonId
           ? normalizePersonGraphId(String(args.ownerPersonId))
           : undefined;
@@ -1533,7 +1599,7 @@ export async function dispatch(
       }
       case "update_graph_item": {
         if (!canViewMeetings(ctx.userId)) return denyMeetings();
-        if (!graphWritesEnabled()) return "Execution graph writes are disabled during read-only rollout.";
+        if (!graphWritesEnabled()) return presentToolResult(ctx, GRAPH_WRITES_OFF);
         const current = await getGraphNode(String(args.id ?? ""), ctx.userId);
         if (!current) return "Graph item not found.";
         if (current.source && current.source.kind !== "graph") {
@@ -1574,7 +1640,7 @@ export async function dispatch(
       }
       case "propose_graph_relationship": {
         if (!canViewMeetings(ctx.userId)) return denyMeetings();
-        if (!graphWritesEnabled()) return "Execution graph writes are disabled during read-only rollout.";
+        if (!graphWritesEnabled()) return presentToolResult(ctx, GRAPH_WRITES_OFF);
         const edge = await putGraphEdge(
           {
             fromId: String(args.fromId ?? ""),

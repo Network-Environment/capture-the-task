@@ -37,7 +37,12 @@ import {
   type IntentPlan,
 } from "./services/intent";
 import { channelPolicy } from "./channels/types";
-import { executeApprovedAction, scheduledReadToolEnvelope, type ToolContext } from "./tools/registry";
+import { executeApprovedAction, interactiveReadToolEnvelope, type ToolContext } from "./tools/registry";
+import {
+  GROUP_CHAT_GAP,
+  UNMET_TITLE,
+  capabilityGapOutbound,
+} from "./services/capabilityGap";
 import { claimInboundEvent, finishInboundEvent } from "./services/inboundReceipts";
 import { assessInboundQuality } from "./services/inboundQuality";
 import { userHasPendingCheckIn } from "./org/checkins";
@@ -456,6 +461,14 @@ async function executePlan(
 }
 
 function agentOutbound(ctx: ToolContext, result: string, doneTitle: string): Outbound {
+  if (ctx.unmetReply) {
+    return {
+      title: UNMET_TITLE,
+      body: ctx.unmetReply,
+      tags: [],
+      summaryLine: ctx.unmetReply.slice(0, 200),
+    };
+  }
   if (ctx.askedQuestion) {
     return {
       title: "Need one detail",
@@ -490,7 +503,7 @@ async function executeIntent(
         channel: input.channel,
         inputMode: source,
         authorization: auth,
-        allowedTools: await scheduledReadToolEnvelope(),
+        allowedTools: await interactiveReadToolEnvelope(),
         getGraphToken: input.getGraphToken,
         traceId: input.traceId,
     };
@@ -546,12 +559,18 @@ async function executeIntent(
   }
   if (intent.kind === "act") {
     if (!policy.allowPersonalWrites && !policy.allowSharedWrites) {
-      return {
-        title: "Not executed",
-        body: "Actions are not enabled for this channel or conversation.",
-        tags: [],
-        summaryLine: "Action blocked by channel policy",
-      };
+      const unmet = await capabilityGapOutbound(
+        {
+          userId: input.userId,
+          channel: input.channel,
+          origin: "user_message",
+          inputMode: source,
+          traceId: input.traceId,
+          requestText: intent.standalone,
+        },
+        GROUP_CHAT_GAP
+      );
+      return { title: unmet.title, body: unmet.body, tags: [], summaryLine: unmet.summaryLine };
     }
     const ctx: ToolContext = {
         userId: input.userId,
