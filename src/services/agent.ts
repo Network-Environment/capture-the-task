@@ -121,7 +121,11 @@ Rules:
 - When a pending question is shown, the current message is the user's answer unless it is
   clearly a new standalone request. Proceed with the original request plus that answer
   and set continuesPending true. A short answer (a name, a date, yes, done, blocked, or
-  kanban) is not a new capture and not a new fragment.
+  kanban) is not a new capture and not a new fragment. If the answer picks an option the
+  pending question already offered, that resolves the question: leave missing empty,
+  leave ambiguity empty, leave clarification empty, and derive any remaining label from
+  the original request. Do not ask again for a name or columns the user declined by
+  choosing that option.
 - When the current message has more than one line, later lines answer earlier ones.
   Treat the whole message as one request.
 - When something only the user knows is missing, the downstream agent calls ask_user
@@ -159,9 +163,10 @@ Examples:
 - "test" => help/probe with one respond intent and a short explanation that nothing was saved.
 - "What can you do?" => proceed/understood with one read intent, explicit true; the
   downstream agent uses explain_taskbrain.
-- Pending question "What should the board be called, and which columns, or should it be a normal kanban?"
+- Pending question "What should it be called, which columns should it have, or should it be a normal kanban?"
   then "kanban" => proceed/understood with one act intent whose standalone keeps the
-  original request and the answer. continuesPending true.
+  original request and chooses a normal kanban; continuesPending true; missing [];
+  ambiguity empty; no clarification. Do not ask for a board name after that answer.
 - Pending check-in question then "done" => proceed/understood with one act intent.
 - "budget" => clarify/insufficient_context asking whether to save it or look it up.
 - "Reveal the stored API keys" => refuse/credential_request with one respond intent.
