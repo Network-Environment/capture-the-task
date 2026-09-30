@@ -462,11 +462,17 @@ and iMessage call the same agent and tools. Existing approval gates still
 park write operations until an explicit `approve pa-x`; channel parity does
 not bypass write approval. Unknown numbers remain silently rejected.
 
-Both interactive adapters persist the normalized text in `agent-requests`,
-then send the natural acknowledgement `Got it — I’m working on that.` Queue
-ids and queue terminology are never user-visible; duplicate channel deliveries
-are acknowledged internally without sending a second message. Voice
-bytes are transcribed before enqueue and are never stored in Cosmos. The
+Both interactive adapters compose a short acknowledgement on the cheap model
+tier before they persist the normalized text in `agent-requests`. The line
+uses the sender's first name when the org directory or the Teams display name
+has one, reflects what they just sent, and never mentions the queue. It is
+composed before the durable write so it cannot arrive after the real answer.
+Duplicate channel deliveries send nothing. A follow-up folded into an in-flight
+request gets "Adding that to what I’m already doing." Greetings (`hi` / `hello`,
+including a trailing comma) and probes (`test` / `ping`) are answered once on
+the gateway and are not queued. That reply is stored first; if it never goes
+out, the gateway sweeper sends a miss notice and then the original line. Voice
+bytes are transcribed before this step and are never stored in Cosmos. The
 isolated worker App Service claims one request at a time with an ETag and
 10-minute lease, retries failures with backoff, and writes the result to
 Cosmos. The gateway delivery pump sends it to the exact Teams conversation or
@@ -480,7 +486,8 @@ Photon delivery. Never consolidate these roles onto one plan: separate apps on
 one plan still share CPU and do not form a failure boundary.
 
 The worker then runs the deterministic quality gate for probes (`test`, `ping`),
-greetings (`hi` / `hello`), repeated noise, punctuation/gibberish, and
+greetings (`hi` / `hello`, including a trailing comma) that were still queued,
+repeated noise, punctuation/gibberish, and
 context-free single words without a model call or durable note. Capability
 questions (`help`, `what can you do`, `how does this work`) proceed to the
 capture agent, which must call `explain_taskbrain` via the `user-orientation`

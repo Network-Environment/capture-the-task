@@ -20,6 +20,7 @@
 import type { SpectrumInstance, Platform, PlatformInstance } from "spectrum-ts" with { "resolution-mode": "import" };
 import { saveConversationRef } from "../services/conversations";
 import { logActivity } from "../services/activityLog";
+import { acceptInboundMessage } from "./acceptInbound";
 import { enqueueAgentRequest } from "../services/requestQueue";
 import { transcribeBuffer } from "../services/transcription";
 import {
@@ -28,7 +29,6 @@ import {
   resolveIMessageUser,
   phoneForUser,
   channelEnvelope,
-  WORKING_RESPONSE,
 } from "./types";
 
 type IMessagePlatform = (typeof import("spectrum-ts/providers/imessage", {
@@ -141,18 +141,27 @@ async function handleInbound(space: IMessageSpace, message: IMessageMessage): Pr
     identity: "mapped",
     allowActions: imessageAllowsActions(),
   });
-  const queued = await enqueueAgentRequest({
+  await acceptInboundMessage({
     userId,
     channel: "imessage",
     text: text!,
     eventId: envelope.eventId,
     conversationId: envelope.conversationId,
-    policy: envelope.policy,
     conversationRef: { channel: "imessage", phone, spaceId: space.id },
+    send: (body) => space.send(body),
+    enqueue: async () =>
+      (
+        await enqueueAgentRequest({
+          userId,
+          channel: "imessage",
+          text: text!,
+          eventId: envelope.eventId,
+          conversationId: envelope.conversationId,
+          policy: envelope.policy,
+          conversationRef: { channel: "imessage", phone, spaceId: space.id },
+        })
+      ).disposition,
   });
-  if (queued.created) {
-    await space.send(WORKING_RESPONSE);
-  }
 }
 
 /** Proactive delivery to a user's iMessage (job results, alerts). */

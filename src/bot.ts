@@ -6,7 +6,8 @@
 import { ActivityHandler, TurnContext, Attachment } from "botbuilder";
 import { downloadAudio } from "./services/transcription";
 import { saveConversationRef } from "./services/conversations";
-import { channelEnvelope, WORKING_RESPONSE } from "./channels/types";
+import { acceptInboundMessage } from "./channels/acceptInbound";
+import { channelEnvelope } from "./channels/types";
 import { enqueueAgentRequest } from "./services/requestQueue";
 import { transcribeBuffer } from "./services/transcription";
 import {
@@ -105,18 +106,28 @@ export class TaskBrainBot extends ActivityHandler {
         identity: context.activity.from.aadObjectId ? "canonical" : "weak",
         allowActions: true,
       });
-      const queued = await enqueueAgentRequest({
+      await acceptInboundMessage({
         userId,
         channel: "teams",
         text: text!,
         eventId: envelope.eventId,
         conversationId: envelope.conversationId,
-        policy: envelope.policy,
+        displayNameHint: context.activity.from.name,
         conversationRef: { channel: "teams", teamsRef: convRef },
+        send: (body) => context.sendActivity(body),
+        enqueue: async () =>
+          (
+            await enqueueAgentRequest({
+              userId,
+              channel: "teams",
+              text: text!,
+              eventId: envelope.eventId,
+              conversationId: envelope.conversationId,
+              policy: envelope.policy,
+              conversationRef: { channel: "teams", teamsRef: convRef },
+            })
+          ).disposition,
       });
-      if (queued.created) {
-        await context.sendActivity(WORKING_RESPONSE);
-      }
       await next();
     });
 

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { normalizeTriageResult } from "../src/services/agent";
 import { WORKING_RESPONSE } from "../src/channels/types";
+import { loadConfig } from "../src/config";
 
 test("casual conversation is a non-persistent triage kind", () => {
   assert.deepEqual(
@@ -33,4 +34,9 @@ test("capture fields are normalized for valid persistent kinds", () => {
 test("both adapters hide queue internals behind a natural acknowledgement", () => {
   assert.equal(WORKING_RESPONSE, "Got it — I’m working on that.");
   assert.doesNotMatch(WORKING_RESPONSE, /queue|request id/i);
+  const routes = loadConfig<{
+    routes: Record<string, { deployment: string; maxTokens: number }>;
+  }>("model.routes");
+  assert.equal(routes.routes.ack?.deployment, "CHEAP_DEPLOYMENT");
+  assert.ok((routes.routes.ack?.maxTokens ?? 0) >= 200);
 });

@@ -32,7 +32,7 @@ describe("inbound message quality", () => {
   });
 
   it("answers greetings without persistence and lets capability questions through", () => {
-    for (const text of ["hello", "hi", "hey"]) {
+    for (const text of ["hello", "hi", "hey", "Hello,"]) {
       const result = assessInboundQuality(text);
       assert.equal(result.disposition, "help", text);
       assert.match(result.response ?? "", /what I can do/i);

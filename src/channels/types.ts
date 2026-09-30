@@ -12,7 +12,7 @@ import type { ChannelPolicy } from "../services/intent";
 const channelsConfig = loadConfig("channels");
 
 export type Channel = "teams" | "imessage";
-/** User-facing receipt sent only after the durable request write succeeds. */
+/** Nameless last-resort receipt when a personalized acknowledgement cannot be composed. */
 export const WORKING_RESPONSE = "Got it — I’m working on that.";
 
 interface ChannelsConfig {

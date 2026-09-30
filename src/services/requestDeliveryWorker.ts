@@ -3,9 +3,17 @@ import type {
   ConversationReference,
   TurnContext,
 } from "botbuilder";
+import { recordAckTurn } from "../channels/acceptInbound";
+import { missedAckMessage } from "../channels/acknowledge";
 import { deliver } from "../channels/deliver";
 import { outboundCard } from "../channels/teamsCard";
 import { toPlainText } from "../channels/types";
+import {
+  claimDuePendingAck,
+  completeAckReceipt,
+  deferPendingAck,
+  type PendingAckReceipt,
+} from "./inboundReceipts";
 import {
   deferAgentRequestDelivery,
   markAgentRequestDelivered,
@@ -14,8 +22,11 @@ import {
 } from "./requestQueue";
 
 const POLL_MS = Number(process.env.DELIVERY_POLL_MS ?? 2_000);
+const SWEEP_MS = 15_000;
 let timer: ReturnType<typeof setInterval> | undefined;
+let sweepTimer: ReturnType<typeof setInterval> | undefined;
 let running = false;
+let sweeping = false;
 
 export function startRequestDeliveryWorker(
   adapter: CloudAdapter,
@@ -23,13 +34,17 @@ export function startRequestDeliveryWorker(
 ): void {
   if (timer) return;
   timer = setInterval(() => void tickDelivery(adapter, botAppId), POLL_MS);
+  sweepTimer = setInterval(() => void sweepMissedAcks(adapter, botAppId), SWEEP_MS);
   void tickDelivery(adapter, botAppId);
-  console.log(`[delivery-worker] polling every ${POLL_MS}ms`);
+  void sweepMissedAcks(adapter, botAppId);
+  console.log(`[delivery-worker] polling every ${POLL_MS}ms, missed-ack sweep every ${SWEEP_MS}ms`);
 }
 
 export function stopRequestDeliveryWorker(): void {
   if (timer) clearInterval(timer);
+  if (sweepTimer) clearInterval(sweepTimer);
   timer = undefined;
+  sweepTimer = undefined;
 }
 
 export async function tickDelivery(
@@ -90,4 +105,73 @@ async function deliverResult(
     await deferAgentRequestDelivery(request, (err as Error).message);
     console.error(`[delivery-worker] delivery deferred for ${request.id}:`, err);
   }
+}
+
+export async function sweepMissedAcks(
+  adapter: CloudAdapter,
+  botAppId: string
+): Promise<void> {
+  if (sweeping) return;
+  sweeping = true;
+  try {
+    const receipt = await claimDuePendingAck();
+    if (receipt) await recoverPendingAck(adapter, botAppId, receipt);
+  } catch (err) {
+    console.error("[delivery-worker] missed-ack sweep failed:", err);
+  } finally {
+    sweeping = false;
+  }
+}
+
+async function recoverPendingAck(
+  adapter: CloudAdapter,
+  botAppId: string,
+  receipt: PendingAckReceipt
+): Promise<void> {
+  const text = missedAckMessage(receipt.firstName, receipt.replyText);
+  try {
+    const delivered = await sendMissedAck(adapter, botAppId, receipt, text);
+    if (!delivered) throw new Error("No channel accepted the missed acknowledgement.");
+    await completeAckReceipt(receipt);
+    await recordAckTurn({
+      userId: receipt.userId,
+      channel: receipt.channel,
+      conversationId: receipt.conversationId,
+      userText: receipt.userText,
+      replyText: text,
+      trigger: "missed_ack",
+    });
+  } catch (err) {
+    const outcome = await deferPendingAck(receipt);
+    console.error(
+      `[delivery-worker] missed ack ${outcome} for ${receipt.id}:`,
+      err
+    );
+  }
+}
+
+async function sendMissedAck(
+  adapter: CloudAdapter,
+  botAppId: string,
+  receipt: PendingAckReceipt,
+  text: string
+): Promise<boolean> {
+  const ref = receipt.conversationRef;
+  if (
+    ref?.channel === "teams" &&
+    ref.teamsRef
+  ) {
+    await adapter.continueConversationAsync(
+      botAppId,
+      ref.teamsRef as Partial<ConversationReference>,
+      async (ctx: TurnContext) => {
+        await ctx.sendActivity(text);
+      }
+    );
+    return true;
+  }
+  if (ref?.channel === "imessage") {
+    return deliver(receipt.userId, text, ref);
+  }
+  return false;
 }

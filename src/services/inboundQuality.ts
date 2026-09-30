@@ -21,13 +21,33 @@ export interface InboundQualityResult {
 
 const EXPLICIT_CAPTURE =
   /^(?:task|idea|reference|remember|save|note|capture)\s*:/i;
-const GREETING = /^(?:hi|hello|hey)(?:\s+there)?[\s.!?]*$/i;
+const TRAILING_PUNCT = "[\\s.,!?]*";
+const GREETING = new RegExp(`^(?:hi|hello|hey)(?:\\s+there)?${TRAILING_PUNCT}$`, "i");
 const CAPABILITY_ASK =
   /^(?:help|what can you do|how does this work|what are you|i(?:['’]m| am) new(?: here)?)[\s.!?]*$/i;
-const PROBE =
-  /^(?:(?:this is|send|sending)\s+(?:a\s+)?)?(?:test|testing|ping)(?:\s+(?:message|prompt|the bot|taskbrain))?[\s.!?]*$/i;
+const PROBE = new RegExp(
+  `^(?:(?:this is|send|sending)\\s+(?:a\\s+)?)?(?:test|testing|ping)(?:\\s+(?:message|prompt|the bot|taskbrain))?${TRAILING_PUNCT}$`,
+  "i"
+);
 const LOW_SIGNAL_WORDS = /^(?:asdf|qwerty|zxcv|blah|foobar|lorem|ipsum)$/i;
 const SINGLE_TOKEN = /^[\p{L}\p{N}][\p{L}\p{N}'_-]*[.!?]?$/u;
+
+export type SocialKind = "greeting" | "probe";
+
+/** Exact greeting or probe. Anchored to the whole message so a real request cannot skip the queue. */
+export function socialOnlyKind(text: string): SocialKind | undefined {
+  const trimmed = text.trim();
+  if (GREETING.test(trimmed)) return "greeting";
+  if (PROBE.test(trimmed)) return "probe";
+  const words = normalized(trimmed)
+    .replace(/[.!?,]+$/g, "")
+    .split(" ")
+    .filter(Boolean);
+  if (words.length > 1 && words.every((word) => /^(?:test|testing|ping)$/i.test(word))) {
+    return "probe";
+  }
+  return undefined;
+}
 
 function normalized(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
@@ -120,7 +140,8 @@ export function assessInboundQuality(
   const denied = refusal(trimmed);
   if (denied) return denied;
 
-  if (GREETING.test(trimmed)) {
+  const social = socialOnlyKind(trimmed);
+  if (social === "greeting") {
     return {
       disposition: "help",
       reason: "probe",
@@ -131,14 +152,7 @@ export function assessInboundQuality(
   if (CAPABILITY_ASK.test(trimmed)) {
     return { disposition: "proceed", reason: "understood" };
   }
-  const words = normalized(trimmed)
-    .replace(/[.!?]+$/g, "")
-    .split(" ")
-    .filter(Boolean);
-  if (
-    PROBE.test(trimmed) ||
-    (words.length > 1 && words.every((word) => /^(?:test|testing|ping)$/i.test(word)))
-  ) {
+  if (social === "probe") {
     return {
       disposition: "help",
       reason: "probe",
@@ -146,6 +160,10 @@ export function assessInboundQuality(
         "Test received — TaskBrain is responding. Nothing was saved. Ask what I can do, or send a complete thought.",
     };
   }
+  const words = normalized(trimmed)
+    .replace(/[.!?]+$/g, "")
+    .split(" ")
+    .filter(Boolean);
 
   if (repeatsUnresolved(trimmed, recent)) {
     return {

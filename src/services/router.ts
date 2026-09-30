@@ -18,7 +18,7 @@ import {
 } from "./activityLog";
 import { alertAdmin } from "./alerts";
 
-export type TaskClass = "triage" | "agent" | "synthesis" | "digest";
+export type TaskClass = "triage" | "ack" | "agent" | "synthesis" | "digest";
 
 let client: AzureOpenAI | undefined;
 
@@ -47,7 +47,7 @@ function spec(task: TaskClass): RouteSpec & { model: string } {
 /**
  * Daily token budget guard. When today's total tokens exceed
  * DAILY_TOKEN_BUDGET, non-triage calls are downgraded to the cheap tier for
- * the rest of the day (triage already runs cheap) and the admin is alerted
+ * the rest of the day (triage and acknowledgements already run cheap) and the admin is alerted
  * once. Counter refreshes from the activity log every 5 minutes so restarts
  * and scale-out don't reset it.
  */
@@ -71,7 +71,7 @@ setInterval(refreshBudget, 5 * 60_000);
 void refreshBudget();
 
 function budgetGuard(task: TaskClass, s: RouteSpec & { model: string }): RouteSpec & { model: string } {
-  if (task === "triage" || todayTokens < BUDGET) return s;
+  if (task === "triage" || task === "ack" || todayTokens < BUDGET) return s;
   if (!budgetAlerted) {
     budgetAlerted = true;
     void alertAdmin(

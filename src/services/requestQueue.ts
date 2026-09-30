@@ -72,7 +72,7 @@ export async function attachToInFlight(
   userId: string,
   conversationId: string,
   text: string
-): Promise<QueuedAgentRequest | undefined> {
+): Promise<{ request: QueuedAgentRequest; disposition: "attached" | "duplicate" } | undefined> {
   const { resources } = await requests()
     .items.query<QueuedAgentRequest>({
       query:
@@ -89,7 +89,7 @@ export async function attachToInFlight(
   const open = resources[0];
   if (!open) return undefined;
   const merged = mergeRequestText(open.text, text);
-  if (merged === open.text) return open;
+  if (merged === open.text) return { request: open, disposition: "duplicate" };
   try {
     const { resource } = await requests()
       .item(open.id, BUCKET)
@@ -97,12 +97,17 @@ export async function attachToInFlight(
         { ...open, text: merged },
         { accessCondition: { type: "IfMatch", condition: open._etag ?? "" } }
       );
-    return (resource as unknown as QueuedAgentRequest | undefined) ?? { ...open, text: merged };
+    return {
+      request: (resource as unknown as QueuedAgentRequest | undefined) ?? { ...open, text: merged },
+      disposition: "attached",
+    };
   } catch (err) {
     if ((err as { code?: number }).code !== 412) throw err;
     return undefined;
   }
 }
+
+export type EnqueueDisposition = "created" | "duplicate" | "attached";
 
 export async function enqueueAgentRequest(
   input: Omit<
@@ -116,9 +121,11 @@ export async function enqueueAgentRequest(
     | "ttl"
     | "_etag"
   >
-): Promise<{ request: QueuedAgentRequest; created: boolean }> {
+): Promise<{ request: QueuedAgentRequest; created: boolean; disposition: EnqueueDisposition }> {
   const attached = await attachToInFlight(input.userId, input.conversationId, input.text);
-  if (attached) return { request: attached, created: false };
+  if (attached) {
+    return { request: attached.request, created: false, disposition: attached.disposition };
+  }
   const now = new Date().toISOString();
   const request: QueuedAgentRequest = {
     ...input,
@@ -132,13 +139,13 @@ export async function enqueueAgentRequest(
   };
   try {
     const { resource } = await requests().items.create(request);
-    return { request: resource ?? request, created: true };
+    return { request: resource ?? request, created: true, disposition: "created" };
   } catch (err) {
     if ((err as { code?: number }).code !== 409) throw err;
     const { resource } = await requests()
       .item(request.id, BUCKET)
       .read<QueuedAgentRequest>();
-    return { request: resource ?? request, created: false };
+    return { request: resource ?? request, created: false, disposition: "duplicate" };
   }
 }
 

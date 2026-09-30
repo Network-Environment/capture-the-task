@@ -1,6 +1,7 @@
 {
   "routes": {
     "triage":    { "deployment": "CHEAP_DEPLOYMENT",   "maxTokens": 1500, "temperature": 0 },
+    "ack":       { "deployment": "CHEAP_DEPLOYMENT",   "maxTokens": 200,  "temperature": 0.6 },
     "agent":     { "deployment": "STANDARD_DEPLOYMENT","maxTokens": 3000, "temperature": 0 },
     "synthesis": { "deployment": "STANDARD_DEPLOYMENT","maxTokens": 1200, "temperature": 0.3 },
     "digest":    { "deployment": "PREMIUM_DEPLOYMENT", "maxTokens": 2500, "temperature": 0.3 }
@@ -15,6 +16,7 @@
     "models is an app-setting change, not a deploy.",
     "Suggested mapping: CHEAP=Haiku-4.5 or gpt-5-mini class, STANDARD=Sonnet-5",
     "or gpt-5 class, PREMIUM=Opus-5 class (weekly digests only).",
-    "Triage runs on every capture — that is where cheap routing pays for itself."
+    "Triage runs on every capture — that is where cheap routing pays for itself.",
+    "ack is the one-line receipt sent before a request is queued. It stays on the cheap tier."
   ]
 }
