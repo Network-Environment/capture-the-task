@@ -150,9 +150,12 @@ async function cachedPeople(): Promise<OrgPerson[]> {
   return people;
 }
 
-const GRAPH_NAME_TIMEOUT_MS = 1_500;
+const GRAPH_NAME_WAIT_MS = 1_500;
+const GRAPH_NAME_FETCH_MS = 8_000;
+const GRAPH_MISS_CACHE_MS = 30_000;
 const ENTRA_OBJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const graphNameCache = new Map<string, { at: number; name: string | undefined }>();
+const graphNameCache = new Map<string, { at: number; name: string | undefined; ttl: number }>();
+const graphInFlight = new Map<string, Promise<string | undefined>>();
 
 export interface GraphNameProfile {
   givenName?: string | null;
@@ -171,34 +174,69 @@ export function firstNameFromGraphProfile(profile: GraphNameProfile | undefined)
  * the channel allowlist (phone → Entra id), so this only turns a known person
  * into a first name; it never decides who is texting.
  */
-async function graphFirstName(userId: string): Promise<string | undefined> {
-  if (!ENTRA_OBJECT_ID.test(userId)) return undefined;
-  const hit = graphNameCache.get(userId);
-  if (hit && Date.now() - hit.at < NAME_CACHE_MS) return hit.name;
-  let name: string | undefined;
+async function fetchGraphFirstName(userId: string): Promise<string | undefined> {
+  const started = Date.now();
   try {
     const profile = await graphAppJson<GraphNameProfile>(
       `/users/${userId}?$select=givenName,displayName`,
-      { signal: AbortSignal.timeout(GRAPH_NAME_TIMEOUT_MS) }
+      { signal: AbortSignal.timeout(GRAPH_NAME_FETCH_MS) }
     );
-    name = firstNameFromGraphProfile(profile);
+    const name = firstNameFromGraphProfile(profile);
+    graphNameCache.set(userId, { at: Date.now(), name, ttl: NAME_CACHE_MS });
+    console.log(`[ack] graph name for ${userId}: ${name ?? "none"} (${Date.now() - started}ms)`);
+    return name;
   } catch (err) {
-    console.error("[ack] graph name lookup failed:", err);
+    graphNameCache.set(userId, { at: Date.now(), name: undefined, ttl: GRAPH_MISS_CACHE_MS });
+    console.error(`[ack] graph name lookup failed for ${userId} after ${Date.now() - started}ms:`, err);
+    return undefined;
+  } finally {
+    graphInFlight.delete(userId);
   }
-  graphNameCache.set(userId, { at: Date.now(), name });
-  return name;
+}
+
+/**
+ * Waits a bounded time for the profile. A slow first call (token acquisition
+ * on a cold process) keeps running in the background and fills the cache, so
+ * only the first message after a restart goes out without a name.
+ */
+async function graphFirstName(userId: string): Promise<string | undefined> {
+  if (!ENTRA_OBJECT_ID.test(userId)) return undefined;
+  const hit = graphNameCache.get(userId);
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.name;
+  let pending = graphInFlight.get(userId);
+  if (!pending) {
+    pending = fetchGraphFirstName(userId);
+    graphInFlight.set(userId, pending);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waited = await Promise.race([
+    pending.then((name) => ({ done: true as const, name })),
+    new Promise<{ done: false }>((resolve) => {
+      timer = setTimeout(() => resolve({ done: false }), GRAPH_NAME_WAIT_MS);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (waited.done) return waited.name;
+  console.log(`[ack] graph name for ${userId} still loading; sending without a name`);
+  return undefined;
 }
 
 async function defaultResolveName(userId: string, hint?: string): Promise<string | undefined> {
   try {
     const person = resolvePerson(await cachedPeople(), { ownerId: userId });
     const fromOrg = firstNameFrom(person?.displayName);
-    if (fromOrg) return fromOrg;
+    if (fromOrg) {
+      console.log(`[ack] name for ${userId} from org directory`);
+      return fromOrg;
+    }
   } catch (err) {
-    console.error("[ack] name lookup failed:", err);
+    console.error("[ack] org name lookup failed:", err);
   }
   const fromHint = firstNameFrom(hint);
-  if (fromHint) return fromHint;
+  if (fromHint) {
+    console.log(`[ack] name for ${userId} from channel display name`);
+    return fromHint;
+  }
   return graphFirstName(userId);
 }
 
