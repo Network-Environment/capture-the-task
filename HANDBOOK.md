@@ -49,7 +49,7 @@ flowchart TD
   POL -->|high impact| APR
   AG --> REG[tool registry]
   REG --> NAT[native: brain · scheduler · web_search · memory]
-  REG --> MCP[MCP servers · Smartsheet · browser]
+  REG --> MCP[MCP servers · Smartsheet]
   REG -->|shared/destructive/scheduled| APR
   MCP -->|navigate/snapshot| CAPP[Container App Chromium]
   AG --> MEM[(agent-memory)]
@@ -87,14 +87,13 @@ scripts/bootstrap.sh (once, out of band)
   │                 SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET, WEB_SEARCH_API_KEY]
   │     infra/main.bicep
   │       ├─ creates every resource + 3 Foundry models + Basic ACR
-  │       ├─ Container Apps env + always-warm Playwright MCP (browser)
   │       ├─ Easy Auth + Admin/Reader app roles on the web app
   │       │  (TaskBrain Admin Entra app; /api/messages and /healthz excluded)
   │       ├─ gives the App Service system identity AcrPull on ACR
   │       └─ WRITES ALL APP SETTINGS: keys via listKeys() (Cosmos, Storage,
   │          Speech, Foundry), endpoints, deployment names, and the secrets
   │          above → the code's process.env is fully populated
-  ├─ az acr build → taskbrain-browser:<git-sha> AND taskbrain:<git-sha> BEFORE the Bicep deploy
+  ├─ az acr build → taskbrain:<git-sha> BEFORE the Bicep deploy
   │  (App Service and Container Apps refuse tags missing from the registry)
   ├─ Bicep only retags App Service after that image exists (or keeps the current tag)
   ├─ az acr build → taskbrain:<git-sha> again in the deploy job (idempotent) then linuxFxVersion + restart
@@ -530,9 +529,9 @@ Three config files change behavior without code:
   (live URL from an app setting), `authEnv`
   (env var holding the bearer token), `allowTools` (allowlist; omit = all),
   `confirmTools` (writes that park for human approval), `enabled`.
-  Vendor systems of record go here (Smartsheet). The `browser` server is our
-  own Playwright MCP on a Container App (navigate + snapshot), held at one
-  warm replica so Chromium never cold-starts inside an agent turn.
+  Vendor systems of record go here (Smartsheet). Repeated unmet requests on
+  `/admin/unmet` are disabled connector candidates; add one only when that
+  system has an API. Public web search and page reads use Tavily, not a browser.
 - **`config/agents.json`** — profiles. Per profile: `persona` (system
   prompt), `tools` (`"*"`, exact names, or `server__*` globs), `route` (task
   class), and `skills` (runtime workflow names). `default` names the fallback
@@ -580,8 +579,7 @@ patched by bootstrap.sh) supplies the same names.
 | `GRAPH_CONNECTION_NAME` | Bot Service OAuth connection name | Bicep constant `graph-connection` |
 | `CALENDAR_LOOKBACK_DAYS` | bounded range for requester-only `/me/calendarView` searches | optional; code default 730 |
 | `SMARTSHEET_API_TOKEN` | bearer for mcp.smartsheet.com | GitHub **repo** secret (already set); Bicep copies it to App Service. Do not re-run bootstrap. |
-| `WEB_SEARCH_API_KEY` / `WEB_SEARCH_ENGINE` | native `web_search` (Tavily default; Brave or Bing) | GitHub secret (optional) + Bicep `webSearchEngine` default `tavily` |
-| `BROWSER_MCP_URL` / `BROWSER_MCP_TOKEN` | Streamable HTTP to the browser Container App | Bicep (FQDN + generated or supplied token) |
+| `WEB_SEARCH_API_KEY` | Tavily key for `web_search` and `read_public_page` | GitHub secret (optional); Bicep copies it |
 | `SPECTRUM_PROJECT_ID` / `SPECTRUM_PROJECT_SECRET` | Photon iMessage; blank disables channel | GitHub secrets (optional) |
 | `ADMIN_APP_ID` / `ADMIN_APP_SECRET` | App Service Easy Auth (TaskBrain Admin Entra app) | GitHub secrets (bootstrap / `scripts/setup-admin-sso.sh`) |
 | `ADMIN_AAD_OBJECT_ID` | admin alert recipient | GitHub secret (bootstrap = signed-in user) |
@@ -604,7 +602,7 @@ repo, org permission to upload Teams apps.
 
 1. **Bootstrap (one-time, out of band):**
    `./scripts/bootstrap.sh <org>/<repo> rg-taskbrain eastus`
-   Creates the bot app registration (+2-year secret, delegated Graph Tasks.ReadWrite and Calendars.ReadBasic,
+   Creates the bot app registration (+2-year secret, delegated Graph Tasks.ReadWrite, Calendars.ReadWrite, Mail.ReadWrite, and Files.ReadWrite.All,
    admin consent, OAuth redirect), the CI app with GitHub OIDC federation and
    Contributor + RBAC Administrator on the RG, required resource providers,
    the resource group, and the TaskBrain Admin Entra app (assignment-required
@@ -618,14 +616,12 @@ repo, org permission to upload Teams apps.
 2. **Local sanity:** `npm ci && npx tsc --noEmit && npm test`. (Also
    review Bicep model params against your region's Foundry catalog.)
 3. **Push to `main`.** Pipeline: build → tests → OIDC login → build
-   `taskbrain-browser` in ACR → Bicep (all resources including Flex
-   Consumption Function + meeting Cosmos containers, ACR, Container Apps
-   Playwright MCP, three model deployments, every app setting, Bot OAuth) →
-   build `taskbrain` image → isolated admin/gateway/worker App Service
-   restarts and health checks → zip-deploy
-   the meeting ingest Function. The browser image is built first on purpose:
-   Container Apps fails revision provisioning if the tag is not already in the
-   registry. Optional: set `WEB_SEARCH_API_KEY` in GitHub secrets so
+   `taskbrain` in ACR → Bicep (all resources including Flex
+   Consumption Function + meeting Cosmos containers, ACR, three model
+   deployments, every app setting, Bot OAuth) → isolated admin/gateway/worker
+   App Service restarts and health checks → zip-deploy
+   the meeting ingest Function. The app image is built before Bicep so App
+   Service is not pointed at a missing tag. Optional: set `WEB_SEARCH_API_KEY` in GitHub secrets so
    `web_search` works. The deployment creates graph containers and enables
    read-only graph projection. Agent/admin graph writes remain hidden unless
    the GitHub repository variable `EXECUTION_GRAPH_WRITES_ENABLED` is exactly
@@ -703,11 +699,7 @@ order-independent and re-runnable.
   TTL), App Service log stream for console output.
 - **Cost posture at personal scale:** ~$20–60/mo lean (Cosmos vector search)
   — dominated by model tokens; the cheap-tier triage and budget guard are the
-  levers. The browser Container App adds a flat ~$20–25/mo: it holds one
-  resident replica (1 vCPU / 2 GiB), billed at the East US idle rate of
-  $0.000003 per vCPU-second and per GiB-second. Scaling it to zero would save
-  that, at the price of a ~45s Chromium cold start inside the agent turn that
-  needs it — the trade we deliberately declined.
+  levers. Public web reads are Tavily API calls, not a resident browser container.
 
 ## 6. Iteration recipes
 
@@ -716,14 +708,13 @@ order-independent and re-runnable.
 app setting, deploy. Tools appear namespaced `server__tool`. Optionally give
 a specialist profile access via a `server__*` glob in `config/agents.json`.
 
-**Give the agent public-web research:** native `web_search` (query → titles/URLs/snippets;
-set GitHub secret `WEB_SEARCH_API_KEY`) plus `browser__navigate` / `browser__snapshot`
-on an always-warm Container App. Search first; open a URL only when the user
-named it or a hit must be read as a rendered page. Caps: 1 search and 3 browser
-calls per turn. SSRF blocks `file:`, localhost, and private IPs. Snapshots are
-truncated; page HTML is never written to Cosmos/Blob unless the user asks to
-`save_note`. Chromium is not in the App Service image. Click/type/login are
-out of v1. `digest` does not get search.
+**Give the agent public-web research:** native `web_search` and `read_public_page`
+both call Tavily (`WEB_SEARCH_API_KEY`). Search first; read a URL only when the user
+named it or a hit must be opened. Caps: 1 search and 3 page reads per turn.
+SSRF blocks `file:`, localhost, and private IPs before the URL is sent.
+Page text is truncated and is never written to Cosmos/Blob unless the user asks to
+`save_note`. There is no browser, click, type, or login. JavaScript-only pages
+can come back thin. `digest` does not get search.
 
 **Use the execution graph:** ask "what is blocked on Project X?", "who owns
 the launch tasks?", or "why does this work exist?" so the agent uses
@@ -813,8 +804,8 @@ logging already support it. Do not pay this tax early.
 13. Config is read only through `src/config.ts::loadConfig` (never imported
     as a module — it lives outside `rootDir`). Every `process.env` read in
     `src/` has a matching app setting written by `infra/main.bicep`.
-14. Chromium never ships in the App Service image. Public-web research is
-    `web_search` plus a remote browser MCP. Crawled page HTML is not stored
+14. Public-web research is Tavily only: `web_search` and `read_public_page`.
+    There is no browser, login, or Chromium container. Page text is not stored
     in the brain unless the user explicitly `save_note`s a summary.
 15. Personal notes and ordinary task captures are never published to the
     shared execution graph implicitly. Promotion must be explicit.
@@ -862,26 +853,23 @@ logging already support it. Do not pay this tax early.
   Speech key/region.
 - **To Do errors → "saved to brain instead":** OAuth connection name must
   equal `GRAPH_CONNECTION_NAME`; test the connection in the bot resource
-  blade; confirm consent for Tasks.ReadWrite and Calendars.ReadBasic.
+  blade; confirm consent for Tasks.ReadWrite, Calendars.ReadWrite, Mail.ReadWrite, and Files.ReadWrite.All.
 - **No MCP tools:** check `SMARTSHEET_API_TOKEN`; console logs
   `[mcp] failed to connect` per server; the bot degrades gracefully, so
-  capture still works. Browser MCP needs `BROWSER_MCP_URL` (Container App up)
-  and a successful `az acr build` of `taskbrain-browser`.
+  capture still works.
 - **Web search always "not configured":** set repo secret `WEB_SEARCH_API_KEY`
-  (Tavily `tvly-…` Bearer token from [app.tavily.com](https://app.tavily.com/);
-  or Brave / Bing if `WEB_SEARCH_ENGINE` is `brave`/`bing`) and redeploy so
-  Bicep copies it.
+  (Tavily `tvly-…` Bearer token from [app.tavily.com](https://app.tavily.com/))
+  and redeploy so Bicep copies it. Search and public page reads both use that key.
 - **CI fails `AuthorizationFailed` on `Microsoft.X/register/action`:** provider
   registration is subscription scope and the CI identity only has rights on
   `rg-taskbrain`. Register once as an owner:
   `az provider register -n Microsoft.App --wait` (same for
   `Microsoft.OperationalInsights`, `Microsoft.ManagedIdentity`), or re-run
   `scripts/bootstrap.sh`. Do not add provider registration to the pipeline.
-- **Container App revision fails `MANIFEST_UNKNOWN`:** Bicep referenced an
-  image tag that is not in ACR yet. The pipeline builds `taskbrain-browser`
-  before the Bicep step for this reason; if you deploy Bicep by hand, pass
-  `browserImage=<acr>.azurecr.io/taskbrain-browser:<tag>` or let it fall back
-  to the public placeholder default.
+- **App Service revision fails because the image tag is missing:** the pipeline
+  builds `taskbrain:<git-sha>` in ACR before Bicep points App Service at it.
+  Public web does not use a Container App. If an old `ca-browser-*` app is still
+  running, the deploy job deletes it.
 - **Jobs not firing:** orchestrator logs each run; check `jobs` docs'
   `nextRun`/`enabled`; remember one-offs self-disable and claims push
   `nextRun` forward ~10 min while running.

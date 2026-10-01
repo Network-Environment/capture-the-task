@@ -4,14 +4,12 @@
  */
 
 export const MAX_SEARCHES_PER_TURN = 1;
-export const MAX_BROWSER_PER_TURN = 3;
+export const MAX_PAGE_READS_PER_TURN = 3;
 export const SEARCH_TIMEOUT_MS = 8_000;
 export const NAV_TIMEOUT_MS = 20_000;
 export const SNAPSHOT_MAX_CHARS = 8_000;
 export const SEARCH_HIT_MIN = 5;
 export const SEARCH_HIT_MAX = 8;
-
-const BROWSER_TOOLS = new Set(["navigate", "snapshot"]);
 
 export interface SearchHit {
   title: string;
@@ -21,11 +19,11 @@ export interface SearchHit {
 
 export interface ResearchBudget {
   searches: number;
-  browserCalls: number;
+  pageReads: number;
 }
 
 export function ensureResearchBudget(ctx: { research?: ResearchBudget }): ResearchBudget {
-  if (!ctx.research) ctx.research = { searches: 0, browserCalls: 0 };
+  if (!ctx.research) ctx.research = { searches: 0, pageReads: 0 };
   return ctx.research;
 }
 
@@ -38,17 +36,13 @@ export function consumeSearchBudget(ctx: { research?: ResearchBudget }): string 
   return undefined;
 }
 
-export function consumeBrowserBudget(ctx: { research?: ResearchBudget }): string | undefined {
+export function consumePageReadBudget(ctx: { research?: ResearchBudget }): string | undefined {
   const b = ensureResearchBudget(ctx);
-  if (b.browserCalls >= MAX_BROWSER_PER_TURN) {
-    return "Browser cap for this turn already used (navigate + snapshot). Summarize from what you have.";
+  if (b.pageReads >= MAX_PAGE_READS_PER_TURN) {
+    return "Public page cap for this turn already used. Summarize from what you have.";
   }
-  b.browserCalls += 1;
+  b.pageReads += 1;
   return undefined;
-}
-
-export function isBrowserMcpTool(server: string, tool: string): boolean {
-  return server === "browser" && BROWSER_TOOLS.has(tool);
 }
 
 export function clampSearchCount(count?: number): number {
@@ -74,28 +68,6 @@ export function hitsFromTavily(data: unknown): SearchHit[] {
     title: r.title ?? "",
     url: r.url ?? "",
     snippet: r.content ?? "",
-  }));
-}
-
-export function hitsFromBrave(data: unknown): SearchHit[] {
-  const results =
-    (data as { web?: { results?: { title?: string; url?: string; description?: string }[] } })
-      .web?.results ?? [];
-  return results.map((r) => ({
-    title: r.title ?? "",
-    url: r.url ?? "",
-    snippet: r.description ?? "",
-  }));
-}
-
-export function hitsFromBing(data: unknown): SearchHit[] {
-  const values =
-    (data as { webPages?: { value?: { name?: string; url?: string; snippet?: string }[] } })
-      .webPages?.value ?? [];
-  return values.map((r) => ({
-    title: r.name ?? "",
-    url: r.url ?? "",
-    snippet: r.snippet ?? "",
   }));
 }
 
@@ -182,31 +154,9 @@ export async function webSearch(query: string, count?: number): Promise<string> 
   if (!key) return "Web search is not configured (WEB_SEARCH_API_KEY).";
 
   const n = clampSearchCount(count);
-  const engine = (process.env.WEB_SEARCH_ENGINE ?? "tavily").toLowerCase();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
   try {
-    if (engine === "bing") {
-      const url = `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(q)}&count=${n}`;
-      const res = await fetch(url, {
-        headers: { "Ocp-Apim-Subscription-Key": key },
-        signal: ctrl.signal,
-      });
-      if (!res.ok) return `Web search failed (${res.status}).`;
-      return shapeSearchHits(hitsFromBing(await res.json()), n);
-    }
-    if (engine === "brave") {
-      const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=${n}`;
-      const res = await fetch(url, {
-        headers: {
-          Accept: "application/json",
-          "X-Subscription-Token": key,
-        },
-        signal: ctrl.signal,
-      });
-      if (!res.ok) return `Web search failed (${res.status}).`;
-      return shapeSearchHits(hitsFromBrave(await res.json()), n);
-    }
     const res = await fetch("https://api.tavily.com/search", {
       method: "POST",
       headers: {
@@ -228,6 +178,44 @@ export async function webSearch(query: string, count?: number): Promise<string> 
   } catch (err) {
     const msg = (err as Error).name === "AbortError" ? "timed out" : (err as Error).message;
     return `Web search failed: ${msg}`;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function readPublicPage(url: string): Promise<string> {
+  const checked = await assertPublicHttpUrl(url);
+  if ("error" in checked) return checked.error;
+  const key = process.env.WEB_SEARCH_API_KEY?.trim();
+  if (!key) return "Web search is not configured (WEB_SEARCH_API_KEY).";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+  try {
+    const res = await fetch("https://api.tavily.com/extract", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({ urls: [checked.href], extract_depth: "basic" }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return `Public page read failed (${res.status}).`;
+    const data = (await res.json()) as {
+      results?: Array<{ url?: string; raw_content?: string }>;
+      failed_results?: Array<{ url?: string; error?: string }>;
+    };
+    const page = data.results?.find((row) => row.raw_content?.trim());
+    if (!page) {
+      const reason = data.failed_results?.[0]?.error;
+      return reason
+        ? `Could not read that public page: ${reason}`
+        : "That public page came back empty. JavaScript-only pages can be thin.";
+    }
+    return truncateSnapshot(`URL: ${page.url || checked.href}\n\n${page.raw_content ?? ""}`);
+  } catch (err) {
+    const msg = (err as Error).name === "AbortError" ? "timed out" : (err as Error).message;
+    return `Public page read failed: ${msg}`;
   } finally {
     clearTimeout(timer);
   }

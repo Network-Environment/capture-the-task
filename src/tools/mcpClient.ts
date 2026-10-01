@@ -5,6 +5,7 @@
  *
  * Smartsheet's hosted server (https://mcp.smartsheet.com) is the first entry;
  * any other MCP-compliant service is one more config entry.
+ * Public web reads use Tavily, not an MCP browser.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -48,7 +49,7 @@ let toolCache: McpToolRef[] | null = null;
  */
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-/** Admin HTML must not wait for scale-to-zero MCP (browser allowlist is 25s). */
+/** Admin HTML must not wait on a slow MCP server. */
 export const ADMIN_MCP_PROBE_MS = 3_500;
 const HEALTH_TTL_MS = 45_000;
 

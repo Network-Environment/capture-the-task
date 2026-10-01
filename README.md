@@ -40,9 +40,9 @@ polls every 60s → proactive message with the result.
 
 - **Integrations = config.** `config/mcp.servers.json` declares MCP servers
   (URL or `urlEnv` + token env var + tool allowlist). Smartsheet's hosted server
-  (mcp.smartsheet.com) ships enabled. The `browser` server is TaskBrain's own
-  Chromium MCP (navigate + snapshot). Adding Jira/ServiceNow/etc. later is a
-  JSON entry, not code. Native `web_search` is a registry tool, not MCP.
+  (mcp.smartsheet.com) ships enabled. Adding another system later is a
+  JSON entry, not code, and only after unmet requests show the org needs it.
+  Native `web_search` and public page reads use Tavily, not a browser.
 - **Models = app settings.** `config/model.routes.json` maps task classes
   (triage/agent/synthesis/digest) to env-var-named Foundry deployments, with
   cheap→standard escalation on triage parse failure. Retier without redeploying.
@@ -84,7 +84,7 @@ src/
   tools/
     registry.ts            unified tool registry (native + MCP) + dispatch
     mcpClient.ts           MCP Streamable HTTP client, config-driven discovery
-    webResearch.ts         native web_search + SSRF / caps for the browser MCP
+    webResearch.ts         native Tavily search + public page extract
   jobs/
     orchestrator.ts        single 60s poller: due jobs → agent → proactive msg
   graph/
@@ -94,10 +94,9 @@ src/
     validation.ts          relationship, visibility, cycle, and size guards
   admin/client/graph.ts     bundled Cytoscape execution graph UI
 config/
-  mcp.servers.json         external integrations (Smartsheet + browser MCP)
+  mcp.servers.json         external integrations (Smartsheet)
   model.routes.json        model tiers per task class
 infra/main.bicep           all Azure resources (incl. jobs container)
-services/browser/          Playwright MCP (Chromium; not in the bot image)
 scripts/backfill-graph.ts  dry-run/apply migration of shared source records
 teams-app/manifest.json    Teams app package
 ```

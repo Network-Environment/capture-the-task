@@ -33,6 +33,7 @@ import type {
 } from "../meetings/types";
 import { loadConfig } from "../config";
 import { nativeToolCatalog } from "../tools/registry";
+import { connectorCandidates } from "../services/connectorBacklog";
 import {
   mcpServerCatalog,
   mcpServerHealth,
@@ -555,7 +556,7 @@ export function renderIntegrations(
         tone: sheetAliases > 0 ? "ok" : "idle",
         note: sheetAliases > 0 ? `${sheetAliases} alias(es)` : "no aliases; MCP search is enough",
       },
-      { name: "Web search", label: process.env.WEB_SEARCH_API_KEY ? "ready" : "not ready", tone: process.env.WEB_SEARCH_API_KEY ? "ok" : "warn", note: process.env.WEB_SEARCH_ENGINE || "tavily" },
+      { name: "Web search", label: process.env.WEB_SEARCH_API_KEY ? "ready" : "not ready", tone: process.env.WEB_SEARCH_API_KEY ? "ok" : "warn", note: "tavily" },
     ];
     const statusRows = platform
       .map(
@@ -688,9 +689,35 @@ export function renderUnmet(signedIn: string, events: Record<string, unknown>[])
       );
     })
     .join("");
+  const candidates = connectorCandidates(
+    events.map((event) => {
+      const detail = (event.detail ?? {}) as Record<string, unknown>;
+      return {
+        capability: String(detail.capability ?? ""),
+        limit: String(detail.limit ?? ""),
+        request: String(detail.request ?? ""),
+      };
+    }),
+    mcpServerCatalog().map((server) => server.name)
+  );
+  const candidateRows = candidates
+    .map(
+      (candidate) =>
+        `<tr><td class="strong">${esc(candidate.name)}</td><td><span class="num">${candidate.count}</span></td>` +
+        `<td>${esc(candidate.capability)}</td><td><pre class="mono">${esc(JSON.stringify(candidate.entry, null, 2))}</pre></td></tr>`
+    )
+    .join("");
   const body = `
-  <p class="lede">Requests people made that TaskBrain could not perform. Policy refusals stay reason codes and are not listed here.</p>
+  <p class="lede">Requests people made that TaskBrain could not perform. Policy refusals stay reason codes and are not listed here. A capability that shows up more than once, and is not already mail, calendar, files, or Smartsheet, becomes a disabled connector candidate. It is not connected until someone adds the API URL and allowlist to the MCP config.</p>
   ${countTable("By capability", counts, "No unmet requests yet.")}
+  <section class="panel">
+    <h2>Connector candidates</h2>
+    ${table(
+      ["Name", "<span class='num'>Asks</span>", "Capability", "Disabled entry"],
+      candidateRows,
+      "No repeated gaps that need a new connector."
+    )}
+  </section>
   <section class="panel">
     <h2>Recent gaps</h2>
     ${table(

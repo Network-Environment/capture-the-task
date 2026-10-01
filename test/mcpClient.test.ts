@@ -1,43 +1,35 @@
 import "./setup";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ADMIN_MCP_PROBE_MS, mcpServerCatalog, mcpServerSnapshot, resolveServerUrl } from "../src/tools/mcpClient";
+import { mcpServerCatalog, mcpServerSnapshot, resolveServerUrl } from "../src/tools/mcpClient";
 
 describe("mcp client config", () => {
-  it("resolves the browser URL from its env var, not a literal", () => {
-    const browser = mcpServerCatalog().find((s) => s.name === "browser");
-    assert.ok(browser, "browser server should be configured");
-    assert.equal(browser.urlEnv, "BROWSER_MCP_URL");
-
-    delete process.env.BROWSER_MCP_URL;
-    assert.equal(resolveServerUrl(browser), undefined);
-
-    process.env.BROWSER_MCP_URL = "https://browser.example/mcp";
-    assert.equal(resolveServerUrl(browser), "https://browser.example/mcp");
-    delete process.env.BROWSER_MCP_URL;
+  it("resolves a literal server URL and ignores a missing env override", () => {
+    const smartsheet = mcpServerCatalog().find((s) => s.name === "smartsheet");
+    assert.ok(smartsheet, "smartsheet server should be configured");
+    assert.equal(resolveServerUrl(smartsheet), "https://mcp.smartsheet.com");
+    assert.equal(
+      resolveServerUrl({ ...smartsheet, url: undefined, urlEnv: "BROWSER_MCP_URL" }),
+      undefined
+    );
   });
 
-  it("bounds the browser server so a restart or wedge cannot hang a page", () => {
-    const browser = mcpServerCatalog().find((s) => s.name === "browser");
-    assert.ok(browser?.timeoutMs && browser.timeoutMs <= 30_000);
-    assert.ok(ADMIN_MCP_PROBE_MS < (browser?.timeoutMs ?? 0));
+  it("does not configure a browser server", () => {
+    assert.equal(mcpServerCatalog().some((s) => s.name === "browser"), false);
   });
 
   it("snapshots MCP config for the admin first paint without connecting", () => {
-    delete process.env.BROWSER_MCP_URL;
     const snap = mcpServerSnapshot();
     const smartsheet = snap.find((s) => s.name === "smartsheet");
-    const browser = snap.find((s) => s.name === "browser");
     assert.equal(smartsheet?.pending, true);
     assert.equal(smartsheet?.connected, false);
     assert.ok((smartsheet?.toolCount ?? 0) > 0);
-    assert.match(browser?.error ?? "", /unset/);
-    assert.equal(browser?.pending, undefined);
+    assert.equal(snap.some((s) => s.name === "browser"), false);
   });
 
-  it("keeps the browser allowlist to reads only", () => {
-    const browser = mcpServerCatalog().find((s) => s.name === "browser");
-    assert.deepEqual(browser?.allowTools, ["navigate", "snapshot"]);
-    assert.deepEqual(browser?.confirmTools, []);
+  it("keeps the Smartsheet write allowlist explicit", () => {
+    const smartsheet = mcpServerCatalog().find((s) => s.name === "smartsheet");
+    assert.ok(smartsheet?.allowTools?.includes("search"));
+    assert.deepEqual(smartsheet?.confirmTools, ["add_rows", "update_rows"]);
   });
 });

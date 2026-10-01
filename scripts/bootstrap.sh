@@ -76,15 +76,28 @@ BOT_APP_SECRET=$(az ad app credential reset \
   --query password -o tsv)
 echo "client secret minted"
 
-# Graph delegated permission: Tasks.ReadWrite (Microsoft To Do)
-# Graph API appId: 00000003-0000-0000-c000-000000000000
-# Tasks.ReadWrite delegated scope id: 2219042f-cab5-40cc-b0d2-16b1540b4c5f
-az ad app permission add \
-  --id "$BOT_APP_ID" \
-  --api 00000003-0000-0000-c000-000000000000 \
-  --api-permissions 2219042f-cab5-40cc-b0d2-16b1540b4c5f=Scope \
-  --only-show-errors 2>/dev/null || true
-echo "Graph Tasks.ReadWrite (delegated) requested"
+# Graph delegated permissions for the requester's own To Do, calendar, mail, and files.
+# Scope ids are resolved from Microsoft Graph so a renamed catalog id cannot drift.
+add_graph_scope() {
+  local name="$1"
+  local id
+  id=$(az ad sp show --id 00000003-0000-0000-c000-000000000000 \
+    --query "oauth2PermissionScopes[?value=='${name}'].id | [0]" -o tsv)
+  if [ -z "$id" ]; then
+    echo "WARNING: Graph scope ${name} was not found"
+    return
+  fi
+  az ad app permission add \
+    --id "$BOT_APP_ID" \
+    --api 00000003-0000-0000-c000-000000000000 \
+    --api-permissions "${id}=Scope" \
+    --only-show-errors 2>/dev/null || true
+  echo "Graph ${name} (delegated) requested"
+}
+add_graph_scope Tasks.ReadWrite
+add_graph_scope Calendars.ReadWrite
+add_graph_scope Mail.ReadWrite
+add_graph_scope Files.ReadWrite.All
 
 # Admin consent so users never see a consent wall in the OAuth card
 if az ad app permission admin-consent --id "$BOT_APP_ID" --only-show-errors 2>/dev/null; then

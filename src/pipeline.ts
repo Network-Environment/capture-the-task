@@ -137,7 +137,13 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     userId,
     text,
     currentPolicy,
-    executeApprovedAction
+    (action, auth) =>
+      executeApprovedAction(action, auth, {
+        getGraphToken: input.getGraphToken,
+        conversationRef: input.conversationRef,
+        conversationId: input.conversationId,
+        channel: input.channel,
+      })
   );
   if (approval) {
     return { title: "Approval", body: approval, tags: [], summaryLine: approval.slice(0, 120) };

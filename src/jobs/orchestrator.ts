@@ -10,7 +10,7 @@
  *    advances to the next cron slot.
  *  - Every run is logged to the activity stream.
  */
-import { CloudAdapter } from "botbuilder";
+import { CloudAdapter, type ConversationReference } from "botbuilder";
 import { deliver } from "../channels/deliver";
 import { cosmosContainer } from "../services/cosmos";
 import { dueJobs, markRun, computeNextRun, Job } from "../services/scheduler";
@@ -20,6 +20,18 @@ import { alertUser, alertAdmin } from "../services/alerts";
 import { channelPolicy } from "../channels/types";
 import { scheduledReadToolEnvelope } from "../tools/registry";
 import { maybeConsolidateObservations } from "../memory/observe";
+import { getGraphUserToken } from "../services/graphTasks";
+import {
+  applyStepError,
+  applyStepResult,
+  claimOutcome,
+  dueOutcomes,
+  saveOutcome,
+  stepPrompt,
+  withDeadline,
+  type OutcomeJob,
+  type OutcomeStep,
+} from "../work/outcomes";
 
 const POLL_MS = 60_000;
 const MAX_RETRIES = 3;
@@ -40,6 +52,7 @@ export async function tick(adapter: CloudAdapter, botAppId: string): Promise<voi
       if (!claimed) continue; // another instance got it
       await runJob(adapter, botAppId, claimed);
     }
+    await runOutcomes(adapter, botAppId);
     await maybeConsolidateObservations();
   } catch (err) {
     console.error("[orchestrator] tick failed:", err);
@@ -63,6 +76,113 @@ async function claim(job: Job & { _etag?: string }): Promise<Job | null> {
   } catch {
     return null; // etag mismatch — someone else claimed it
   }
+}
+
+async function graphTokenFor(
+  adapter: CloudAdapter,
+  botAppId: string,
+  ref: unknown
+): Promise<(() => Promise<string>) | undefined> {
+  if (!ref || typeof ref !== "object" || !("conversation" in ref)) return undefined;
+  const channelId = (ref as { channelId?: string }).channelId;
+  if (channelId && channelId !== "msteams") return undefined;
+  try {
+    let token = "";
+    await adapter.continueConversationAsync(
+      botAppId,
+      ref as Partial<ConversationReference>,
+      async (ctx) => {
+        token = await getGraphUserToken(ctx);
+      }
+    );
+    return token ? async () => token : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function runOutcomes(adapter: CloudAdapter, botAppId: string): Promise<void> {
+  let due: OutcomeJob[] = [];
+  try {
+    due = await dueOutcomes();
+  } catch (err) {
+    console.error("[orchestrator] outcome query failed:", err);
+    return;
+  }
+  for (const job of due) {
+    const claimed = await claimOutcome(job);
+    if (!claimed) continue;
+    const step = claimed.steps[claimed.cursor] as OutcomeStep | undefined;
+    if (!step) {
+      await saveOutcome({ ...claimed, status: "done", enabled: false });
+      continue;
+    }
+    try {
+      const getGraphToken = await graphTokenFor(adapter, botAppId, claimed.conversationRef);
+      const result = await withDeadline(
+        runAgent(
+          {
+            userId: claimed.userId,
+            conversationRef: claimed.conversationRef,
+            origin: "scheduled_job",
+            channel: "internal",
+            trigger: `outcome:${claimed.name}`,
+            allowedTools: step.allowedTools,
+            getGraphToken,
+            authorization: {
+              explicit: true,
+              confidence: 1,
+              channel: channelPolicy("teams", {
+                scope: "private",
+                identity: "canonical",
+                allowActions: false,
+              }),
+            },
+          },
+          stepPrompt(claimed, step),
+          step.profile
+        )
+      );
+      const updated = applyStepResult(claimed, result);
+      await saveOutcome(updated);
+      const prefer = teamsPrefer(claimed.conversationRef);
+      await deliver(
+        claimed.userId,
+        `Outcome **${claimed.name}** — step ${claimed.cursor + 1}: ${updated.status}\n\n${result.slice(0, 1200)}`,
+        prefer
+      );
+      void logActivity({
+        type: "job_run",
+        userId: claimed.userId,
+        origin: "scheduled_job",
+        channel: "internal",
+        trigger: `outcome:${claimed.name}`,
+        detail: { job: claimed.name, status: updated.status, step: claimed.cursor },
+      });
+    } catch (err) {
+      const message = (err as Error).message;
+      const updated = applyStepError(claimed, message);
+      await saveOutcome(updated);
+      if (updated.status === "failed") {
+        await alertUser(claimed.userId, `Outcome "${claimed.name}" stopped: ${message.slice(0, 200)}`);
+      }
+      void logActivity({
+        type: "job_run",
+        userId: claimed.userId,
+        origin: "scheduled_job",
+        channel: "internal",
+        trigger: `outcome:${claimed.name}`,
+        detail: { job: claimed.name, status: updated.status, message },
+      });
+    }
+  }
+}
+
+function teamsPrefer(ref: unknown): { channel: "imessage"; phone: string } | undefined {
+  if (!ref || typeof ref !== "object") return undefined;
+  const row = ref as { channel?: string; phone?: string };
+  if (row.channel === "imessage" && row.phone) return { channel: "imessage", phone: row.phone };
+  return undefined;
 }
 
 async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Promise<void> {

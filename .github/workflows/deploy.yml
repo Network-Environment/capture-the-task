@@ -39,7 +39,6 @@ jobs:
       worker-app-name: ${{ steps.deploy.outputs.worker-app-name }}
       registry-name: ${{ steps.deploy.outputs.registry-name }}
       function-app-name: ${{ steps.deploy.outputs.function-app-name }}
-      browser-app-name: ${{ steps.deploy.outputs.browser-app-name }}
     steps:
       - uses: actions/checkout@v4
       - uses: azure/login@v2
@@ -49,10 +48,10 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Compile Bicep
         run: az bicep build --file infra/main.bicep --stdout >/dev/null
-      # App Service and Container Apps both fail if Bicep points at a tag that
-      # is not in ACR yet. Build both images (when the registry exists) before
-      # the Bicep deploy. On a first-ever deploy there is no registry yet;
-      # Bicep then uses placeholders and the deploy job builds + retags.
+      # App Service fails if Bicep points at a tag that is not in ACR yet.
+      # Build the app image (when the registry exists) before the Bicep deploy.
+      # On a first-ever deploy there is no registry yet; Bicep uses a placeholder
+      # and the deploy job builds + retags.
       - name: Build images (when the registry already exists)
         run: |
           ACR=$(az acr list -g "$RESOURCE_GROUP" --query "[0].name" -o tsv 2>/dev/null || true)
@@ -62,17 +61,10 @@ jobs:
           fi
           az acr build \
             --registry "$ACR" \
-            --image "taskbrain-browser:${GITHUB_SHA}" \
-            --image "taskbrain-browser:latest" \
-            --file services/browser/Dockerfile \
-            services/browser
-          az acr build \
-            --registry "$ACR" \
             --image "taskbrain:${GITHUB_SHA}" \
             --image "taskbrain:latest" \
             --file Dockerfile \
             .
-          echo "BROWSER_IMAGE=$ACR.azurecr.io/taskbrain-browser:${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "APP_IMAGE_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
       - name: Deploy Bicep (infra + runtime settings + container registry)
         id: deploy
@@ -97,9 +89,6 @@ jobs:
           PLAUD_INGEST_ENABLED: ${{ vars.PLAUD_INGEST_ENABLED || 'false' }}
         run: |
           test -n "$BOT_APP_ID" -a -n "$BOT_APP_PASSWORD" -a -n "$ADMIN_APP_ID" -a -n "$ADMIN_APP_SECRET" || { echo "missing required secrets (BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_APP_ID, ADMIN_APP_SECRET) — run scripts/bootstrap.sh or scripts/setup-admin-sso.sh"; exit 1; }
-          # Omitted on a first deploy so Bicep keeps its placeholder default.
-          BROWSER_PARAM=""
-          [ -n "${BROWSER_IMAGE:-}" ] && BROWSER_PARAM="browserImage=$BROWSER_IMAGE"
           IMAGE_PARAM=""
           if [ -n "${APP_IMAGE_TAG:-}" ]; then
             IMAGE_PARAM="containerImageTag=$APP_IMAGE_TAG"
@@ -140,14 +129,12 @@ jobs:
                unifiedActionPolicyEnabled="$UNIFIED_ACTION_POLICY_ENABLED" \
                inboundQualityGateEnabled="$INBOUND_QUALITY_GATE_ENABLED" \
                plaudIngestEnabled="$PLAUD_INGEST_ENABLED" \
-               $BROWSER_PARAM \
                $IMAGE_PARAM)
           echo "app-name=$(jq -r '.appName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "admin-app-name=$(jq -r '.adminAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "worker-app-name=$(jq -r '.workerAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "registry-name=$(jq -r '.registryName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
           echo "function-app-name=$(jq -r '.functionAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
-          echo "browser-app-name=$(jq -r '.browserAppName.value' <<< "$OUTPUTS")" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: [validate, infra]
@@ -168,30 +155,16 @@ jobs:
             --image "taskbrain:latest" \
             --file Dockerfile \
             .
-      # Normally a no-op: the infra job already built this image and Bicep
-      # deployed it. This only does work after a first deploy, where the app
-      # was created on the placeholder image.
-      - name: Ensure the browser Container App runs this commit's image
+      - name: Remove the retired public browser
         run: |
-          TARGET="${{ needs.infra.outputs.registry-name }}.azurecr.io/taskbrain-browser:${GITHUB_SHA}"
-          CURRENT=$(az containerapp show \
-            -g "$RESOURCE_GROUP" \
-            -n "${{ needs.infra.outputs.browser-app-name }}" \
-            --query "properties.template.containers[0].image" -o tsv)
-          if [ "$CURRENT" = "$TARGET" ]; then
-            echo "browser app already on ${GITHUB_SHA}"
-            exit 0
+          APP=$(az containerapp list -g "$RESOURCE_GROUP" --query "[?starts_with(name, 'ca-browser-')].name | [0]" -o tsv 2>/dev/null || true)
+          if [ -n "$APP" ]; then
+            az containerapp delete -g "$RESOURCE_GROUP" -n "$APP" --yes
           fi
-          az acr build \
-            --registry "${{ needs.infra.outputs.registry-name }}" \
-            --image "taskbrain-browser:${GITHUB_SHA}" \
-            --image "taskbrain-browser:latest" \
-            --file services/browser/Dockerfile \
-            services/browser
-          az containerapp update \
-            -g "$RESOURCE_GROUP" \
-            -n "${{ needs.infra.outputs.browser-app-name }}" \
-            --image "$TARGET"
+          ENV=$(az containerapp env list -g "$RESOURCE_GROUP" --query "[?starts_with(name, 'cae-taskbrain-')].name | [0]" -o tsv 2>/dev/null || true)
+          if [ -n "$ENV" ]; then
+            az containerapp env delete -g "$RESOURCE_GROUP" -n "$ENV" --yes || true
+          fi
       - name: Point isolated runtimes at this commit's image
         run: |
           IMAGE="${{ needs.infra.outputs.registry-name }}.azurecr.io/taskbrain:${GITHUB_SHA}"
@@ -261,7 +234,7 @@ jobs:
 #              BOT_APP_ID, BOT_APP_PASSWORD, ADMIN_APP_ID, ADMIN_APP_SECRET,
 #              ADMIN_AAD_OBJECT_ID
 #    optional: SMARTSHEET_API_TOKEN, SPECTRUM_PROJECT_ID, SPECTRUM_PROJECT_SECRET,
-#              WEB_SEARCH_API_KEY (Tavily tvly- key by default; Brave or Bing if WEB_SEARCH_ENGINE is set)
+#              WEB_SEARCH_API_KEY (Tavily tvly- key; search and extract)
 # 4. Bicep creates a Basic ACR. The App Service system identity has AcrPull;
 #    CI builds in ACR via OIDC and deploys immutable Git SHA image tags.
 # 5. Resource providers are registered out of band by bootstrap.sh. CI only has

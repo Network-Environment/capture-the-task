@@ -317,18 +317,17 @@ describe("admin portal", () => {
     );
     assert.match(html, /smartsheet/);
     assert.match(html, /browser/);
-    assert.match(html, /navigate, snapshot/);
     assert.match(html, />connected</);
     assert.match(html, /search by name/);
     assert.match(html, /token empty/);
     assert.match(html, /Web search/);
+    assert.match(html, /tavily/);
     assert.doesNotMatch(html, /Bearer /);
     const catalog = renderIntegrations("local", "catalog");
     assert.match(catalog, /authEnv/);
     assert.match(catalog, /SMARTSHEET_API_TOKEN/);
-    assert.match(catalog, />browser</);
-    assert.match(catalog, /BROWSER_MCP_TOKEN/);
-    assert.match(catalog, /env:BROWSER_MCP_URL/);
+    assert.doesNotMatch(catalog, />browser</);
+    assert.doesNotMatch(catalog, /BROWSER_MCP/);
     assert.doesNotMatch(catalog, /\+1/);
   });
 

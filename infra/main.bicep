@@ -38,11 +38,8 @@ param spectrumProjectId string = ''
 param spectrumProjectSecret string = ''
 
 @secure()
-@description('Tavily (default), Brave, or Bing API key for native web_search (optional)')
+@description('Tavily API key for native web_search and public page reads (optional)')
 param webSearchApiKey string = ''
-
-@description('Search engine for web_search: tavily (default), brave, or bing')
-param webSearchEngine string = 'tavily'
 
 @description('Enable the shared TaskBrain execution graph')
 param executionGraphEnabled bool = true
@@ -95,10 +92,6 @@ param legacyTriageWritesEnabled bool = false
 @description('Discover Plaud recordings with the configured OAuth tokens')
 param plaudIngestEnabled bool = false
 
-@secure()
-@description('Shared bearer between App Service and the browser Container App. Empty = generated per RG.')
-param browserMcpToken string = ''
-
 @description('Daily token budget before cheap-tier downgrade')
 param dailyTokenBudget string = '5000000'
 
@@ -117,9 +110,6 @@ var planAlwaysOn = planSku != 'F1'
 @description('Immutable container tag deployed to App Service. CI passes the Git commit SHA.')
 param containerImageTag string = 'bootstrap'
 
-@description('Full image reference for the browser MCP container. Container Apps fails revision provisioning if the tag is missing from the registry, so CI passes this only after the image is built. The public placeholder default lets a first deploy create the app before any image exists.')
-param browserImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
-
 // ---- Model deployments created in Foundry. Verify names/versions in your region's model catalog. ----
 // New Pay-As-You-Go subscriptions often have 0 TPM for full gpt-5 / gpt-4.1 / gpt-4o.
 // Defaults here are the mini-class models that actually have quota so a first deploy
@@ -132,7 +122,6 @@ param embedModelName string = 'text-embedding-3-small'
 param embedModelVersion string = '1'
 
 var suffix = uniqueString(resourceGroup().id)
-var browserToken = !empty(browserMcpToken) ? browserMcpToken : uniqueString('browser-mcp', resourceGroup().id, subscription().subscriptionId)
 var acrPullRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '7f951dda-4ed3-4680-a7ca-43fe172d538d'
@@ -167,104 +156,6 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
     adminUserEnabled: false
     publicNetworkAccess: 'Enabled'
   }
-}
-
-// Remote Chromium lives here, not in the Alpine App Service image.
-resource browserIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-browser-${suffix}'
-  location: location
-}
-
-resource browserAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(registry.id, browserIdentity.id, acrPullRoleId)
-  scope: registry
-  properties: {
-    roleDefinitionId: acrPullRoleId
-    principalId: browserIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-resource logs 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
-  name: 'log-${appName}-${suffix}'
-  location: location
-  properties: {
-    sku: { name: 'PerGB2018' }
-    retentionInDays: 30
-  }
-}
-
-resource browserEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  name: 'cae-${appName}-${suffix}'
-  location: location
-  properties: {
-    appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: logs.properties.customerId
-        sharedKey: logs.listKeys().primarySharedKey
-      }
-    }
-    zoneRedundant: false
-  }
-}
-
-resource browserApp 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'ca-browser-${suffix}'
-  location: location
-  identity: {
-    type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${browserIdentity.id}': {}
-    }
-  }
-  properties: {
-    managedEnvironmentId: browserEnv.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: {
-        external: true
-        targetPort: 8080
-        allowInsecure: false
-        transport: 'http'
-      }
-      registries: [
-        {
-          server: registry.properties.loginServer
-          identity: browserIdentity.id
-        }
-      ]
-      secrets: [
-        { name: 'mcp-token', value: browserToken }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'mcp'
-          image: browserImage
-          env: [
-            { name: 'PORT', value: '8080' }
-            { name: 'MCP_TOKEN', secretRef: 'mcp-token' }
-          ]
-          resources: {
-            cpu: json('1.0')
-            memory: '2.0Gi'
-          }
-          // No probe: the placeholder image above does not serve /healthz, and a
-          // failing probe blocks revision provisioning on a first deploy.
-        }
-      ]
-      // Always warm. Scaling to zero costs less, but a cold Chromium start is
-      // ~45s: long enough to burn the agent's tool-call budget and to look
-      // broken on the admin dashboard. One replica stays resident instead.
-      scale: {
-        minReplicas: 1
-        maxReplicas: 1
-      }
-    }
-  }
-  dependsOn: [ browserAcrPull ]
 }
 
 // ---------- Storage: markdown notes (the portable brain) ----------
@@ -405,6 +296,39 @@ resource jobsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers
   properties: {
     resource: {
       id: 'jobs'
+      partitionKey: { paths: ['/userId'], kind: 'Hash' }
+    }
+  }
+}
+
+resource outcomesColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'outcomes'
+  properties: {
+    resource: {
+      id: 'outcomes'
+      partitionKey: { paths: ['/userId'], kind: 'Hash' }
+    }
+  }
+}
+
+resource savedSkillsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'saved-skills'
+  properties: {
+    resource: {
+      id: 'saved-skills'
+      partitionKey: { paths: ['/userId'], kind: 'Hash' }
+    }
+  }
+}
+
+resource skillTracesColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'skill-traces'
+  properties: {
+    resource: {
+      id: 'skill-traces'
       partitionKey: { paths: ['/userId'], kind: 'Hash' }
     }
   }
@@ -766,7 +690,6 @@ var runtimeAppSettings = [
   { name: 'GRAPH_CONNECTION_NAME', value: 'graph-connection' }
   { name: 'SMARTSHEET_API_TOKEN', value: smartsheetApiToken }
   { name: 'WEB_SEARCH_API_KEY', value: webSearchApiKey }
-  { name: 'WEB_SEARCH_ENGINE', value: webSearchEngine }
   { name: 'EXECUTION_GRAPH_ENABLED', value: string(executionGraphEnabled) }
   { name: 'EXECUTION_GRAPH_WRITES_ENABLED', value: string(executionGraphWritesEnabled) }
   { name: 'MEMORY_FACTS_ENABLED', value: string(memoryFactsEnabled) }
@@ -778,8 +701,6 @@ var runtimeAppSettings = [
   { name: 'INTENT_CONFIDENCE_THRESHOLD', value: intentConfidenceThreshold }
   { name: 'INBOUND_QUALITY_GATE_ENABLED', value: string(inboundQualityGateEnabled) }
   { name: 'LEGACY_TRIAGE_WRITES_ENABLED', value: string(legacyTriageWritesEnabled) }
-  { name: 'BROWSER_MCP_URL', value: 'https://${browserApp.properties.configuration.ingress.fqdn}/mcp' }
-  { name: 'BROWSER_MCP_TOKEN', value: browserToken }
   { name: 'SPECTRUM_PROJECT_ID', value: spectrumProjectId }
   { name: 'SPECTRUM_PROJECT_SECRET', value: spectrumProjectSecret }
   { name: 'ADMIN_APP_ID', value: adminAppId }
@@ -1128,7 +1049,7 @@ resource graphConnection 'Microsoft.BotService/botServices/connections@2023-09-1
     serviceProviderId: '30dd229c-58e3-4a48-bdfd-91ec48eb906c'
     clientId: botAppId
     clientSecret: botAppPassword
-    scopes: 'Tasks.ReadWrite Calendars.ReadBasic'
+    scopes: 'Tasks.ReadWrite Calendars.ReadWrite Mail.ReadWrite Files.ReadWrite.All'
     parameters: [
       { key: 'tenantId', value: tenant().tenantId }
       { key: 'tokenExchangeUrl', value: ' ' }
@@ -1150,5 +1071,3 @@ output speechEndpoint string = speech.properties.endpoint
 output foundryEndpoint string = foundry.properties.endpoint
 output functionAppName string = functionApp.name
 output functionPrincipalId string = functionApp.identity.principalId
-output browserAppName string = browserApp.name
-output browserMcpUrl string = 'https://${browserApp.properties.configuration.ingress.fqdn}/mcp'

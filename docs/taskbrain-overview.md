@@ -26,7 +26,11 @@ Voice memos are transcribed. Replies stay short. High-impact writes come back as
 
 **Personal capture.** Tasks, ideas, and references go into your private second brain (searchable notes). Teams-connected tasks also land in Microsoft To Do. Recent captures in the same chat can be undone.
 
-**Your calendar (Outlook).** Searches *your* calendar only — whether and when you met someone, subjects, attendees. It never opens another person’s mailbox.
+**Your calendar (Outlook).** Searches *your* calendar only — whether and when you met someone, subjects, attendees. Creating, moving, or declining an event waits for approval. It never opens another person’s calendar.
+
+**Your mail.** Searches your mailbox, saves a draft, and sends only after you approve. It does not send as a shared mailbox.
+
+**Your files.** Searches and reads OneDrive or SharePoint files you can already open. Text edits wait for approval.
 
 **Meeting memory.** For designated meeting viewers, it can search stored Teams/Plaud **summaries** (about 90 days): decisions, discussion, and who committed to what. Summaries are not a complete calendar; use Outlook for “when,” summaries for “what happened.”
 
@@ -42,9 +46,9 @@ Before named work is assigned, it checks mandate fit and current capacity/load. 
 
 **Memory.** Dated facts from captures and meetings; personal opinions stay personal. It will not write org-wide judgments about people.
 
-**Scheduling and daily follow-through.** Recurring or one-shot jobs (digests, lookups) are delivered back to the same conversation. A user-created daily follow-through job can send risk-first asks to each person and rollups to managers through saved routes. Replies become readable proposed source-record updates and require explicit `approve pa-…` before they are applied. Delivery and reply status is visible to operators. Timezone is US Central.
+**Scheduling and daily follow-through.** Recurring or one-shot jobs (digests, lookups) are delivered back to the same conversation. A longer outcome runs as checkpointed steps, one profile at a time, and reports progress in the same chat. It pauses for approval or a question. You can save a finished task as a skill; running it still requires approval for shared changes. A user-created daily follow-through job can send risk-first asks to each person and rollups to managers through saved routes. Replies become readable proposed source-record updates and require explicit `approve pa-…` before they are applied. Delivery and reply status is visible to operators. Timezone is US Central.
 
-**Public web.** Search the public web, or open a named public URL for a page snapshot. Not used for private org, calendar, meeting, or sheet data.
+**Public web.** Search the public web, or read a named public page. Both go through Tavily. JavaScript-only pages can come back thin. It cannot sign in. Not used for private org, calendar, meeting, or sheet data.
 
 ---
 
@@ -60,4 +64,4 @@ Before named work is assigned, it checks mandate fit and current capacity/load. 
 
 ## Channels and identity
 
-Use it from **Teams** (full Graph: To Do + your calendar after you consent) or **iMessage** if your number is mapped. Group chats do not get personal writes. First calendar use may prompt a one-time Microsoft sign-in for `Calendars.ReadBasic`.
+Use it from **Teams** (full Graph: To Do, your calendar, your mail, and your files after you consent) or **iMessage** if your number is mapped. Group chats do not get personal writes. First Microsoft 365 use may prompt a one-time sign-in for `Calendars.ReadWrite`, `Mail.ReadWrite`, and `Files.ReadWrite.All`.

@@ -192,6 +192,7 @@ export async function searchMyCalendar(
         .join(", ");
       return [
         `Calendar event: ${event.subject || "(no subject)"}`,
+        `Id: ${event.id}`,
         `Start: ${event.start?.dateTime ?? "unknown"} (${event.start?.timeZone ?? "unknown timezone"})`,
         `End: ${event.end?.dateTime ?? "unknown"} (${event.end?.timeZone ?? "unknown timezone"})`,
         `Organizer: ${event.organizer?.emailAddress?.name || event.organizer?.emailAddress?.address || "unknown"}`,
@@ -199,4 +200,120 @@ export async function searchMyCalendar(
       ].join("\n");
     })
     .join("\n---\n");
+}
+
+export interface CalendarWrite {
+  subject?: string;
+  start?: string;
+  end?: string;
+  attendees?: string;
+}
+
+function graphDate(value: string): { dateTime: string; timeZone: string } {
+  return { dateTime: value.trim(), timeZone: "Central Standard Time" };
+}
+
+function attendeeList(value: string | undefined): Array<{ emailAddress: { address: string }; type: "required" }> {
+  if (!value?.trim()) return [];
+  return value
+    .split(/[;,]/)
+    .map((item) => item.trim())
+    .filter((item) => item.includes("@"))
+    .map((address) => ({ emailAddress: { address }, type: "required" as const }));
+}
+
+async function graphWrite(
+  token: string,
+  url: string,
+  init: RequestInit,
+  fetchImpl: typeof fetch
+): Promise<unknown> {
+  const response = await fetchImpl(url, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Prefer: 'outlook.timezone="Central Standard Time"',
+      ...(init.headers ?? {}),
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    throw new Error(`Graph calendar ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  }
+  if (response.status === 202 || response.status === 204) return {};
+  const text = await response.text();
+  return text ? JSON.parse(text) : {};
+}
+
+export async function createCalendarEvent(
+  token: string,
+  args: CalendarWrite,
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  const subject = args.subject?.trim() ?? "";
+  const start = args.start?.trim() ?? "";
+  const end = args.end?.trim() ?? "";
+  if (!subject || !start || !end) return "A new event needs a subject, start, and end.";
+  const created = (await graphWrite(
+    token,
+    `${GRAPH}/me/events`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        subject,
+        start: graphDate(start),
+        end: graphDate(end),
+        attendees: attendeeList(args.attendees),
+      }),
+    },
+    fetchImpl
+  )) as { id?: string };
+  return `Created "${subject}" on the requester's calendar. Id: ${created.id ?? "unknown"}.`;
+}
+
+export async function updateCalendarEvent(
+  token: string,
+  id: string,
+  args: CalendarWrite,
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  const eventId = id.trim();
+  if (!eventId) return "Updating an event needs the id from calendar search.";
+  const patch: Record<string, unknown> = {};
+  if (args.subject?.trim()) patch.subject = args.subject.trim();
+  if (args.start?.trim()) patch.start = graphDate(args.start);
+  if (args.end?.trim()) patch.end = graphDate(args.end);
+  if (args.attendees?.trim()) patch.attendees = attendeeList(args.attendees);
+  if (!Object.keys(patch).length) return "Say what should change: subject, start, end, or attendees.";
+  await graphWrite(
+    token,
+    `${GRAPH}/me/events/${encodeURIComponent(eventId)}`,
+    { method: "PATCH", body: JSON.stringify(patch) },
+    fetchImpl
+  );
+  return `Updated event ${eventId} on the requester's calendar.`;
+}
+
+export async function declineCalendarEvent(
+  token: string,
+  id: string,
+  comment?: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  const eventId = id.trim();
+  if (!eventId) return "Declining an event needs the id from calendar search.";
+  await graphWrite(
+    token,
+    `${GRAPH}/me/events/${encodeURIComponent(eventId)}/decline`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        comment: comment?.trim() || "Declined from TaskBrain.",
+        sendResponse: true,
+      }),
+    },
+    fetchImpl
+  );
+  return `Declined event ${eventId} on the requester's calendar.`;
 }

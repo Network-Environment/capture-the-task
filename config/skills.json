@@ -1,5 +1,48 @@
 {
   "skills": {
+    "microsoft-365": {
+      "description": "Read and, after approval, change the requester's own mail, calendar, and files.",
+      "when": [
+        "Someone asks to find, draft, or send their own email",
+        "Someone asks to create, move, or decline their own meeting",
+        "Someone asks to find or edit a file they can already open"
+      ],
+      "tools": [
+        "search_my_mail",
+        "create_mail_draft",
+        "send_mail",
+        "search_my_calendar",
+        "create_calendar_event",
+        "update_calendar_event",
+        "decline_calendar_event",
+        "search_my_files",
+        "read_my_file",
+        "update_my_file",
+        "ask_user",
+        "note_unmet_request"
+      ],
+      "instructions": [
+        "Use only the requester's mailbox, calendar, and files. Never open another person's mailbox or calendar.",
+        "Search before changing anything, and use the id the search returned.",
+        "Drafts, sends, calendar changes, and file edits wait for approval. Do not claim they are done before that.",
+        "If Microsoft 365 is unavailable on this channel, say so and do not invent the contents."
+      ]
+    },
+    "long-outcomes": {
+      "description": "Turn multi-step work into a checkpointed outcome, and save a finished trace as a skill.",
+      "when": [
+        "Someone asks for work that will take many steps or longer than one reply",
+        "Someone asks to continue a paused outcome",
+        "Someone asks to save a finished task as a skill"
+      ],
+      "tools": ["start_outcome", "continue_outcome", "list_outcomes", "save_skill", "ask_user"],
+      "instructions": [
+        "Use start_outcome when the work will not finish in one reply. Each step names a profile: capture, pmo, or digest.",
+        "A step runs under that profile's tools, then writes its result onto the outcome.",
+        "Use continue_outcome after the user answers a paused outcome or approves its pending action.",
+        "save_skill stores the recent tool trace. Running the skill later still waits for approval on shared changes."
+      ]
+    },
     "user-orientation": {
       "description": "Help a new or unsure user understand what TaskBrain can do, using the in-chat capability guide instead of improvising.",
       "when": [

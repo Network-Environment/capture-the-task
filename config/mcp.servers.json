@@ -19,21 +19,12 @@
         "add_rows",
         "update_rows"
       ]
-    },
-    {
-      "name": "browser",
-      "transport": "http",
-      "urlEnv": "BROWSER_MCP_URL",
-      "authEnv": "BROWSER_MCP_TOKEN",
-      "enabled": true,
-      "timeoutMs": 25000,
-      "allowTools": ["navigate", "snapshot"],
-      "confirmTools": [],
-      "description": "Remote Chromium: public http(s) navigate + accessibility snapshot only. Scale-to-zero Container App. No click, type, login, or download."
     }
   ],
   "_notes": [
     "Add an integration = add an entry here. No code changes.",
+    "Public web search and page reads use Tavily, not a browser server.",
+    "Repeated unmet requests appear on /admin/unmet as disabled connector candidates. Paste one here only after its API URL and allowlist are known. Leave enabled false until then.",
     "authEnv names the env var holding the bearer token.",
     "allowTools is an allowlist \u2014 omit it to expose every tool the server offers.",
     "Keep allowlists tight on write-capable servers; the agent can call anything listed.",

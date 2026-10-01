@@ -10,6 +10,10 @@ export const FALLBACK_ALTERNATIVE = "tell me what you want tracked instead";
 
 export const CALENDAR_UNAVAILABLE =
   "The requester's live Outlook calendar is unavailable on this channel.";
+export const MAIL_UNAVAILABLE =
+  "The requester's mailbox is unavailable on this channel.";
+export const FILES_UNAVAILABLE =
+  "The requester's files are unavailable on this channel.";
 export const GRAPH_DISABLED = "Execution graph is disabled.";
 export const GRAPH_WRITES_OFF =
   "Execution graph writes are disabled during read-only rollout.";
@@ -72,6 +76,20 @@ export function classifyCapabilityBoundary(
       capability: "check your Outlook calendar",
       limit: "Your Outlook calendar is connected in Teams, not in this chat.",
       alternative: "ask me again in Teams, or tell me the meeting in your own words",
+    };
+  }
+  if (message === MAIL_UNAVAILABLE) {
+    return {
+      capability: "use your Outlook mailbox",
+      limit: "Your mailbox is connected in Teams, not in this chat.",
+      alternative: "ask me again in Teams, or tell me the message in your own words",
+    };
+  }
+  if (message === FILES_UNAVAILABLE) {
+    return {
+      capability: "read or change your files",
+      limit: "Your OneDrive and SharePoint files are connected in Teams, not in this chat.",
+      alternative: "ask me again in Teams, or paste the text you want tracked",
     };
   }
   if (message === GRAPH_DISABLED) {

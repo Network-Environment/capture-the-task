@@ -29,6 +29,7 @@ import { SessionTurn } from "./session";
 import { loadConfig } from "../config";
 import { catalogPromptBlock } from "./smartsheet";
 import { agentSkillsPromptBlock } from "./agentSkills";
+import { recordToolTrace, savedSkillsPromptBlock } from "./savedSkills";
 import { checkInPromptBlock } from "../org/checkins";
 import { orgPromptBlock } from "../org/store";
 import {
@@ -404,7 +405,10 @@ export async function runAgent(
   const catalog = name === "pmo" || profile.tools === "*" || (Array.isArray(profile.tools) && profile.tools.some((t) => t.startsWith("smartsheet")))
     ? catalogPromptBlock()
     : "";
-  const skills = agentSkillsPromptBlock(profile.skills);
+  const skills = agentSkillsPromptBlock(profile.skills) + (await savedSkillsPromptBlock(ctx.userId));
+  const persistTrace = () => {
+    if (ctx.toolTrace?.length) void recordToolTrace(ctx.userId, ctx.toolTrace);
+  };
   const orgBlock = await orgPromptBlock(ctx.userId);
   const checkInBlock = await checkInPromptBlock(ctx.userId).catch(() => "");
   void logActivity({
@@ -459,6 +463,7 @@ export async function runAgent(
         traceId: ctx.traceId,
         detail: { phase: "complete", rounds: round + 1, durationMs: Date.now() - startedAt },
       });
+      persistTrace();
       return msg.content ?? "Done.";
     }
 
@@ -475,7 +480,7 @@ export async function runAgent(
             approved: ctx.preapprovedTools?.includes(call.function.name),
           });
       const research =
-        call.function.name === "web_search" || call.function.name.startsWith("browser__");
+        call.function.name === "web_search" || call.function.name === "read_public_page";
       void logActivity({
         type: "tool_call",
         userId: ctx.userId,
@@ -497,10 +502,17 @@ export async function runAgent(
         },
       });
       messages.push({ role: "tool", tool_call_id: call.id, content: result.slice(0, 12_000) });
-      if (ctx.askedQuestion) return ctx.askedQuestion;
-      if (ctx.unmetReply) return ctx.unmetReply;
+      if (ctx.askedQuestion) {
+        persistTrace();
+        return ctx.askedQuestion;
+      }
+      if (ctx.unmetReply) {
+        persistTrace();
+        return ctx.unmetReply;
+      }
     }
   }
+  persistTrace();
   return "I hit my tool-call limit before finishing — the partial work is saved. Try narrowing the request.";
 }
 

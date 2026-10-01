@@ -2,6 +2,8 @@ export const USER_GUIDE_TOPICS = [
   "overview",
   "capture",
   "calendar",
+  "mail",
+  "files",
   "meetings",
   "org",
   "work",
@@ -75,7 +77,21 @@ function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideC
         "Your calendar",
         "I can search your Outlook calendar for whether and when you met someone, subjects, and attendees. First use may prompt a one-time Microsoft sign-in.",
         ["When did I last meet with Joe?", "Did I have anything with Val this week?"],
-        "Read-only: I never open another person’s mailbox or calendar, and I cannot create, move, cancel, or decline meetings. I can track the follow-up as work instead."
+        "I only change your own calendar, and creating, moving, or declining an event waits for approve pa-…. I never open another person’s calendar."
+      );
+    case "mail":
+      return block(
+        "Your mail",
+        "I can search your own Outlook mailbox, save a draft, and send it after you approve. I do not use a shared mailbox as your voice.",
+        ["Find the last email from Morgan about commissioning.", "Draft a reply to Pat and wait for my approval."],
+        "Sending and drafts wait for approval. I never open another person’s mailbox."
+      );
+    case "files":
+      return block(
+        "Your files",
+        "I can search and read OneDrive or SharePoint files you can already open, and I can edit a text file after you approve.",
+        ["Find the commissioning notes in my files.", "Update that file with the Friday decision."],
+        "Edits wait for approval. I do not browse files you cannot open."
       );
     case "meetings":
       if (!ctx.canViewMeetings) {
@@ -147,7 +163,7 @@ function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideC
     case "schedule":
       return block(
         "Scheduling and daily follow-through",
-        "Recurring or one-shot jobs (digests, lookups, daily asks) return to this conversation. A daily follow-through job can send risk-first reminders to people and rollups to managers. Replies become proposed record updates that still need approve pa-….",
+        "Recurring or one-shot jobs (digests, lookups, daily asks) return to this conversation. A longer outcome runs as checkpointed steps and reports progress here; it pauses for approval or a question. You can save a finished task as a skill, and running that skill still needs approval for shared changes. A daily follow-through job can send risk-first reminders to people and rollups to managers. Replies become proposed record updates that still need approve pa-….",
         [
           "Every weekday at 9 AM send the daily follow-through asks.",
           "Every Friday at 4 PM send me a digest of open risks.",
@@ -164,7 +180,7 @@ function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideC
     case "web":
       return block(
         "Public web",
-        "Search the public web, or open a named public URL for a page snapshot.",
+        "I search the public web and can read a public page you name. JavaScript-only pages can come back thin. I cannot sign in to a site.",
         ["What’s the current EPA rule on generator air permits?"],
         "Not used for private org, calendar, meeting, or sheet data."
       );
@@ -184,7 +200,7 @@ function block(title: string, body: string, examples: string[], limit: string): 
     `${title}. ${body}`,
     `Try saying: ${tries}`,
     `Limit: ${limit}`,
-    "Ask about another area (capture, calendar, meetings, org, work, projects, pmo, schedule, memory, web, guardrails) or send a real request.",
+    "Ask about another area (capture, calendar, mail, files, meetings, org, work, projects, pmo, schedule, memory, web, guardrails) or send a real request.",
   ].join("\n");
 }
 
@@ -200,7 +216,17 @@ function availableAreas(
     {
       topic: "calendar",
       label: "Your calendar",
-      blurb: "search only your Outlook calendar for when you met someone",
+      blurb: "search your Outlook calendar, and change your own events after approval",
+    },
+    {
+      topic: "mail",
+      label: "Your mail",
+      blurb: "search your mailbox, and draft or send after approval",
+    },
+    {
+      topic: "files",
+      label: "Your files",
+      blurb: "read files you can open, and edit text after approval",
     },
   ];
   if (ctx.canViewMeetings) {
@@ -270,7 +296,7 @@ function channelNotes(ctx: UserGuideContext): string {
   }
   if (ctx.channel === "imessage") {
     notes.push(
-      "On iMessage, Outlook calendar and Microsoft To Do need Teams plus a one-time Microsoft sign-in."
+      "On iMessage, Outlook calendar, mail, files, and Microsoft To Do need Teams plus a one-time Microsoft sign-in."
     );
   }
   return notes.length ? `\n\n${notes.join(" ")}` : "";

@@ -35,20 +35,36 @@ import type {
 import { logActivity } from "../services/activityLog";
 import {
   CALENDAR_UNAVAILABLE,
+  FILES_UNAVAILABLE,
   GRAPH_DISABLED,
   GRAPH_WRITES_OFF,
+  MAIL_UNAVAILABLE,
   classifyCapabilityBoundary,
   recordCapabilityGap,
 } from "../services/capabilityGap";
 import {
-  assertPublicHttpUrl,
-  consumeBrowserBudget,
+  consumePageReadBudget,
   consumeSearchBudget,
-  isBrowserMcpTool,
-  truncateSnapshot,
+  readPublicPage,
   webSearch,
   type ResearchBudget,
 } from "./webResearch";
+import { searchMyMail, createMailDraft, sendMail } from "../services/graphMailbox";
+import { searchMyFiles, readMyFile, updateMyFile } from "../services/graphFiles";
+import {
+  createCalendarEvent,
+  declineCalendarEvent,
+  searchMyCalendar,
+  updateCalendarEvent,
+} from "../services/graphCalendar";
+import {
+  continueOutcome,
+  listOutcomes,
+  parseOutcomeSteps,
+  knownProfiles,
+  startOutcome,
+} from "../work/outcomes";
+import { latestToolTrace, recordToolTrace, saveUserSkill } from "../services/savedSkills";
 import {
   graphEnabled,
   graphWritesEnabled,
@@ -77,7 +93,6 @@ import {
   openPmoBoard,
   updatePmoItem,
 } from "../pmo/boards";
-import { searchMyCalendar } from "../services/graphCalendar";
 import {
   evaluateOperation,
   type AuthorizationContext,
@@ -123,6 +138,8 @@ export interface ToolContext {
   unmetReply?: string;
   /** This context already recorded a capability gap. */
   unmetNoted?: boolean;
+  /** Tool names called during this turn, used when saving a skill. */
+  toolTrace?: string[];
 }
 
 const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversible">> = {
@@ -136,6 +153,20 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   remember_lesson: { effect: "personal_write", reversible: true },
   cancel_job: { effect: "destructive", reversible: false },
   search_my_calendar: { effect: "read", reversible: true },
+  search_my_mail: { effect: "read", reversible: true },
+  create_mail_draft: { effect: "shared_write", reversible: true },
+  send_mail: { effect: "shared_write", reversible: false },
+  create_calendar_event: { effect: "shared_write", reversible: true },
+  update_calendar_event: { effect: "shared_write", reversible: true },
+  decline_calendar_event: { effect: "shared_write", reversible: false },
+  search_my_files: { effect: "read", reversible: true },
+  read_my_file: { effect: "read", reversible: true },
+  update_my_file: { effect: "shared_write", reversible: true },
+  read_public_page: { effect: "read", reversible: true },
+  start_outcome: { effect: "scheduled", reversible: true },
+  continue_outcome: { effect: "personal_write", reversible: true },
+  list_outcomes: { effect: "read", reversible: true },
+  save_skill: { effect: "personal_write", reversible: true },
   recall_meetings: { effect: "read", reversible: true },
   list_commitments: { effect: "read", reversible: true },
   complete_commitment: { effect: "shared_write", reversible: true },
@@ -180,6 +211,11 @@ const scheduledNativeReads = new Set([
   "explain_timeline",
   "recall_memory",
   "search_my_calendar",
+  "search_my_mail",
+  "search_my_files",
+  "read_my_file",
+  "read_public_page",
+  "list_outcomes",
   "recall_meetings",
   "list_commitments",
   "lookup_org",
@@ -222,6 +258,15 @@ export async function interactiveReadToolEnvelope(): Promise<string[]> {
 }
 
 const scheduledActionTools = new Set(["send_followthrough_briefings"]);
+
+const nativeConfirmTools = new Set([
+  "create_mail_draft",
+  "send_mail",
+  "create_calendar_event",
+  "update_calendar_event",
+  "decline_calendar_event",
+  "update_my_file",
+]);
 
 export function scheduledActionToolEnvelope(requested: unknown): string[] {
   if (!Array.isArray(requested)) return [];
@@ -781,9 +826,9 @@ const nativeDefs: ChatCompletionTool[] = [
     function: {
       name: "web_search",
       description:
-        "Search the public web for current information. Returns titles, URLs, and short snippets only. " +
+        "Search the public web through Tavily. Returns titles, URLs, and short snippets only. " +
         "Use this first for 'what's the latest on X'. Do not use for Smartsheet, org directory, or meetings — those have their own tools. " +
-        "Open a URL with the browser tools only when the user named it or a search hit must be read as a rendered page.",
+        "To read a named public URL, call read_public_page. Do not claim a browser.",
       parameters: {
         type: "object",
         properties: {
@@ -791,6 +836,236 @@ const nativeDefs: ChatCompletionTool[] = [
           count: { type: "number", description: "How many hits to return (5–8, default 8)" },
         },
         required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_public_page",
+      description:
+        "Read a public http(s) page through Tavily extract. Use only for a URL the user named or a web_search hit. " +
+        "JavaScript-only pages can come back thin. Cannot sign in or read private sites.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_my_mail",
+      description: "Search the requester's own Outlook mailbox. Returns subjects, ids, and previews. Does not open anyone else's mail.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          limit: { type: "number" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_mail_draft",
+      description: "Create an unsent draft in the requester's mailbox. Waits for approval. Does not send.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string" },
+          subject: { type: "string" },
+          body: { type: "string" },
+        },
+        required: ["to", "subject", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_mail",
+      description: "Send from the requester's mailbox, either an existing draft id or a new message. Waits for approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          draftId: { type: "string" },
+          to: { type: "string" },
+          subject: { type: "string" },
+          body: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_calendar_event",
+      description: "Create an event on the requester's own calendar. Waits for approval. Times are US Central.",
+      parameters: {
+        type: "object",
+        properties: {
+          subject: { type: "string" },
+          start: { type: "string", description: "Local date-time, US Central" },
+          end: { type: "string" },
+          attendees: { type: "string", description: "Comma-separated email addresses" },
+        },
+        required: ["subject", "start", "end"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_calendar_event",
+      description: "Change the requester's own calendar event by id from search_my_calendar. Waits for approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          subject: { type: "string" },
+          start: { type: "string" },
+          end: { type: "string" },
+          attendees: { type: "string" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "decline_calendar_event",
+      description: "Decline the requester's own calendar event by id. Waits for approval. Does not open another person's calendar.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          comment: { type: "string" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_my_files",
+      description: "Search OneDrive and SharePoint files the requester can already open. Returns name, item id, and drive id.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          limit: { type: "number" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_my_file",
+      description: "Read text from a file the requester can access, using the drive id and item id from search_my_files.",
+      parameters: {
+        type: "object",
+        properties: {
+          driveId: { type: "string" },
+          itemId: { type: "string" },
+        },
+        required: ["driveId", "itemId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_my_file",
+      description: "Replace the text content of a file the requester can access. Waits for approval. Not for binary files.",
+      parameters: {
+        type: "object",
+        properties: {
+          driveId: { type: "string" },
+          itemId: { type: "string" },
+          content: { type: "string" },
+        },
+        required: ["driveId", "itemId", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "start_outcome",
+      description:
+        "Start a checkpointed multi-step outcome that continues after this reply and reports progress in this chat. " +
+        "Each step names a profile (capture, pmo, or digest) and a prompt. Shared changes inside a step still wait for approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          prompt: { type: "string" },
+          steps: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                profile: { type: "string" },
+                prompt: { type: "string" },
+                allowedTools: { type: "array", items: { type: "string" } },
+              },
+              required: ["profile", "prompt"],
+            },
+          },
+        },
+        required: ["name", "prompt"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "continue_outcome",
+      description: "Resume an outcome that is waiting on the user or on an approval they already handled.",
+      parameters: {
+        type: "object",
+        properties: {
+          idOrName: { type: "string" },
+          note: { type: "string" },
+        },
+        required: ["idOrName"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_outcomes",
+      description: "List the requester's checkpointed outcomes and their status.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "save_skill",
+      description:
+        "Save the recent approved tool trace as a reusable skill. Running it later still waits for approval on shared changes. " +
+        "scope user keeps it private; scope org is a shared write.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          description: { type: "string" },
+          when: { type: "array", items: { type: "string" } },
+          tools: { type: "array", items: { type: "string" } },
+          instructions: { type: "array", items: { type: "string" } },
+          scope: { type: "string", enum: ["user", "org"] },
+        },
+        required: ["name"],
       },
     },
   },
@@ -1117,12 +1392,6 @@ export async function dispatch(
         `NOT_ALLOWED: ${name} is outside this job's approved tool envelope.`
       );
     }
-    if (isMcpTool(name)) {
-      const [server, ...rest] = name.split("__");
-      if (server === "browser" && !isBrowserMcpTool(server, rest.join("__"))) {
-        return "Browser tool not allowed in v1 (navigate and snapshot only).";
-      }
-    }
     if (name === "schedule_job" && !Array.isArray(args.allowedTools)) {
       args = {
         ...args,
@@ -1131,6 +1400,9 @@ export async function dispatch(
     }
     const operation = operationMetadata(name);
     if (name === "retain_memory" && String(args.bank ?? "user") === "org") {
+      operation.effect = "shared_write";
+    }
+    if (name === "save_skill" && String(args.scope ?? "user") === "org") {
       operation.effect = "shared_write";
     }
     const authorization =
@@ -1177,8 +1449,7 @@ export async function dispatch(
     if (
       !options.approved &&
       !envFlag("UNIFIED_ACTION_POLICY_ENABLED", false) &&
-      isMcpTool(name) &&
-      requiresApproval(name)
+      ((isMcpTool(name) && requiresApproval(name)) || nativeConfirmTools.has(name))
     ) {
       const id = await parkAction(ctx.userId, name, args, {
         effect: operation.effect,
@@ -1186,22 +1457,12 @@ export async function dispatch(
       });
       return approvalMessage(id, name, args);
     }
+    if (name.startsWith("browser__")) {
+      return "Public pages are read with read_public_page. TaskBrain does not drive a browser.";
+    }
+    ctx.toolTrace = ctx.toolTrace ?? [];
+    if (name !== "save_skill") ctx.toolTrace.push(name);
     if (isMcpTool(name)) {
-      const [server, ...rest] = name.split("__");
-      const tool = rest.join("__");
-      if (server === "browser") {
-        if (!isBrowserMcpTool(server, tool)) {
-          return "Browser tool not allowed in v1 (navigate and snapshot only).";
-        }
-        const capped = consumeBrowserBudget(ctx);
-        if (capped) return capped;
-        if (tool === "navigate") {
-          const checked = await assertPublicHttpUrl(String(args.url ?? ""));
-          if ("error" in checked) return checked.error;
-          args = { ...args, url: checked.href };
-        }
-        return truncateSnapshot(await callMcpTool(name, args));
-      }
       return await callMcpTool(name, args);
     }
 
@@ -1460,6 +1721,112 @@ export async function dispatch(
         if (capped) return capped;
         return await webSearch(String(args.query ?? ""), args.count as number | undefined);
       }
+      case "read_public_page": {
+        const capped = consumePageReadBudget(ctx);
+        if (capped) return capped;
+        return await readPublicPage(String(args.url ?? ""));
+      }
+      case "search_my_mail":
+        return await withGraph(ctx, MAIL_UNAVAILABLE, (token) =>
+          searchMyMail(token, String(args.query ?? ""), args.limit == null ? undefined : Number(args.limit))
+        );
+      case "create_mail_draft":
+        return await withGraph(ctx, MAIL_UNAVAILABLE, (token) =>
+          createMailDraft(token, {
+            to: String(args.to ?? ""),
+            subject: String(args.subject ?? ""),
+            body: String(args.body ?? ""),
+          })
+        );
+      case "send_mail":
+        return await withGraph(ctx, MAIL_UNAVAILABLE, (token) =>
+          sendMail(token, {
+            draftId: args.draftId ? String(args.draftId) : undefined,
+            to: args.to ? String(args.to) : undefined,
+            subject: args.subject ? String(args.subject) : undefined,
+            body: args.body ? String(args.body) : undefined,
+          })
+        );
+      case "create_calendar_event":
+        return await withGraph(ctx, CALENDAR_UNAVAILABLE, (token) =>
+          createCalendarEvent(token, {
+            subject: String(args.subject ?? ""),
+            start: String(args.start ?? ""),
+            end: String(args.end ?? ""),
+            attendees: args.attendees ? String(args.attendees) : undefined,
+          })
+        );
+      case "update_calendar_event":
+        return await withGraph(ctx, CALENDAR_UNAVAILABLE, (token) =>
+          updateCalendarEvent(token, String(args.id ?? ""), {
+            subject: args.subject ? String(args.subject) : undefined,
+            start: args.start ? String(args.start) : undefined,
+            end: args.end ? String(args.end) : undefined,
+            attendees: args.attendees ? String(args.attendees) : undefined,
+          })
+        );
+      case "decline_calendar_event":
+        return await withGraph(ctx, CALENDAR_UNAVAILABLE, (token) =>
+          declineCalendarEvent(token, String(args.id ?? ""), args.comment ? String(args.comment) : undefined)
+        );
+      case "search_my_files":
+        return await withGraph(ctx, FILES_UNAVAILABLE, (token) =>
+          searchMyFiles(token, String(args.query ?? ""), args.limit == null ? undefined : Number(args.limit))
+        );
+      case "read_my_file":
+        return await withGraph(ctx, FILES_UNAVAILABLE, (token) =>
+          readMyFile(token, String(args.driveId ?? ""), String(args.itemId ?? ""))
+        );
+      case "update_my_file":
+        return await withGraph(ctx, FILES_UNAVAILABLE, (token) =>
+          updateMyFile(token, String(args.driveId ?? ""), String(args.itemId ?? ""), String(args.content ?? ""))
+        );
+      case "start_outcome": {
+        const steps = parseOutcomeSteps(String(args.prompt ?? ""), args.steps, knownProfiles());
+        if (typeof steps === "string") return steps;
+        const job = await startOutcome(ctx.userId, {
+          name: String(args.name ?? "Outcome"),
+          prompt: String(args.prompt ?? ""),
+          steps,
+          conversationRef: ctx.conversationRef,
+        });
+        return `Started "${job.name}" (${job.id}). The first step runs shortly, and progress comes back to this chat.`;
+      }
+      case "continue_outcome":
+        return await continueOutcome(
+          ctx.userId,
+          String(args.idOrName ?? ""),
+          args.note ? String(args.note) : undefined
+        );
+      case "list_outcomes": {
+        const jobs = await listOutcomes(ctx.userId);
+        if (!jobs.length) return "No outcomes.";
+        return jobs
+          .map((job) => `${job.id} | ${job.name} | ${job.status} | step ${Math.min(job.cursor + 1, job.steps.length)} of ${job.steps.length}`)
+          .join("\n");
+      }
+      case "save_skill": {
+        const traced = (ctx.toolTrace ?? []).filter((tool) => tool !== "save_skill");
+        const fromArgs = Array.isArray(args.tools) ? args.tools.map(String).filter(Boolean) : [];
+        const tools = fromArgs.length ? fromArgs : traced.length ? traced : await latestToolTrace(ctx.userId);
+        if (!tools.length) {
+          return "There is no recent tool trace to save. Finish the task, then ask to save it as a skill.";
+        }
+        const scope = String(args.scope ?? "user") === "org" ? "org" : "user";
+        const confirmationPoints = tools.filter((tool) => operationMetadata(tool).effect !== "read");
+        const when = Array.isArray(args.when) ? args.when.map(String) : [String(args.name ?? "saved skill")];
+        const instructions = Array.isArray(args.instructions) ? args.instructions.map(String) : [];
+        const saved = await saveUserSkill(ctx.userId, {
+          scope,
+          name: String(args.name ?? "saved skill"),
+          description: String(args.description ?? args.name ?? "Saved from a finished task"),
+          when,
+          tools,
+          confirmationPoints,
+          instructions,
+        });
+        return `Saved skill "${saved.name}" for ${saved.scope === "org" ? "the org" : "you"}. Shared steps still wait for approval when it runs.`;
+      }
       case "search_execution_graph": {
         if (!canViewMeetings(ctx.userId)) return denyMeetings();
         if (!graphEnabled()) return presentToolResult(ctx, GRAPH_DISABLED);
@@ -1712,7 +2079,8 @@ export async function dispatch(
 
 export async function executeApprovedAction(
   action: PendingAction,
-  currentAuthorization: AuthorizationContext
+  currentAuthorization: AuthorizationContext,
+  extras: Partial<ToolContext> = {}
 ): Promise<string> {
   if (!action.authorization) {
     throw new Error("This action was created before secure authorization snapshots; prepare it again.");
@@ -1723,18 +2091,36 @@ export async function executeApprovedAction(
   if (currentPolicy.decision === "deny" || currentPolicy.decision === "clarify") {
     throw new Error(`Action is no longer authorized: ${currentPolicy.reason}`);
   }
+  const prior = await latestToolTrace(action.userId);
+  await recordToolTrace(action.userId, [...prior, action.tool]);
   return dispatch(
     {
       userId: action.userId,
       origin: "approval",
-      channel: "internal",
+      channel: extras.channel ?? "internal",
       trigger: "approved_action",
       authorization,
+      getGraphToken: extras.getGraphToken,
+      conversationRef: extras.conversationRef,
+      conversationId: extras.conversationId,
     },
     action.tool,
     action.args,
     { approved: true }
   );
+}
+
+async function withGraph(
+  ctx: ToolContext,
+  unavailable: string,
+  run: (token: string) => Promise<string>
+): Promise<string> {
+  if (!ctx.getGraphToken) return presentToolResult(ctx, unavailable);
+  try {
+    return await run(await ctx.getGraphToken());
+  } catch (err) {
+    return `Microsoft 365 lookup failed: ${(err as Error).message}`;
+  }
 }
 
 function parseCheckInUpdates(value: unknown): CheckInUpdate[] {
