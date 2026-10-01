@@ -464,8 +464,11 @@ not bypass write approval. Unknown numbers remain silently rejected.
 
 Both interactive adapters compose a short acknowledgement on the cheap model
 tier before they persist the normalized text in `agent-requests`. The line
-uses the sender's first name when the org directory or the Teams display name
-has one, reflects what they just sent, and never mentions the queue. It is
+uses the sender's first name, reflects what they just sent, and never mentions
+the queue. The name comes from the org directory record for that Entra id,
+then the Teams display name, then the Microsoft 365 profile (`givenName`) via
+app Graph. The phone → Entra id allowlist in `config/channels.json` is still
+the only thing that decides who is texting; Graph only supplies the name. It is
 composed before the durable write so it cannot arrive after the real answer.
 Duplicate channel deliveries send nothing. A follow-up folded into an in-flight
 request gets "Adding that to what I’m already doing." Greetings (`hi` / `hello`,

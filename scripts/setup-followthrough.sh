@@ -7,6 +7,7 @@
 #   Chat.Create
 #   Chat.ReadWrite.All   (1:1 Adaptive Card when no conversationRef)
 #   Mail.Send            (last-resort fallback; needs FOLLOWTHROUGH_MAIL_FROM)
+#   User.Read.All        (first name for iMessage acknowledgements)
 #
 # Channel posts need FOLLOWTHROUGH_TEAM_ID / FOLLOWTHROUGH_CHANNEL_ID in Bicep.
 # Planner write-through needs PLANNER_PLAN_ID (optional PLANNER_BUCKET_ID).
@@ -25,6 +26,7 @@ ROLE_TASKS_READWRITE_ALL="44e666d1-d276-445b-a5fc-8815eeb81d55"
 ROLE_CHAT_CREATE="d9c48af6-9ad9-47ad-82c3-63757137b9af"
 ROLE_CHAT_READWRITE_ALL="294ce7c9-31ba-490a-ad7d-97a7d075e4ed"
 ROLE_MAIL_SEND="b633e1c5-b582-4048-a93e-9f11b44c7e96"
+ROLE_USER_READ_ALL="df021288-bdef-4463-88db-98f22de89214"
 
 FUNC_NAME=$(az functionapp list -g "$RG" --query "[?starts_with(name, 'func-taskbrain')].name | [0]" -o tsv)
 APPS=$(az webapp list -g "$RG" --query "[?contains(name, 'taskbrain')].name" -o tsv)
@@ -63,6 +65,7 @@ grant_principal() {
   assign_role "$principal_id" "$ROLE_CHAT_CREATE" "Chat.Create"
   assign_role "$principal_id" "$ROLE_CHAT_READWRITE_ALL" "Chat.ReadWrite.All"
   assign_role "$principal_id" "$ROLE_MAIL_SEND" "Mail.Send"
+  assign_role "$principal_id" "$ROLE_USER_READ_ALL" "User.Read.All"
 }
 
 # Grant every TaskBrain webapp identity (gateway, worker, admin).

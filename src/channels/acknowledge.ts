@@ -10,6 +10,7 @@ import { listOrgByKind } from "../org/store";
 import { resolvePerson } from "../org/resolve";
 import type { OrgPerson } from "../org/types";
 import { socialOnlyKind, type SocialKind } from "../services/inboundQuality";
+import { graphAppJson } from "../work/graphApp";
 
 export const ACK_TIMEOUT_MS = 1_000;
 export const PENDING_ACK_GRACE_MS = 20_000;
@@ -149,6 +150,45 @@ async function cachedPeople(): Promise<OrgPerson[]> {
   return people;
 }
 
+const GRAPH_NAME_TIMEOUT_MS = 1_500;
+const ENTRA_OBJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const graphNameCache = new Map<string, { at: number; name: string | undefined }>();
+
+export interface GraphNameProfile {
+  givenName?: string | null;
+  displayName?: string | null;
+}
+
+/** Prefer the profile's given name; fall back to the first token of the display name. */
+export function firstNameFromGraphProfile(profile: GraphNameProfile | undefined): string | undefined {
+  const given = profile?.givenName?.trim();
+  if (given) return firstNameFrom(given);
+  return firstNameFrom(profile?.displayName ?? undefined);
+}
+
+/**
+ * Microsoft 365 profile lookup by Entra object id. The id already came from
+ * the channel allowlist (phone → Entra id), so this only turns a known person
+ * into a first name; it never decides who is texting.
+ */
+async function graphFirstName(userId: string): Promise<string | undefined> {
+  if (!ENTRA_OBJECT_ID.test(userId)) return undefined;
+  const hit = graphNameCache.get(userId);
+  if (hit && Date.now() - hit.at < NAME_CACHE_MS) return hit.name;
+  let name: string | undefined;
+  try {
+    const profile = await graphAppJson<GraphNameProfile>(
+      `/users/${userId}?$select=givenName,displayName`,
+      { signal: AbortSignal.timeout(GRAPH_NAME_TIMEOUT_MS) }
+    );
+    name = firstNameFromGraphProfile(profile);
+  } catch (err) {
+    console.error("[ack] graph name lookup failed:", err);
+  }
+  graphNameCache.set(userId, { at: Date.now(), name });
+  return name;
+}
+
 async function defaultResolveName(userId: string, hint?: string): Promise<string | undefined> {
   try {
     const person = resolvePerson(await cachedPeople(), { ownerId: userId });
@@ -157,7 +197,9 @@ async function defaultResolveName(userId: string, hint?: string): Promise<string
   } catch (err) {
     console.error("[ack] name lookup failed:", err);
   }
-  return firstNameFrom(hint);
+  const fromHint = firstNameFrom(hint);
+  if (fromHint) return fromHint;
+  return graphFirstName(userId);
 }
 
 function ackSystemPrompt(input: AckPrompt): string {

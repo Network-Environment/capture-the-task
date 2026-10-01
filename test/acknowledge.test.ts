@@ -8,6 +8,7 @@ import {
   composeAcknowledgement,
   fallbackAck,
   firstNameFrom,
+  firstNameFromGraphProfile,
   missedAckMessage,
   pendingAckEligible,
   pendingAckGaveUp,
@@ -25,6 +26,13 @@ describe("personalized acknowledgements", () => {
     assert.equal(firstNameFrom("McCurry, Adam J"), "Adam");
     assert.equal(firstNameFrom("adam@contoso.com"), undefined);
     assert.equal(firstNameFrom("  "), undefined);
+  });
+
+  it("reads a first name from a Microsoft 365 profile", () => {
+    assert.equal(firstNameFromGraphProfile({ givenName: "Adam", displayName: "McCurry, Adam" }), "Adam");
+    assert.equal(firstNameFromGraphProfile({ givenName: null, displayName: "Adam McCurry" }), "Adam");
+    assert.equal(firstNameFromGraphProfile({ givenName: "", displayName: null }), undefined);
+    assert.equal(firstNameFromGraphProfile(undefined), undefined);
   });
 
   it("rejects completion claims and queue jargon, and keeps an echoed scheduled", () => {
