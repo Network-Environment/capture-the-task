@@ -1,5 +1,7 @@
 import restify from "restify";
 import { TaskBrainBot } from "../bot";
+import { warmAckNames } from "../channels/acknowledge";
+import { imessageUserIds } from "../channels/types";
 import { deliver, initDelivery } from "../channels/deliver";
 import { startPhotonChannel, stopPhotonChannel } from "../channels/photon";
 import { cosmosConfigured } from "../services/cosmos";
@@ -19,6 +21,13 @@ void startPhotonChannel().catch((err) =>
   console.error("[imessage] failed to start:", err)
 );
 startRequestDeliveryWorker(adapter, botAppId);
+
+const warmNames = () =>
+  void warmAckNames(imessageUserIds()).catch((err) =>
+    console.error("[ack] name warm-up failed:", err)
+  );
+warmNames();
+setInterval(warmNames, 6 * 60 * 60_000);
 
 const server = restify.createServer({ name: "taskbrain-gateway" });
 server.use(restify.plugins.bodyParser({ mapParams: false }));

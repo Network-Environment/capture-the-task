@@ -78,6 +78,11 @@ export function resolveIMessageUser(phone: string): string | undefined {
   return cfg.imessage.identities[phone];
 }
 
+/** Every canonical userId reachable over iMessage. */
+export function imessageUserIds(): string[] {
+  return [...new Set(Object.values(cfg.imessage.identities))];
+}
+
 /** Reverse lookup: canonical userId → phone, for proactive delivery. */
 export function phoneForUser(userId: string): string | undefined {
   return Object.entries(cfg.imessage.identities).find(([, u]) => u === userId)?.[0];

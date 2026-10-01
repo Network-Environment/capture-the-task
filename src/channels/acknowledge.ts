@@ -151,10 +151,13 @@ async function cachedPeople(): Promise<OrgPerson[]> {
 }
 
 const GRAPH_NAME_WAIT_MS = 1_500;
-const GRAPH_NAME_FETCH_MS = 8_000;
-const GRAPH_MISS_CACHE_MS = 30_000;
+const GRAPH_NAME_FETCH_MS = 30_000;
+const GRAPH_NAME_FRESH_MS = 12 * 60 * 60_000;
+const GRAPH_MISS_RETRY_MS = 60_000;
 const ENTRA_OBJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const graphNameCache = new Map<string, { at: number; name: string | undefined; ttl: number }>();
+/** Last good name per user, kept through failed refreshes. */
+const graphNameCache = new Map<string, { at: number; name: string }>();
+const graphMissAt = new Map<string, number>();
 const graphInFlight = new Map<string, Promise<string | undefined>>();
 
 export interface GraphNameProfile {
@@ -182,32 +185,58 @@ async function fetchGraphFirstName(userId: string): Promise<string | undefined> 
       { signal: AbortSignal.timeout(GRAPH_NAME_FETCH_MS) }
     );
     const name = firstNameFromGraphProfile(profile);
-    graphNameCache.set(userId, { at: Date.now(), name, ttl: NAME_CACHE_MS });
+    if (name) {
+      graphNameCache.set(userId, { at: Date.now(), name });
+      graphMissAt.delete(userId);
+    } else {
+      graphMissAt.set(userId, Date.now());
+    }
     console.log(`[ack] graph name for ${userId}: ${name ?? "none"} (${Date.now() - started}ms)`);
     return name;
   } catch (err) {
-    graphNameCache.set(userId, { at: Date.now(), name: undefined, ttl: GRAPH_MISS_CACHE_MS });
+    graphMissAt.set(userId, Date.now());
     console.error(`[ack] graph name lookup failed for ${userId} after ${Date.now() - started}ms:`, err);
-    return undefined;
+    return graphNameCache.get(userId)?.name;
   } finally {
     graphInFlight.delete(userId);
   }
 }
 
-/**
- * Waits a bounded time for the profile. A slow first call (token acquisition
- * on a cold process) keeps running in the background and fills the cache, so
- * only the first message after a restart goes out without a name.
- */
-async function graphFirstName(userId: string): Promise<string | undefined> {
-  if (!ENTRA_OBJECT_ID.test(userId)) return undefined;
-  const hit = graphNameCache.get(userId);
-  if (hit && Date.now() - hit.at < hit.ttl) return hit.name;
+function startGraphFetch(userId: string): Promise<string | undefined> {
   let pending = graphInFlight.get(userId);
   if (!pending) {
     pending = fetchGraphFirstName(userId);
     graphInFlight.set(userId, pending);
   }
+  return pending;
+}
+
+/**
+ * Resolve names for known senders before any message arrives. On this
+ * gateway a cold token plus Graph call takes well over the acknowledgement
+ * budget, so the hot path must read a warm cache rather than call Graph.
+ */
+export async function warmAckNames(userIds: string[]): Promise<void> {
+  const ids = [...new Set(userIds)].filter((id) => ENTRA_OBJECT_ID.test(id));
+  await Promise.all(ids.map((id) => startGraphFetch(id)));
+}
+
+/**
+ * A cached name, even an old one, is returned at once and refreshed in the
+ * background. Only a user with no cached name waits, and only briefly.
+ */
+async function graphFirstName(userId: string): Promise<string | undefined> {
+  if (!ENTRA_OBJECT_ID.test(userId)) return undefined;
+  const hit = graphNameCache.get(userId);
+  if (hit) {
+    if (Date.now() - hit.at > GRAPH_NAME_FRESH_MS) void startGraphFetch(userId);
+    return hit.name;
+  }
+  const missedAt = graphMissAt.get(userId);
+  if (missedAt && Date.now() - missedAt < GRAPH_MISS_RETRY_MS && !graphInFlight.has(userId)) {
+    return undefined;
+  }
+  const pending = startGraphFetch(userId);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const waited = await Promise.race([
     pending.then((name) => ({ done: true as const, name })),
