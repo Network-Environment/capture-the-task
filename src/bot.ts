@@ -113,6 +113,7 @@ export class TaskBrainBot extends ActivityHandler {
         eventId: envelope.eventId,
         conversationId: envelope.conversationId,
         displayNameHint: context.activity.from.name,
+        scope: personal ? "private" : "group",
         conversationRef: { channel: "teams", teamsRef: convRef },
         send: (body) => context.sendActivity(body),
         enqueue: async () =>

@@ -144,7 +144,7 @@ INTENT  (cheap model tier)  — agent.ts::interpretIntent
         ├── question   → brain.ts::recall (vector) → synthesis tier answer
         ├── action     → AGENT LOOP; PMO/Smartsheet wording uses the pmo profile
         │                (live MCP reads). Writes park for approve pa-x.
-        └── followup   → resolved against the 5-turn/15-min window
+        └── followup   → resolved against the private thread (10 turns / 4h, plus a summary)
         ▼
 Outbound {title, body, tags} → adapter renders (Adaptive Card / plain text)
 
@@ -185,7 +185,7 @@ SCHEDULER — jobs-as-data
 | `src/jobs/orchestrator.ts` | 60s poller, etag claiming, retries, proactive delivery |
 | `src/services/transcription.ts` | Azure AI Speech fast transcription REST |
 | `src/services/graphTasks.ts` | Microsoft To Do via Graph (Bot Service OAuth connection) |
-| `src/services/session.ts` | conversation-scoped structured turns, pending clarification, last capture for undo |
+| `src/services/session.ts` | private-thread turns, overflow summary, pending clarification, last capture for undo |
 | `src/services/inboundQuality.ts` | deterministic proceed/help/clarify/refuse before any model or persistence |
 | `src/services/inboundReceipts.ts` | durable Teams/iMessage event idempotency |
 | `src/services/approvals.ts` | immutable high-impact action previews, audited states, `approve/deny <id>` |
@@ -219,7 +219,7 @@ SCHEDULER — jobs-as-data
 | Container | PK | TTL | Contents |
 |---|---|---|---|
 | `notes` | `/userId` | — | note metadata + 1536-dim embedding (diskANN, cosine). Canonical note body also lives as markdown in Blob `notes/{userId}/{yyyy-mm}/{id}.md` |
-| `sessions` | `/userId` | 900s | conversation-scoped structured turns plus pending clarification |
+| `sessions` | `/userId` | 4h | private thread turns plus one rewritten overflow summary; per-chat pending clarification and last capture. Item ttl is 14400s. Group chats stay on their own doc. |
 | `inbound-receipts` | `/channel` | 2d | hashed source event receipts preventing duplicate execution |
 | `agent-requests` | `/bucket` | 2d delivered / 7d pending or failed | durable FIFO for interactive Teams/iMessage requests; ETag claims, leases, retries, result delivery state |
 | `jobs` | `/userId` | — | scheduled jobs plus immutable read-only tool envelope and narrowly approved action tools |
@@ -515,11 +515,13 @@ controlled. Activity stores the disposition and reason code for policy refusals,
 
 ### Context-rot policy (why the bot stays fast forever)
 
-The model never sees the whole Teams thread. Per call it sees: system prompt
-(+ lessons for agent calls) + at most 5 conversation-scoped structured turns
-(15-min TTL) + the new message + explicitly retrieved notes. Stored outcomes
-and references make follow-ups useful without unbounded history. Memory lives
-in stores, not chat.
+The model never sees the whole Teams or iMessage thread. Per call it sees: system prompt
+(+ lessons for agent calls) + at most 10 structured turns on the private thread
+(or that group chat's own doc) + one rewritten summary of turns that fell off
+the cap + the new message + explicitly retrieved notes. The summary expires
+with the session (4-hour TTL) and is not a memory fact. Undo and unanswered
+questions still expire after 15 minutes. Stored outcomes and references make
+follow-ups useful without unbounded history. Memory lives in stores, not chat.
 
 ## 3. Configuration surfaces
 
@@ -771,8 +773,10 @@ logging already support it. Do not pay this tax early.
 
 ## 7. Invariants (agents: keep these true)
 
-1. Chat history never enters prompts beyond the 5-turn, conversation-scoped
-   structured session buffer; full channel threads are never ingested.
+1. Chat history never enters prompts beyond 10 structured turns on the private
+   thread (or the group chat's own document) plus one rewritten summary of
+   turns that fell off that cap. The summary expires with the session (4-hour
+   TTL) and is not a memory fact. Full channel threads are never ingested.
 2. Every LLM call goes through `router.route()` — no direct client calls —
    so budget, routing, and token logging stay complete.
 3. With unified policy enforcement enabled, shared, destructive, scheduled,

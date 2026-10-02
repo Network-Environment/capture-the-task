@@ -1,4 +1,5 @@
 import type { SessionTurn } from "./session";
+import type { IntentPlan } from "./intent";
 import { envFlag } from "../config";
 
 export type MessageDisposition = "proceed" | "clarify" | "help" | "refuse";
@@ -130,7 +131,8 @@ function repeatsUnresolved(text: string, recent: SessionTurn[]): boolean {
 export function assessInboundQuality(
   text: string,
   recent: SessionTurn[] = [],
-  hasPendingClarification = false
+  hasPendingClarification = false,
+  hasSummary = false
 ): InboundQualityResult {
   const trimmed = text.trim();
   if (!envFlag("INBOUND_QUALITY_GATE_ENABLED", true)) {
@@ -201,6 +203,9 @@ export function assessInboundQuality(
     };
   }
   if (SINGLE_TOKEN.test(trimmed)) {
+    if (hasSummary || recent.some((turn) => turn.role === "assistant")) {
+      return { disposition: "proceed", reason: "understood" };
+    }
     return {
       disposition: "clarify",
       reason: "insufficient_context",
@@ -208,4 +213,36 @@ export function assessInboundQuality(
     };
   }
   return { disposition: "proceed", reason: "understood" };
+}
+
+/**
+ * A one-word reply can continue an open question or be small talk.
+ * It cannot authorize a capture or a shared write on its own.
+ */
+export function restrainShortReply(
+  text: string,
+  plan: IntentPlan,
+  hasPendingClarification: boolean
+): IntentPlan {
+  if (hasPendingClarification || !SINGLE_TOKEN.test(text.trim())) return plan;
+  if (!plan.intents.some((intent) => intent.kind === "act" || intent.kind === "capture")) {
+    return {
+      ...plan,
+      intents: plan.intents.map((intent) => ({ ...intent, explicit: false })),
+    };
+  }
+  return {
+    disposition: "proceed",
+    reason: "understood",
+    confidence: plan.confidence,
+    assumptions: plan.assumptions,
+    intents: [
+      {
+        kind: "respond",
+        standalone: text.trim(),
+        confidence: plan.confidence,
+        explicit: false,
+      },
+    ],
+  };
 }

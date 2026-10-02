@@ -110,6 +110,7 @@ export interface PendingAckReceipt {
   firstName?: string;
   conversationId?: string;
   conversationRef?: StoredRef;
+  scope?: "private" | "group";
   sendLeaseUntil?: string;
   recoveryAttempts?: number;
   nextAttemptAt?: string;
@@ -128,6 +129,7 @@ export async function createPendingAck(input: {
   firstName?: string;
   conversationId?: string;
   conversationRef?: StoredRef;
+  scope?: "private" | "group";
 }): Promise<{ outcome: "created"; receipt: PendingAckReceipt } | { outcome: "exists" }> {
   const receipt: PendingAckReceipt = {
     id: receiptId(input.channel, input.eventId),
@@ -141,6 +143,7 @@ export async function createPendingAck(input: {
     firstName: input.firstName,
     conversationId: input.conversationId,
     conversationRef: input.conversationRef,
+    scope: input.scope,
     recoveryAttempts: 0,
     ttl: PENDING_ACK_TTL_SEC,
   };

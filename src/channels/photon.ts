@@ -26,6 +26,7 @@ import { transcribeBuffer } from "../services/transcription";
 import {
   imessageEnabled,
   imessageAllowsActions,
+  imessageConversationId,
   resolveIMessageUser,
   phoneForUser,
   channelEnvelope,
@@ -94,6 +95,7 @@ async function handleInbound(space: IMessageSpace, message: IMessageMessage): Pr
   }
 
   void saveConversationRef(userId, { channel: "imessage", phone, spaceId: space.id });
+  console.log(`[imessage] inbound space=${space.id} phone=${phone}`);
 
   // Content is one part per message: text, a voice memo, or an attachment
   // whose bytes are fetched lazily. Anything else (reactions, typing) is noise.
@@ -134,9 +136,10 @@ async function handleInbound(space: IMessageSpace, message: IMessageMessage): Pr
       return;
     }
   }
+  const conversationId = imessageConversationId(phone);
   const envelope = channelEnvelope("imessage", {
     eventId: message.id,
-    conversationId: space.id,
+    conversationId,
     scope: "private",
     identity: "mapped",
     allowActions: imessageAllowsActions(),
@@ -148,6 +151,7 @@ async function handleInbound(space: IMessageSpace, message: IMessageMessage): Pr
     eventId: envelope.eventId,
     conversationId: envelope.conversationId,
     conversationRef: { channel: "imessage", phone, spaceId: space.id },
+    scope: "private",
     send: (body) => space.send(body),
     enqueue: async () =>
       (
@@ -172,6 +176,7 @@ export async function sendIMessage(userId: string, text: string): Promise<boolea
   try {
     const user = await im.user(phone);
     const space = await im.space.create(user);
+    console.log(`[imessage] proactive space=${space.id} phone=${phone}`);
     await space.send(text);
     return true;
   } catch (err) {

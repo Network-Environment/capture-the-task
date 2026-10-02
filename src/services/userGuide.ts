@@ -50,6 +50,7 @@ function formatOverview(ctx: UserGuideContext): string {
     .join("\n");
   return [
     "TaskBrain is Net Env’s capture-and-follow-through assistant. Send a complete thought in this chat; I infer the outcome. I am not a general chatbot, a transcript archive, or a replacement for Outlook, Teams, or Smartsheet.",
+    "TaskBrain keeps the last few hours of this private chat, and it keeps what you asked it to remember.",
     "",
     "What I can help with:",
     areas,

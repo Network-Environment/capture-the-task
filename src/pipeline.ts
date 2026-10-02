@@ -22,7 +22,8 @@ import {
 import { saveNote, recall, deleteNote } from "./services/brain";
 import { retainFromCapture } from "./memory/retain";
 import { recallMemory, recallPromptBlock } from "./memory/recall";
-import { getOpenQuestion, getRecentTurns, appendTurn, setPendingClarification, openQuestionExpired, isUndoCommand, getLastCapture, setLastCapture } from "./services/session";
+import { getOpenQuestion, setPendingClarification, openQuestionExpired, isUndoCommand, getLastCapture, setLastCapture, getConversationContext, withExpiredChatNote, type PromptHistory, type SessionTurn } from "./services/session";
+import { recordConversationTurn } from "./services/sessionFold";
 import { logActivity } from "./services/activityLog";
 import { handleApprovalCommand } from "./services/approvals";
 import { maybeProposeSheetUpdate } from "./services/smartsheet";
@@ -44,7 +45,7 @@ import {
   capabilityGapOutbound,
 } from "./services/capabilityGap";
 import { claimInboundEvent, finishInboundEvent } from "./services/inboundReceipts";
-import { assessInboundQuality } from "./services/inboundQuality";
+import { assessInboundQuality, restrainShortReply } from "./services/inboundQuality";
 import { userHasPendingCheckIn } from "./org/checkins";
 import { envFlag } from "./config";
 
@@ -80,6 +81,8 @@ export interface Outbound {
   tags: string[];
   /** Short line kept in the follow-up session window. */
   summaryLine: string;
+  /** Note ids filed by this turn, kept on the session for follow-ups. */
+  references?: string[];
 }
 
 export async function processCapture(input: CaptureInput): Promise<Outbound> {
@@ -182,8 +185,31 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     inputMode: source,
     traceId: input.traceId,
   };
-  // 2. Short follow-up window only (never the full thread).
-  const recent = await getRecentTurns(userId, input.conversationId);
+  // 2. Private thread, or this group chat only. Never the full channel history.
+  const scope = currentPolicy.scope === "group" ? "group" : "private";
+  const context = await getConversationContext(userId, input.conversationId, scope);
+  const recent = context.turns;
+  const history: PromptHistory = { summary: context.summary, channel };
+  const contextEmpty = recent.length === 0 && !context.summary?.trim();
+  const remember = (
+    role: "user" | "assistant",
+    line: string,
+    detail: {
+      intent?: string;
+      outcome?: string;
+      references?: string[];
+      body?: string;
+    } = {}
+  ) =>
+    recordConversationTurn({
+      userId,
+      role,
+      text: line,
+      conversationId: input.conversationId,
+      scope,
+      channel,
+      ...detail,
+    });
   let pending = await getOpenQuestion(userId, input.conversationId);
   if (pending && /^(never mind|nevermind|cancel|forget (it|that))[\s.!]*$/i.test(text)) {
     await setPendingClarification(userId, input.conversationId, undefined);
@@ -200,20 +226,26 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   }
 
   const checkInOpen = await userHasPendingCheckIn(userId).catch(() => false);
-  const quality = assessInboundQuality(text, recent, Boolean(pending) || checkInOpen);
+  const quality = assessInboundQuality(
+    text,
+    recent,
+    Boolean(pending) || checkInOpen,
+    Boolean(context.summary?.trim())
+  );
   if (quality.disposition !== "proceed") {
-    const response =
+    const response = withExpiredChatNote(
       quality.response ??
-      "I’m not sure what outcome you want. What would you like me to do with that?";
-    await appendTurn(userId, "user", text, input.conversationId, {
-      intent: `quality_${quality.disposition}`,
-    });
-    await appendTurn(userId, "assistant", response, input.conversationId, {
+        "I’m not sure what outcome you want. What would you like me to do with that?",
+      contextEmpty && quality.disposition === "clarify"
+    );
+    await remember("user", text, { intent: `quality_${quality.disposition}` });
+    await remember("assistant", response, {
       intent: `quality_${quality.disposition}`,
       outcome:
         quality.disposition === "clarify"
           ? "waiting_for_clarification"
           : quality.disposition,
+      body: response,
     });
     if (quality.disposition === "clarify") {
       const reason =
@@ -279,7 +311,8 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
       ? `Pending original request: ${pending.originalText}\nPending question: ${pending.question}\nCurrent message: ${text}`
       : text;
     try {
-      plan = await interpretIntent(interpretationText, recent, attribution);
+      plan = await interpretIntent(interpretationText, recent, attribution, history);
+      if (plan) plan = restrainShortReply(text, plan, Boolean(pending));
     } catch (err) {
       if (!shadow) throw err;
       console.error("[intent] shadow interpretation failed:", err);
@@ -317,21 +350,24 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   }
 
   if (enabled && !shadow && plan) {
-    await appendTurn(userId, "user", text, input.conversationId, {
+    await remember("user", text, {
       intent: plan.intents.map((i) => i.kind).join(","),
     });
     if (plan.disposition === "help" || plan.disposition === "refuse") {
       if (pending && !plan.continuesPending) {
         await setPendingClarification(userId, input.conversationId, undefined);
       }
-      const response =
+      const response = withExpiredChatNote(
         plan.response ??
-        (plan.disposition === "refuse"
-          ? "I can’t help with that request, but I can help with a safe alternative."
-          : "I can help capture tasks and ideas, recall notes, or work with enabled systems.");
-      await appendTurn(userId, "assistant", response, input.conversationId, {
+          (plan.disposition === "refuse"
+            ? "I can’t help with that request, but I can help with a safe alternative."
+            : "I can help capture tasks and ideas, recall notes, or work with enabled systems."),
+        contextEmpty
+      );
+      await remember("assistant", response, {
         intent: plan.disposition,
         outcome: plan.disposition,
+        body: response,
       });
       void logActivity({
         type: "inbound_quality",
@@ -351,11 +387,13 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
       planNeedsClarification(plan) &&
       envFlag("CLARIFICATION_ENFORCEMENT_ENABLED", false)
     ) {
-      const question =
+      const question = withExpiredChatNote(
         plan.clarification ??
-        plan.intents.find((i) => i.question)?.question ??
-        plan.intents.find((i) => i.ambiguity)?.ambiguity ??
-        "What would you like me to do with that?";
+          plan.intents.find((i) => i.question)?.question ??
+          plan.intents.find((i) => i.ambiguity)?.ambiguity ??
+          "What would you like me to do with that?",
+        contextEmpty
+      );
       await setPendingClarification(userId, input.conversationId, {
         plan,
         originalText:
@@ -363,9 +401,10 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
         question,
         createdAt: new Date().toISOString(),
       });
-      await appendTurn(userId, "assistant", question, input.conversationId, {
+      await remember("assistant", question, {
         intent: "clarify",
         outcome: "waiting_for_clarification",
+        body: question,
       });
       void logActivity({
         type: "clarification",
@@ -379,16 +418,18 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
       return { title: "Need one detail", body: question, tags: [], summaryLine: question };
     }
     if (pending) await setPendingClarification(userId, input.conversationId, undefined);
-    const out = await executePlan(input, plan, recent, source);
-    await appendTurn(userId, "assistant", out.summaryLine, input.conversationId, {
+    const out = await executePlan(input, plan, recent, source, history);
+    await remember("assistant", out.summaryLine, {
       intent: plan.intents.map((i) => i.kind).join(","),
       outcome: out.summaryLine,
+      body: out.body,
+      references: out.references,
     });
     return out;
   }
 
   // 3. Triage on the cheap tier.
-  const kind = await triage(text, recent, attribution);
+  const kind = await triage(text, recent, attribution, history);
   if (shadow && plan) {
     void logActivity({
       type: "intent",
@@ -403,18 +444,21 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
       },
     });
   }
-  await appendTurn(userId, "user", text, input.conversationId);
+  await remember("user", text);
 
   const captureKinds = new Set(["task", "idea", "reference"]);
   if (
     !envFlag("LEGACY_TRIAGE_WRITES_ENABLED", false) &&
     (captureKinds.has(kind.kind) || kind.kind === "followup")
   ) {
-    const body =
-      "I didn’t take that as a request to do something. Say what you want done, or ask me what I can do.";
-    await appendTurn(userId, "assistant", body, input.conversationId, {
+    const body = withExpiredChatNote(
+      "I didn’t take that as a request to do something. Say what you want done, or ask me what I can do.",
+      contextEmpty
+    );
+    await remember("assistant", body, {
       intent: "clarify",
       outcome: "legacy_triage_write_blocked",
+      body,
     });
     void logActivity({
       type: "triage",
@@ -432,8 +476,12 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   }
 
   // 4. Execute.
-  const out = await execute(input, text, source, kind, recent);
-  await appendTurn(userId, "assistant", out.summaryLine, input.conversationId);
+  const out = await execute(input, text, source, kind, recent, false, history);
+  await remember("assistant", out.summaryLine, {
+    body: out.body,
+    references: out.references,
+    outcome: out.summaryLine,
+  });
   return out;
 }
 
@@ -450,12 +498,13 @@ function legacyMatchesPlan(kind: TriageResult["kind"], plan: IntentPlan): boolea
 async function executePlan(
   input: CaptureInput,
   plan: IntentPlan,
-  recent: Awaited<ReturnType<typeof getRecentTurns>>,
-  source: "text" | "voice"
+  recent: SessionTurn[],
+  source: "text" | "voice",
+  history: PromptHistory
 ): Promise<Outbound> {
   const outputs: Outbound[] = [];
   for (const intent of plan.intents) {
-    outputs.push(await executeIntent(input, intent, recent, source));
+    outputs.push(await executeIntent(input, intent, recent, source, history));
   }
   if (outputs.length === 1) return outputs[0];
   return {
@@ -463,6 +512,7 @@ async function executePlan(
     body: outputs.map((o) => `**${o.title}**\n${o.body}`).join("\n\n"),
     tags: [...new Set(outputs.flatMap((o) => o.tags))],
     summaryLine: outputs.map((o) => o.summaryLine).join("; ").slice(0, 500),
+    references: [...new Set(outputs.flatMap((o) => o.references ?? []))],
   };
 }
 
@@ -489,15 +539,16 @@ function agentOutbound(ctx: ToolContext, result: string, doneTitle: string): Out
 async function executeIntent(
   input: CaptureInput,
   intent: InterpretedIntent,
-  recent: Awaited<ReturnType<typeof getRecentTurns>>,
-  source: "text" | "voice"
+  recent: SessionTurn[],
+  source: "text" | "voice",
+  history: PromptHistory
 ): Promise<Outbound> {
   const policy =
     input.policy ??
     channelPolicy(input.channel, { allowActions: input.allowActions ?? false });
   const auth = { explicit: intent.explicit, confidence: intent.confidence, channel: policy };
   if (intent.kind === "respond") {
-    return execute(input, intent.standalone, source, { kind: "conversation" }, recent);
+    return execute(input, intent.standalone, source, { kind: "conversation" }, recent, false, history);
   }
   if (intent.kind === "read") {
     const ctx: ToolContext = {
@@ -513,7 +564,7 @@ async function executeIntent(
         getGraphToken: input.getGraphToken,
         traceId: input.traceId,
     };
-    const result = await runAgent(ctx, intent.standalone, undefined, recent);
+    const result = await runAgent(ctx, intent.standalone, undefined, recent, history);
     return agentOutbound(ctx, result, "TaskBrain");
   }
   if (intent.kind === "capture") {
@@ -554,14 +605,15 @@ async function executeIntent(
         source,
         { kind: "task", ...common, due: intent.due },
         recent,
-        false
+        false,
+        history
       );
     }
     return execute(input, intent.standalone, source, {
       kind: intent.captureKind ?? "reference",
       ...common,
       links: intent.links ?? [],
-    }, recent);
+    }, recent, false, history);
   }
   if (intent.kind === "act") {
     if (!policy.allowPersonalWrites && !policy.allowSharedWrites) {
@@ -590,7 +642,7 @@ async function executeIntent(
         getGraphToken: input.getGraphToken,
         traceId: input.traceId,
     };
-    const result = await runAgent(ctx, intent.standalone, undefined, recent);
+    const result = await runAgent(ctx, intent.standalone, undefined, recent, history);
     return agentOutbound(ctx, result, "Done");
   }
   return {
@@ -606,8 +658,9 @@ async function execute(
   text: string,
   source: "text" | "voice",
   r: TriageResult,
-  recent: Awaited<ReturnType<typeof getRecentTurns>>,
-  allowInferredSheetProposal = false
+  recent: SessionTurn[],
+  allowInferredSheetProposal = false,
+  history: PromptHistory = {}
 ): Promise<Outbound> {
   const { userId } = input;
   const effectivePolicy =
@@ -632,18 +685,17 @@ async function execute(
       } else {
         line += "\n✓ Saved to the brain. Sign in once in Teams and I can file To Do from any chat.";
       }
-        await saveNote(
+      const saved = await saveNote(
         userId,
         { kind: "task", title: r.title, body: r.detail || text, tags: r.tags, source },
         attribution
-      ).then((saved) => {
-        void retainFromCapture(userId, `${r.title}\n${r.detail || text}`, saved.id, attribution);
-        return setLastCapture(userId, input.conversationId, {
-          id: saved.id,
-          path: saved.path,
-          title: r.title,
-          createdAt: new Date().toISOString(),
-        });
+      );
+      void retainFromCapture(userId, `${r.title}\n${r.detail || text}`, saved.id, attribution);
+      await setLastCapture(userId, input.conversationId, {
+        id: saved.id,
+        path: saved.path,
+        title: r.title,
+        createdAt: new Date().toISOString(),
       });
       if (allowInferredSheetProposal && effectivePolicy.allowSharedWrites) {
         const proposed = await maybeProposeSheetUpdate(userId, {
@@ -653,7 +705,13 @@ async function execute(
         });
         if (proposed) line += proposed;
       }
-      return { title: "Task captured", body: line, tags: r.tags, summaryLine: `Filed task: ${r.title}` };
+      return {
+        title: "Task captured",
+        body: line,
+        tags: r.tags,
+        summaryLine: `Filed task: ${r.title}`,
+        references: [saved.id],
+      };
     }
 
     case "idea":
@@ -683,6 +741,7 @@ async function execute(
         body: `**${r.title}**\n\`${path}\`${links}`,
         tags: r.tags,
         summaryLine: `Filed ${r.kind}: ${r.title}`,
+        references: [id],
       };
     }
 
@@ -716,12 +775,12 @@ async function execute(
           ].join("\n")
         : "";
       const memoryContext = memory ? recallPromptBlock(memory) : "";
-      const answer = await answerQuestion(text, hits, attribution, graphContext, recent, memoryContext);
+      const answer = await answerQuestion(text, hits, attribution, graphContext, recent, memoryContext, history);
       return { title: "From your brain", body: answer, tags: [], summaryLine: answer.slice(0, 200) };
     }
 
     case "conversation": {
-      const response = await respondConversationally(text, recent, attribution);
+      const response = await respondConversationally(text, recent, attribution, history);
       return {
         title: "TaskBrain",
         body: response,
@@ -755,12 +814,12 @@ async function execute(
           getGraphToken: input.getGraphToken,
           traceId: input.traceId,
       };
-      const result = await runAgent(ctx, text, undefined, recent);
+      const result = await runAgent(ctx, text, undefined, recent, history);
       return agentOutbound(ctx, result, "Done");
     }
 
     case "followup": {
-      const resolved = await triage(r.resolvedText, recent, attribution);
+      const resolved = await triage(r.resolvedText, recent, attribution, history);
       if (resolved.kind === "followup") {
         return {
           title: "Need more context",
@@ -769,7 +828,7 @@ async function execute(
           summaryLine: "Follow-up unresolved",
         };
       }
-      return execute(input, r.resolvedText, source, resolved, recent, allowInferredSheetProposal);
+      return execute(input, r.resolvedText, source, resolved, recent, allowInferredSheetProposal, history);
     }
   }
 }

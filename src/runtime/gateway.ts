@@ -74,12 +74,15 @@ server.post("/internal/deliver", async (req, res) => {
     userId?: string;
     text?: string;
     prefer?: StoredRef;
+    recordTurn?: boolean;
   };
   if (!body?.userId || !body.text || body.text.length > 20_000) {
     res.send(400, { delivered: false });
     return;
   }
-  const delivered = await deliver(body.userId, body.text, body.prefer);
+  const delivered = await deliver(body.userId, body.text, body.prefer, {
+    recordTurn: body.recordTurn === true,
+  });
   res.send(200, { delivered });
 });
 

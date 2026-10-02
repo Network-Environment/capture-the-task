@@ -276,7 +276,7 @@ resource sessionColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/contain
     resource: {
       id: 'sessions'
       partitionKey: { paths: ['/userId'], kind: 'Hash' }
-      defaultTtl: 900 // 15-minute follow-up window, then gone
+      defaultTtl: 14400 // 4-hour safety net; item ttl matches. Undo still expires at 15 minutes.
     }
   }
 }

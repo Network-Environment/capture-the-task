@@ -13,7 +13,7 @@ import {
   leaseAckSend,
 } from "../services/inboundReceipts";
 import type { EnqueueDisposition } from "../services/requestQueue";
-import { appendTurn } from "../services/session";
+import { recordConversationTurn } from "../services/sessionFold";
 import { logActivity } from "../services/activityLog";
 
 export async function acceptInboundMessage(input: {
@@ -23,6 +23,7 @@ export async function acceptInboundMessage(input: {
   eventId: string;
   conversationId: string;
   displayNameHint?: string;
+  scope?: "private" | "group";
   conversationRef: StoredRef;
   send: (text: string) => Promise<unknown>;
   enqueue: () => Promise<EnqueueDisposition>;
@@ -61,6 +62,7 @@ async function sendSocialReply(
     text: string;
     eventId: string;
     conversationId: string;
+    scope?: "private" | "group";
     conversationRef: StoredRef;
     send: (text: string) => Promise<unknown>;
   },
@@ -75,6 +77,7 @@ async function sendSocialReply(
     firstName: draft.firstName,
     conversationId: input.conversationId,
     conversationRef: input.conversationRef,
+    scope: input.scope,
   });
   if (created.outcome === "exists") return;
   const leased = await leaseAckSend(created.receipt);
@@ -95,6 +98,7 @@ async function sendSocialReply(
     userId: input.userId,
     channel: input.channel,
     conversationId: input.conversationId,
+    scope: input.scope,
     userText: input.text,
     replyText: leased.replyText,
     trigger: "inbound_quality_gate",
@@ -105,21 +109,32 @@ export async function recordAckTurn(input: {
   userId: string;
   channel: Channel;
   conversationId?: string;
+  scope?: "private" | "group";
   userText: string;
   replyText: string;
   trigger: string;
 }): Promise<void> {
-  try {
-    await appendTurn(input.userId, "user", input.userText, input.conversationId, {
-      intent: "quality_help",
-    });
-    await appendTurn(input.userId, "assistant", input.replyText, input.conversationId, {
-      intent: "quality_help",
-      outcome: "help",
-    });
-  } catch (err) {
-    console.error("[ack] session write failed:", err);
-  }
+  const scope = input.scope ?? (input.channel === "imessage" ? "private" : "group");
+  await recordConversationTurn({
+    userId: input.userId,
+    role: "user",
+    text: input.userText,
+    conversationId: input.conversationId,
+    scope,
+    channel: input.channel,
+    intent: "quality_help",
+  });
+  await recordConversationTurn({
+    userId: input.userId,
+    role: "assistant",
+    text: input.replyText,
+    body: input.replyText,
+    conversationId: input.conversationId,
+    scope,
+    channel: input.channel,
+    intent: "quality_help",
+    outcome: "help",
+  });
   void logActivity({
     type: "inbound_quality",
     userId: input.userId,

@@ -158,7 +158,8 @@ async function runOutcomes(adapter: CloudAdapter, botAppId: string): Promise<voi
       await deliver(
         claimed.userId,
         `Outcome **${claimed.name}** — step ${claimed.cursor + 1}: ${updated.status}\n\n${result.slice(0, 1200)}`,
-        prefer
+        prefer,
+        { recordTurn: true }
       );
       void logActivity({
         type: "job_run",
@@ -230,7 +231,7 @@ async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Prom
     const prefer = (job.conversationRef as { channel?: string } | undefined)?.channel === "imessage"
       ? { channel: "imessage" as const, phone: (job.conversationRef as { phone: string }).phone }
       : undefined;
-    await deliver(job.userId, `⏰ **${job.name}**\n\n${result}`, prefer);
+    await deliver(job.userId, `⏰ **${job.name}**\n\n${result}`, prefer, { recordTurn: true });
     await markRun({ ...job, ...( { retryCount: 0 } as object) } as Job, "ok", result);
     void logActivity({
       type: "job_run",

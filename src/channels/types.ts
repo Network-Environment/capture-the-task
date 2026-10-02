@@ -73,6 +73,11 @@ export function channelEnvelope(
   };
 }
 
+/** Stable iMessage thread key. The allowlist phone, not Photon's space id. */
+export function imessageConversationId(phone: string): string {
+  return `imessage:${phone}`;
+}
+
 /** Resolve an iMessage sender (E.164) to the canonical userId, or undefined. */
 export function resolveIMessageUser(phone: string): string | undefined {
   return cfg.imessage.identities[phone];

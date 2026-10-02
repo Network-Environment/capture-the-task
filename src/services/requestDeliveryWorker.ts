@@ -89,6 +89,8 @@ async function deliverResult(
       request.result &&
       request.conversationRef.channel === "imessage"
     ) {
+      // The pipeline already stored this reply on the thread. Recording it
+      // again here would duplicate the turn. Job results opt in at deliver().
       delivered = await deliver(
         request.userId,
         toPlainText(
@@ -137,6 +139,7 @@ async function recoverPendingAck(
       userId: receipt.userId,
       channel: receipt.channel,
       conversationId: receipt.conversationId,
+      scope: receipt.scope,
       userText: receipt.userText,
       replyText: text,
       trigger: "missed_ack",

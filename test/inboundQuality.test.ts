@@ -1,7 +1,7 @@
 import "./setup";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { assessInboundQuality } from "../src/services/inboundQuality";
+import { assessInboundQuality, restrainShortReply } from "../src/services/inboundQuality";
 import type { SessionTurn } from "../src/services/session";
 
 describe("inbound message quality", () => {
@@ -92,6 +92,63 @@ describe("inbound message quality", () => {
   it("allows short answers while a clarification is pending", () => {
     assert.equal(assessInboundQuality("idea", [], true).disposition, "proceed");
     assert.equal(assessInboundQuality("yes", [], true).disposition, "proceed");
+  });
+
+  it("lets a single token continue a live exchange and still rejects nonsense", () => {
+    const recent: SessionTurn[] = [
+      { role: "assistant", text: "I filed the warranty review.", at: "2026-10-02T15:00:00.000Z" },
+    ];
+    assert.equal(assessInboundQuality("yes", recent).disposition, "proceed");
+    assert.equal(assessInboundQuality("yes", [], false, true).disposition, "proceed");
+    assert.equal(assessInboundQuality("yes").disposition, "clarify");
+    assert.equal(assessInboundQuality("asdf", recent).disposition, "clarify");
+    assert.equal(assessInboundQuality("hello", recent).disposition, "help");
+    assert.equal(assessInboundQuality("ping", recent).disposition, "help");
+  });
+
+  it("does not let yes authorize an action just because the summary mentions one", () => {
+    const plan = restrainShortReply(
+      "yes",
+      {
+        disposition: "proceed",
+        reason: "understood",
+        confidence: 0.9,
+        assumptions: [],
+        intents: [
+          {
+            kind: "act",
+            standalone: "Send the email to the client",
+            confidence: 0.9,
+            explicit: true,
+          },
+        ],
+      },
+      false
+    );
+    assert.equal(plan.intents.length, 1);
+    assert.equal(plan.intents[0].kind, "respond");
+    assert.equal(plan.intents[0].explicit, false);
+    const pending = restrainShortReply(
+      "yes",
+      {
+        disposition: "proceed",
+        reason: "understood",
+        confidence: 1,
+        assumptions: [],
+        continuesPending: true,
+        intents: [
+          {
+            kind: "act",
+            standalone: "Send the email to the client",
+            confidence: 1,
+            explicit: true,
+          },
+        ],
+      },
+      true
+    );
+    assert.equal(pending.intents[0].kind, "act");
+    assert.equal(pending.intents[0].explicit, true);
   });
 
   it("can be disabled for rollback", () => {

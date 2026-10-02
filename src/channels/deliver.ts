@@ -8,6 +8,8 @@ import { getConversationRef, StoredRef } from "../services/conversations";
 import { sendIMessage } from "./photon";
 import { registerDeliverer } from "../services/alerts";
 import { getDeliveryAdapter, getDeliveryAppId, initDeliveryContext } from "./deliveryContext";
+import { imessageConversationId } from "./types";
+import { recordConversationTurn } from "../services/sessionFold";
 
 export { getDeliveryAdapter, getDeliveryAppId };
 
@@ -16,7 +18,12 @@ export function initDelivery(a: CloudAdapter, appId: string): void {
   registerDeliverer((userId, text) => deliver(userId, text));
 }
 
-export async function deliver(userId: string, text: string, prefer?: StoredRef): Promise<boolean> {
+export async function deliver(
+  userId: string,
+  text: string,
+  prefer?: StoredRef,
+  options?: { recordTurn?: boolean }
+): Promise<boolean> {
   const gatewayUrl = process.env.DELIVERY_GATEWAY_URL?.replace(/\/+$/, "");
   const gatewayToken = process.env.DELIVERY_GATEWAY_TOKEN;
   if (gatewayUrl && gatewayToken) {
@@ -27,7 +34,7 @@ export async function deliver(userId: string, text: string, prefer?: StoredRef):
           Authorization: `Bearer ${gatewayToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ userId, text, prefer }),
+        body: JSON.stringify({ userId, text, prefer, recordTurn: options?.recordTurn === true }),
         signal: AbortSignal.timeout(15_000),
       });
       if (!response.ok) return false;
@@ -43,13 +50,18 @@ export async function deliver(userId: string, text: string, prefer?: StoredRef):
   const ref = prefer ?? (await getConversationRef(userId));
   if (!ref) return false;
 
+  let sent: StoredRef | undefined;
   if (ref.channel === "imessage") {
-    if (await sendIMessage(userId, stripMd(text))) return true;
-    // fall through to Teams if iMessage is down and a Teams ref exists
-    const teams = await getConversationRef(userId, "teams");
-    return teams ? sendTeams(teams, text) : false;
+    if (await sendIMessage(userId, stripMd(text))) sent = ref;
+    else {
+      const teams = await getConversationRef(userId, "teams");
+      if (teams && (await sendTeams(teams, text))) sent = teams;
+    }
+  } else if (await sendTeams(ref, text)) {
+    sent = ref;
   }
-  return sendTeams(ref, text);
+  if (sent && options?.recordTurn) await rememberDelivery(userId, text, sent);
+  return Boolean(sent);
 }
 
 async function sendTeams(ref: StoredRef, text: string): Promise<boolean> {
@@ -73,4 +85,21 @@ async function sendTeams(ref: StoredRef, text: string): Promise<boolean> {
 
 function stripMd(s: string): string {
   return s.replace(/\*\*(.+?)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1");
+}
+
+async function rememberDelivery(userId: string, text: string, ref: StoredRef): Promise<void> {
+  const conversationId =
+    ref.channel === "imessage" && ref.phone
+      ? imessageConversationId(ref.phone)
+      : ref.teamsRef?.conversation?.id;
+  await recordConversationTurn({
+    userId,
+    role: "assistant",
+    text,
+    body: text,
+    conversationId,
+    scope: "private",
+    channel: ref.channel,
+    intent: "proactive",
+  });
 }
