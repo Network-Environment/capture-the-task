@@ -49,7 +49,7 @@ import {
   webSearch,
   type ResearchBudget,
 } from "./webResearch";
-import { searchMyMail, createMailDraft, sendMail } from "../services/graphMailbox";
+import { searchMyMail, searchSharedMail, createMailDraft, sendMail } from "../services/graphMailbox";
 import { searchMyFiles, readMyFile, updateMyFile } from "../services/graphFiles";
 import {
   createCalendarEvent,
@@ -154,6 +154,7 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   cancel_job: { effect: "destructive", reversible: false },
   search_my_calendar: { effect: "read", reversible: true },
   search_my_mail: { effect: "read", reversible: true },
+  search_shared_mail: { effect: "read", reversible: true },
   create_mail_draft: { effect: "shared_write", reversible: true },
   send_mail: { effect: "shared_write", reversible: false },
   create_calendar_event: { effect: "shared_write", reversible: true },
@@ -212,6 +213,7 @@ const scheduledNativeReads = new Set([
   "recall_memory",
   "search_my_calendar",
   "search_my_mail",
+  "search_shared_mail",
   "search_my_files",
   "read_my_file",
   "read_public_page",
@@ -857,7 +859,24 @@ const nativeDefs: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "search_my_mail",
-      description: "Search the requester's own Outlook mailbox. Returns subjects, ids, and previews. Does not open anyone else's mail.",
+      description:
+        "Search the requester's own Outlook mailbox. Works on every channel after their one-time Microsoft sign-in. Returns subjects, ids, and previews. Does not open anyone else's mail.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          limit: { type: "number" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_shared_mail",
+      description:
+        "Search the configured shared mailbox using the requester's Microsoft sign-in. Works on every channel. Returns subjects, ids, and previews. Does not open any other mailbox, and does not send.",
       parameters: {
         type: "object",
         properties: {
@@ -1729,6 +1748,10 @@ export async function dispatch(
       case "search_my_mail":
         return await withGraph(ctx, MAIL_UNAVAILABLE, (token) =>
           searchMyMail(token, String(args.query ?? ""), args.limit == null ? undefined : Number(args.limit))
+        );
+      case "search_shared_mail":
+        return await withGraph(ctx, MAIL_UNAVAILABLE, (token) =>
+          searchSharedMail(token, String(args.query ?? ""), args.limit == null ? undefined : Number(args.limit))
         );
       case "create_mail_draft":
         return await withGraph(ctx, MAIL_UNAVAILABLE, (token) =>

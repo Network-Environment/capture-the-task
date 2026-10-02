@@ -1,7 +1,7 @@
 import "./setup";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createMailDraft, searchMyMail, validEmail } from "../src/services/graphMailbox";
+import { createMailDraft, searchMyMail, searchSharedMail, validEmail } from "../src/services/graphMailbox";
 import { fileHitsFromSearch, formatFileHits } from "../src/services/graphFiles";
 import { createCalendarEvent } from "../src/services/graphCalendar";
 
@@ -31,6 +31,30 @@ describe("requester Microsoft 365 actions", () => {
     assert.match(result, /Morgan/);
     assert.equal(validEmail("pat@example.com"), true);
     assert.equal(validEmail("not an email"), false);
+  });
+
+  it("searches only the configured shared mailbox", async () => {
+    const prior = process.env.SHARED_MAILBOX;
+    process.env.SHARED_MAILBOX = "jjrmac@netenv.com";
+    const urls: string[] = [];
+    try {
+      const result = await searchSharedMail(
+        "token",
+        "commissioning",
+        5,
+        (async (url: string | URL | Request) => {
+          urls.push(String(url));
+          return new Response(JSON.stringify({ value: [] }), { status: 200 });
+        }) as typeof fetch
+      );
+      assert.match(result, /jjrmac@netenv.com/);
+      assert.equal(urls.length, 1);
+      assert.match(urls[0], /\/users\/jjrmac%40netenv.com\/messages/);
+      assert.doesNotMatch(urls[0], /\/me\/messages/);
+    } finally {
+      if (prior === undefined) delete process.env.SHARED_MAILBOX;
+      else process.env.SHARED_MAILBOX = prior;
+    }
   });
 
   it("creates a draft and does not call send", async () => {

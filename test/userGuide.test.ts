@@ -61,6 +61,7 @@ describe("TaskBrain user guide", () => {
     assert.match(group, /group chat/i);
     assert.match(group, /will not save personal tasks/i);
     const imessage = formatUserGuide("calendar", { ...full, channel: "imessage" });
-    assert.match(imessage, /On iMessage/);
+    assert.match(imessage, /same sign-in works in Teams and iMessage/);
+    assert.doesNotMatch(imessage, /need Teams/);
   });
 });

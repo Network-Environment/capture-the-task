@@ -68,6 +68,9 @@ param plannerBucketId string = ''
 @description('Mailbox UPN used with Mail.Send when Teams delivery fails')
 param followthroughMailFrom string = ''
 
+@description('Shared mailbox the signed-in user can search from any channel')
+param sharedMailbox string = 'jjrmac@netenv.com'
+
 @description('Use the structured conversational intent gateway for inbound channels')
 param intentGatewayEnabled bool = true
 
@@ -721,6 +724,7 @@ var runtimeAppSettings = [
   { name: 'PLANNER_PLAN_ID', value: plannerPlanId }
   { name: 'PLANNER_BUCKET_ID', value: plannerBucketId }
   { name: 'FOLLOWTHROUGH_MAIL_FROM', value: followthroughMailFrom }
+  { name: 'SHARED_MAILBOX', value: sharedMailbox }
 ]
 
 resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {

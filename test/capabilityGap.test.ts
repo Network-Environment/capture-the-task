@@ -91,8 +91,8 @@ describe("capability gaps", () => {
       };
       const result = await dispatch(first, "search_my_calendar", {});
       assert.match(result, /You want to check your Outlook calendar/);
-      assert.match(result, /connected in Teams/);
-      assert.match(result, /What I can do is ask me again in Teams/);
+      assert.match(result, /one-time Microsoft sign-in/);
+      assert.match(result, /What I can do is sign in once in Teams, then ask again here/);
       assert.equal(first.unmetReply, result);
       assert.doesNotMatch(result, /unavailable on this channel/);
       assert.doesNotMatch(result, /search_my_calendar/);

@@ -1,7 +1,8 @@
 /**
- * The requester's own mailbox, using their delegated Graph token.
- * Drafts and sends are prepared by the caller only after approval.
- * This never uses the shared follow-through mailbox.
+ * Mail for the signed-in requester, using their delegated Graph token.
+ * Own-mailbox search, drafts, and sends use /me.
+ * Shared-mailbox search uses only SHARED_MAILBOX, still with that same token.
+ * Drafts and sends stay on the requester's mailbox.
  */
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -42,33 +43,20 @@ async function graphJson(
   return text ? JSON.parse(text) : {};
 }
 
-export async function searchMyMail(
-  token: string,
-  query: string,
-  limit?: number,
-  fetchImpl: typeof fetch = fetch
-): Promise<string> {
-  const q = query.trim();
-  if (!q) return "Mail search query was empty.";
-  const url =
-    `${GRAPH}/me/messages?$search=${encodeURIComponent(`"${q}"`)}` +
-    `&$top=${bounded(limit)}&$select=id,subject,from,receivedDateTime,bodyPreview`;
-  const page = (await graphJson(
-    token,
-    url,
-    { headers: { ConsistencyLevel: "eventual" } },
-    fetchImpl
-  )) as {
-    value?: Array<{
-      id?: string;
-      subject?: string;
-      receivedDateTime?: string;
-      bodyPreview?: string;
-      from?: { emailAddress?: { name?: string; address?: string } };
-    }>;
-  };
-  const rows = page.value ?? [];
-  if (!rows.length) return "No matching messages in the requester's mailbox.";
+export function sharedMailbox(): string {
+  return (process.env.SHARED_MAILBOX ?? "").trim().toLowerCase();
+}
+
+type MailHit = {
+  id?: string;
+  subject?: string;
+  receivedDateTime?: string;
+  bodyPreview?: string;
+  from?: { emailAddress?: { name?: string; address?: string } };
+};
+
+function formatMailHits(rows: MailHit[], empty: string): string {
+  if (!rows.length) return empty;
   return rows
     .map((message) => {
       const from = message.from?.emailAddress;
@@ -81,6 +69,62 @@ export async function searchMyMail(
       ].join("\n");
     })
     .join("\n---\n");
+}
+
+async function searchMailbox(
+  token: string,
+  userPath: string,
+  query: string,
+  limit: number | undefined,
+  fetchImpl: typeof fetch,
+  empty: string
+): Promise<string> {
+  const q = query.trim();
+  if (!q) return "Mail search query was empty.";
+  const url =
+    `${GRAPH}/${userPath}/messages?$search=${encodeURIComponent(`"${q}"`)}` +
+    `&$top=${bounded(limit)}&$select=id,subject,from,receivedDateTime,bodyPreview`;
+  const page = (await graphJson(
+    token,
+    url,
+    { headers: { ConsistencyLevel: "eventual" } },
+    fetchImpl
+  )) as { value?: MailHit[] };
+  return formatMailHits(page.value ?? [], empty);
+}
+
+export async function searchMyMail(
+  token: string,
+  query: string,
+  limit?: number,
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  return searchMailbox(
+    token,
+    "me",
+    query,
+    limit,
+    fetchImpl,
+    "No matching messages in the requester's mailbox."
+  );
+}
+
+export async function searchSharedMail(
+  token: string,
+  query: string,
+  limit?: number,
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  const mailbox = sharedMailbox();
+  if (!mailbox || !validEmail(mailbox)) return "No shared mailbox is configured.";
+  return searchMailbox(
+    token,
+    `users/${encodeURIComponent(mailbox)}`,
+    query,
+    limit,
+    fetchImpl,
+    `No matching messages in ${mailbox}.`
+  );
 }
 
 export async function createMailDraft(

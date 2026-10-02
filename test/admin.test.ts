@@ -1,6 +1,7 @@
 import "./setup";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { buildChannelAccess, renderChannelAccess } from "../src/admin/channelAccess";
 import {
   renderCapabilities,
   renderIntegrations,
@@ -329,6 +330,31 @@ describe("admin portal", () => {
     assert.doesNotMatch(catalog, />browser</);
     assert.doesNotMatch(catalog, /BROWSER_MCP/);
     assert.doesNotMatch(catalog, /\+1/);
+    const access = renderIntegrations(
+      "local",
+      "access",
+      undefined,
+      [],
+      buildChannelAccess({
+        identities: { "+16155550100": "user-a" },
+        people: [{ displayName: "Ada Operator", entraId: "user-a", status: "active" }],
+        conversations: [{ userId: "user-a", channel: "teams" }],
+        sharedMailbox: "jjrmac@netenv.com",
+      })
+    );
+    assert.match(access, /Access/);
+    assert.match(access, /Ada Operator/);
+    assert.match(access, /\+16155550100/);
+    assert.match(access, /jjrmac@netenv.com/);
+    assert.match(access, /every channel/);
+    const waiting = renderChannelAccess(buildChannelAccess({
+      identities: {},
+      people: [{ displayName: "No Chat", entraId: "user-b", status: "active" }],
+      conversations: [],
+      sharedMailbox: "",
+    }));
+    assert.match(waiting, /needs sign-in/);
+    assert.match(waiting, /not configured/);
   });
 
   it("does not block capabilities or integrations HTML on live MCP", () => {

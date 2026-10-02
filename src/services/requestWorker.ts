@@ -4,7 +4,7 @@ import {
   type TurnContext,
 } from "botbuilder";
 import { processCapture, type Outbound } from "../pipeline";
-import { createTodoTask, getGraphUserToken } from "./graphTasks";
+import { createTodoTask, getGraphUserToken, graphAccessForUser } from "./graphTasks";
 import { logActivity } from "./activityLog";
 import {
   claimNextAgentRequest,
@@ -95,17 +95,20 @@ async function processRequest(
 ): Promise<void> {
   try {
     const current = (await getAgentRequest(request.id)) ?? request;
-    const run = (item: QueuedAgentRequest) =>
-      item.channel === "teams"
-        ? processTeamsRequest(adapter, botAppId, item)
-        : processCapture({
-            userId: item.userId,
-            channel: "imessage",
-            text: item.text,
-            conversationId: item.conversationId,
-            policy: item.policy,
-            conversationRef: item.conversationRef,
-          });
+    const run = async (item: QueuedAgentRequest) => {
+      if (item.channel === "teams") return processTeamsRequest(adapter, botAppId, item);
+      const graph = await graphAccessForUser(adapter, botAppId, item.userId);
+      return processCapture({
+        userId: item.userId,
+        channel: "imessage",
+        text: item.text,
+        conversationId: item.conversationId,
+        policy: item.policy,
+        conversationRef: item.conversationRef,
+        getGraphToken: graph?.getGraphToken,
+        createTask: graph?.createTask,
+      });
+    };
     let out = await withDeadline(run(current), REQUEST_DEADLINE_MS, request.id);
     const latest = await getAgentRequest(request.id);
     if (latest && shouldRerunAfterDetail(out.title, current.text, latest.text)) {

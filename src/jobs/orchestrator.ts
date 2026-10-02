@@ -20,7 +20,7 @@ import { alertUser, alertAdmin } from "../services/alerts";
 import { channelPolicy } from "../channels/types";
 import { scheduledReadToolEnvelope } from "../tools/registry";
 import { maybeConsolidateObservations } from "../memory/observe";
-import { getGraphUserToken } from "../services/graphTasks";
+import { getGraphUserToken, graphAccessForUser } from "../services/graphTasks";
 import {
   applyStepError,
   applyStepResult,
@@ -81,24 +81,28 @@ async function claim(job: Job & { _etag?: string }): Promise<Job | null> {
 async function graphTokenFor(
   adapter: CloudAdapter,
   botAppId: string,
-  ref: unknown
+  ref: unknown,
+  userId: string
 ): Promise<(() => Promise<string>) | undefined> {
-  if (!ref || typeof ref !== "object" || !("conversation" in ref)) return undefined;
-  const channelId = (ref as { channelId?: string }).channelId;
-  if (channelId && channelId !== "msteams") return undefined;
-  try {
-    let token = "";
-    await adapter.continueConversationAsync(
-      botAppId,
-      ref as Partial<ConversationReference>,
-      async (ctx) => {
-        token = await getGraphUserToken(ctx);
+  if (ref && typeof ref === "object" && "conversation" in ref) {
+    const channelId = (ref as { channelId?: string }).channelId;
+    if (!channelId || channelId === "msteams") {
+      try {
+        let token = "";
+        await adapter.continueConversationAsync(
+          botAppId,
+          ref as Partial<ConversationReference>,
+          async (ctx) => {
+            token = await getGraphUserToken(ctx);
+          }
+        );
+        if (token) return async () => token;
+      } catch {
+        // Fall through to the stored Teams sign-in for this user.
       }
-    );
-    return token ? async () => token : undefined;
-  } catch {
-    return undefined;
+    }
   }
+  return (await graphAccessForUser(adapter, botAppId, userId))?.getGraphToken;
 }
 
 async function runOutcomes(adapter: CloudAdapter, botAppId: string): Promise<void> {
@@ -118,7 +122,12 @@ async function runOutcomes(adapter: CloudAdapter, botAppId: string): Promise<voi
       continue;
     }
     try {
-      const getGraphToken = await graphTokenFor(adapter, botAppId, claimed.conversationRef);
+      const getGraphToken = await graphTokenFor(
+        adapter,
+        botAppId,
+        claimed.conversationRef,
+        claimed.userId
+      );
       const result = await withDeadline(
         runAgent(
           {

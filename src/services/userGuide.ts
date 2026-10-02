@@ -75,21 +75,21 @@ function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideC
     case "calendar":
       return block(
         "Your calendar",
-        "I can search your Outlook calendar for whether and when you met someone, subjects, and attendees. First use may prompt a one-time Microsoft sign-in.",
+        "I can search your Outlook calendar for whether and when you met someone, subjects, and attendees. The same sign-in works in Teams and iMessage. First use may prompt once in Teams.",
         ["When did I last meet with Joe?", "Did I have anything with Val this week?"],
         "I only change your own calendar, and creating, moving, or declining an event waits for approve pa-…. I never open another person’s calendar."
       );
     case "mail":
       return block(
         "Your mail",
-        "I can search your own Outlook mailbox, save a draft, and send it after you approve. I do not use a shared mailbox as your voice.",
-        ["Find the last email from Morgan about commissioning.", "Draft a reply to Pat and wait for my approval."],
+        "I can search your own Outlook mailbox and the shared mailbox, save a draft in your mailbox, and send it after you approve. I do not send as the shared mailbox. The same sign-in works in Teams and iMessage.",
+        ["Find the last email from Morgan about commissioning.", "Check the shared mailbox for the latest from Morgan.", "Draft a reply to Pat and wait for my approval."],
         "Sending and drafts wait for approval. I never open another person’s mailbox."
       );
     case "files":
       return block(
         "Your files",
-        "I can search and read OneDrive or SharePoint files you can already open, and I can edit a text file after you approve.",
+        "I can search and read OneDrive or SharePoint files you can already open, and I can edit a text file after you approve. The same sign-in works in Teams and iMessage.",
         ["Find the commissioning notes in my files.", "Update that file with the Friday decision."],
         "Edits wait for approval. I do not browse files you cannot open."
       );
@@ -221,7 +221,7 @@ function availableAreas(
     {
       topic: "mail",
       label: "Your mail",
-      blurb: "search your mailbox, and draft or send after approval",
+      blurb: "search your mailbox or the shared mailbox, and draft or send from yours after approval",
     },
     {
       topic: "files",
@@ -292,11 +292,6 @@ function channelNotes(ctx: UserGuideContext): string {
   if (ctx.scope === "group") {
     notes.push(
       "This is a group chat: I can look things up, but I will not save personal tasks or assign work here. Use a 1:1 chat for that."
-    );
-  }
-  if (ctx.channel === "imessage") {
-    notes.push(
-      "On iMessage, Outlook calendar, mail, files, and Microsoft To Do need Teams plus a one-time Microsoft sign-in."
     );
   }
   return notes.length ? `\n\n${notes.join(" ")}` : "";

@@ -45,6 +45,9 @@ import { agentSkillCatalog } from "../services/agentSkills";
 import { listRecentCheckIns, type CheckInDoc } from "../org/checkins";
 import { requiresApproval } from "../services/approvals";
 import { imessageEnabled } from "../channels/types";
+import { listConversationChannels } from "../services/conversations";
+import { sharedMailbox } from "../services/graphMailbox";
+import { buildChannelAccess, renderChannelAccess, type ChannelAccessView } from "./channelAccess";
 import {
   listOrgDirectory,
   orgCounts,
@@ -213,12 +216,9 @@ async function renderSection(
       );
     case "integrations": {
       const health = await readHealth().catch(() => undefined);
-      return renderIntegrations(
-        signedIn,
-        tab === "catalog" ? "catalog" : "status",
-        health,
-        mcpServerSnapshot()
-      );
+      const which = tab === "catalog" ? "catalog" : tab === "access" ? "access" : "status";
+      const access = which === "access" ? await loadChannelAccess() : undefined;
+      return renderIntegrations(signedIn, which, health, mcpServerSnapshot(), access);
     }
     case "usage": {
       const [usage, events] = await Promise.all([usageBreakdown(), recentEvents(80)]);
@@ -508,15 +508,30 @@ export function renderCapabilities(
   });
 }
 
+async function loadChannelAccess(): Promise<ChannelAccessView> {
+  const [dir, conversations] = await Promise.all([
+    listOrgDirectory().catch(() => ({ units: [], people: [], roles: [] }) as OrgDirectory),
+    listConversationChannels().catch(() => []),
+  ]);
+  return buildChannelAccess({
+    identities: channelsConfig.imessage.identities ?? {},
+    people: dir.people,
+    conversations,
+    sharedMailbox: sharedMailbox(),
+  });
+}
+
 export function renderIntegrations(
   signedIn: string,
-  tab: "status" | "catalog",
+  tab: "status" | "catalog" | "access",
   health?: IngestHealthDoc,
-  mcp: McpServerHealth[] = []
+  mcp: McpServerHealth[] = [],
+  access?: ChannelAccessView
 ): string {
   const tabBar = tabs("/admin/integrations", [
     { id: "status", label: "Status" },
     { id: "catalog", label: "Catalog" },
+    { id: "access", label: "Access" },
   ], tab);
 
   const foundry = !!process.env.FOUNDRY_ENDPOINT && !!process.env.FOUNDRY_API_KEY;
@@ -547,7 +562,7 @@ export function renderIntegrations(
     const platform: { name: string; label: string; tone: Tone; note: string }[] = [
       { name: "Microsoft Foundry", label: foundry ? "ready" : "not ready", tone: foundry ? "ok" : "warn", note: "Chat + embeddings" },
       { name: "Azure Speech", label: speech ? "ready" : "not ready", tone: speech ? "ok" : "warn", note: "Voice memos" },
-      { name: "Graph To Do", label: graph ? "ready" : "not ready", tone: graph ? "ok" : "warn", note: "Task create from Teams" },
+      { name: "Microsoft 365", label: graph ? "ready" : "not ready", tone: graph ? "ok" : "warn", note: "One Teams sign-in, then every channel" },
       { name: "iMessage (Photon)", label: photon ? "ready" : "not ready", tone: photon ? "ok" : "warn", note: "Spectrum stream" },
       { name: "Transcript discovery", label: ingestLabel, tone: ingestTone, note: ingestNote },
       {
@@ -571,7 +586,7 @@ export function renderIntegrations(
         mcpRows,
         "No MCP servers in config."
       )}</section>`;
-  } else {
+  } else if (tab === "catalog") {
     const servers = mcpServerCatalog()
       .map((s) => {
         const allow = (s.allowTools ?? []).map((t) => pill(t, "info")).join(" ") || pill("all", "idle");
@@ -585,6 +600,10 @@ export function renderIntegrations(
     inner = `<p class="lede">Declared integrations from config. Phone numbers are not listed.</p>
       <section class="panel"><h2>MCP catalog</h2>${table(["Name", "URL", "authEnv", "Allow", "Confirm writes"], servers, "None.")}</section>
       <section class="panel"><h2>Channels</h2>${table(["Channel", "State", "Policy", "Notes"], ch, "—")}</section>`;
+  } else {
+    inner = access
+      ? renderChannelAccess(access)
+      : `<p class="lede">People and channel access could not be loaded.</p>`;
   }
 
   return renderShell({

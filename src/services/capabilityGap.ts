@@ -74,22 +74,22 @@ export function classifyCapabilityBoundary(
   if (message === CALENDAR_UNAVAILABLE) {
     return {
       capability: "check your Outlook calendar",
-      limit: "Your Outlook calendar is connected in Teams, not in this chat.",
-      alternative: "ask me again in Teams, or tell me the meeting in your own words",
+      limit: "That needs the one-time Microsoft sign-in, which happens in Teams. After that it works in every chat.",
+      alternative: "sign in once in Teams, then ask again here",
     };
   }
   if (message === MAIL_UNAVAILABLE) {
     return {
       capability: "use your Outlook mailbox",
-      limit: "Your mailbox is connected in Teams, not in this chat.",
-      alternative: "ask me again in Teams, or tell me the message in your own words",
+      limit: "That needs the one-time Microsoft sign-in, which happens in Teams. After that it works in every chat.",
+      alternative: "sign in once in Teams, then ask again here",
     };
   }
   if (message === FILES_UNAVAILABLE) {
     return {
       capability: "read or change your files",
-      limit: "Your OneDrive and SharePoint files are connected in Teams, not in this chat.",
-      alternative: "ask me again in Teams, or paste the text you want tracked",
+      limit: "That needs the one-time Microsoft sign-in, which happens in Teams. After that it works in every chat.",
+      alternative: "sign in once in Teams, then ask again here",
     };
   }
   if (message === GRAPH_DISABLED) {

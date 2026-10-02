@@ -38,6 +38,42 @@ export async function saveConversationRef(userId: string, ref: RefInput): Promis
   }
 }
 
+export interface ConversationChannel {
+  userId: string;
+  channel: Channel;
+  updatedAt?: string;
+  phone?: string;
+}
+
+/** Channel refs already stored, excluding the latest-pointer documents. */
+export async function listConversationChannels(): Promise<ConversationChannel[]> {
+  const { resources } = await convs().items
+    .query<ConversationChannel & { id?: string }>({
+      query: "SELECT c.userId, c.id, c.channel, c.updatedAt, c.phone FROM c",
+    })
+    .fetchAll();
+  const rows: ConversationChannel[] = [];
+  for (const row of resources) {
+    if (!row.userId || row.id?.endsWith(":latest")) continue;
+    const channel =
+      row.channel === "imessage" || row.channel === "teams"
+        ? row.channel
+        : row.id?.endsWith(":imessage")
+          ? "imessage"
+          : row.id?.endsWith(":teams")
+            ? "teams"
+            : undefined;
+    if (!channel) continue;
+    rows.push({
+      userId: row.userId,
+      channel,
+      updatedAt: row.updatedAt,
+      phone: row.phone,
+    });
+  }
+  return rows;
+}
+
 export async function getConversationRef(
   userId: string,
   channel?: Channel

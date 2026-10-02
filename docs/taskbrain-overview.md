@@ -28,7 +28,7 @@ Voice memos are transcribed. Replies stay short. High-impact writes come back as
 
 **Your calendar (Outlook).** Searches *your* calendar only — whether and when you met someone, subjects, attendees. Creating, moving, or declining an event waits for approval. It never opens another person’s calendar.
 
-**Your mail.** Searches your mailbox, saves a draft, and sends only after you approve. It does not send as a shared mailbox.
+**Your mail.** Searches your mailbox and the shared mailbox, saves a draft in your mailbox, and sends only after you approve. It does not send as the shared mailbox. Teams and iMessage use the same sign-in.
 
 **Your files.** Searches and reads OneDrive or SharePoint files you can already open. Text edits wait for approval.
 
@@ -64,4 +64,4 @@ Before named work is assigned, it checks mandate fit and current capacity/load. 
 
 ## Channels and identity
 
-Use it from **Teams** (full Graph: To Do, your calendar, your mail, and your files after you consent) or **iMessage** if your number is mapped. Group chats do not get personal writes. First Microsoft 365 use may prompt a one-time sign-in for `Calendars.ReadWrite`, `Mail.ReadWrite`, and `Files.ReadWrite.All`.
+Teams and iMessage use the same tools, including To Do, your calendar, your mail, the shared mailbox, and your files, after a one-time Microsoft sign-in in Teams. Group chats do not get personal writes. That sign-in covers `Calendars.ReadWrite`, `Mail.ReadWrite`, and `Files.ReadWrite.All`.

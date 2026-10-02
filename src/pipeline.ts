@@ -61,9 +61,9 @@ export interface CaptureInput {
   policy?: ChannelPolicy;
   allowActions?: boolean;
   /**
-   * Optional hook a channel can pass so task creation can use channel-bound
-   * auth (Teams → Graph OAuth). Absent on channels without it; tasks then
-   * fall back to the brain.
+   * Files a task in the requester's Microsoft To Do. Present on every channel
+   * once that person has signed in. Absent until then; the task still lands
+   * in the brain.
    */
   createTask?: (title: string, detail?: string, due?: string) => Promise<void>;
   /** Delegated requester token for read-only Microsoft Graph tools. */
@@ -630,7 +630,7 @@ async function execute(
           line += "\n⚠ To Do not connected — saved to the brain instead";
         }
       } else {
-        line += "\n✓ Saved to the brain (To Do available from Teams)";
+        line += "\n✓ Saved to the brain. Sign in once in Teams and I can file To Do from any chat.";
       }
         await saveNote(
         userId,

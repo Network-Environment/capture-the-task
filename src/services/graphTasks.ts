@@ -7,8 +7,9 @@
  * To enable: add an OAuth connection named GRAPH_CONNECTION_NAME on the Azure
  * Bot resource pointing at the same Entra app, scope Tasks.ReadWrite.
  */
-import { TurnContext } from "botbuilder";
+import { CloudAdapter, type ConversationReference, TurnContext } from "botbuilder";
 import { UserTokenClient } from "botframework-connector";
+import { getConversationRef } from "./conversations";
 
 const CONNECTION = process.env.GRAPH_CONNECTION_NAME ?? "graph-connection";
 
@@ -28,13 +29,47 @@ export async function getGraphUserToken(context: TurnContext): Promise<string> {
   return tokenResponse.token;
 }
 
-export async function createTodoTask(
-  context: TurnContext,
+/** The requester's Teams sign-in, usable from any channel that maps to the same user. */
+export async function graphAccessForUser(
+  adapter: CloudAdapter,
+  botAppId: string,
+  userId: string
+): Promise<
+  | {
+      getGraphToken: () => Promise<string>;
+      createTask: (title: string, detail?: string, due?: string) => Promise<void>;
+    }
+  | undefined
+> {
+  const stored = await getConversationRef(userId, "teams");
+  const ref = stored?.teamsRef;
+  if (!botAppId || !ref?.user?.id) return undefined;
+  try {
+    let token = "";
+    await adapter.continueConversationAsync(
+      botAppId,
+      ref as Partial<ConversationReference>,
+      async (ctx) => {
+        token = await getGraphUserToken(ctx);
+      }
+    );
+    if (!token) return undefined;
+    return {
+      getGraphToken: async () => token,
+      createTask: (title, detail, due) => createTodoTaskWithToken(token, title, detail, due),
+    };
+  } catch (err) {
+    console.error("[graph] delegated token lookup failed:", err);
+    return undefined;
+  }
+}
+
+export async function createTodoTaskWithToken(
+  token: string,
   title: string,
   detail?: string,
   dueIso?: string
 ): Promise<void> {
-  const token = await getGraphUserToken(context);
 
   // Default task list
   const listsRes = await fetch(
@@ -71,4 +106,13 @@ export async function createTodoTask(
     }
   );
   if (!createRes.ok) throw new Error(`graph create task: ${createRes.status}`);
+}
+
+export async function createTodoTask(
+  context: TurnContext,
+  title: string,
+  detail?: string,
+  dueIso?: string
+): Promise<void> {
+  await createTodoTaskWithToken(await getGraphUserToken(context), title, detail, dueIso);
 }

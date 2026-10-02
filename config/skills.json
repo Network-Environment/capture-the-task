@@ -4,11 +4,13 @@
       "description": "Read and, after approval, change the requester's own mail, calendar, and files.",
       "when": [
         "Someone asks to find, draft, or send their own email",
+        "Someone asks to find mail in the shared mailbox",
         "Someone asks to create, move, or decline their own meeting",
         "Someone asks to find or edit a file they can already open"
       ],
       "tools": [
         "search_my_mail",
+        "search_shared_mail",
         "create_mail_draft",
         "send_mail",
         "search_my_calendar",
@@ -22,10 +24,10 @@
         "note_unmet_request"
       ],
       "instructions": [
-        "Use only the requester's mailbox, calendar, and files. Never open another person's mailbox or calendar.",
+        "search_my_mail is the requester's own mailbox. search_shared_mail is only the configured shared mailbox. Never open another person's mailbox or calendar.",
         "Search before changing anything, and use the id the search returned.",
-        "Drafts, sends, calendar changes, and file edits wait for approval. Do not claim they are done before that.",
-        "If Microsoft 365 is unavailable on this channel, say so and do not invent the contents."
+        "Drafts, sends, calendar changes, and file edits stay on the requester's own items and wait for approval. Do not claim they are done before that.",
+        "Microsoft 365 uses the requester's sign-in on every channel. If they have not signed in, say sign-in happens once in Teams, and do not invent the contents."
       ]
     },
     "long-outcomes": {
