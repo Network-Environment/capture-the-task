@@ -32,8 +32,10 @@ flowchart TD
     T[Teams · Bot Framework] --> BOT[src/bot.ts]
     IM[iMessage · Photon spectrum-ts stream] --> PH[src/channels/photon.ts]
   end
-  BOT --> P[src/pipeline.ts · processCapture]
-  PH --> P
+  BOT --> Q[(Cosmos agent-requests)]
+  PH --> Q
+  Q --> W[worker · requestWorker]
+  W --> P[src/pipeline.ts · processCapture]
   P --> DEDUP[(inbound receipts)]
   P -->|approve/deny/undo| APR[approvals + last capture]
   P -->|audio| SP[Azure AI Speech]
@@ -48,11 +50,15 @@ flowchart TD
   POL -->|read/action| AG[agent loop · profile + tools]
   POL -->|high impact| APR
   AG --> REG[tool registry]
-  REG --> NAT[native: brain · scheduler · web_search · memory]
+  REG --> NAT[native: brain · scheduler · memory]
+  REG --> WEB[Tavily · web_search · read_public_page]
   REG --> MCP[MCP servers · Smartsheet]
   REG -->|shared/destructive/scheduled| APR
-  MCP -->|navigate/snapshot| CAPP[Container App Chromium]
   AG --> MEM[(agent-memory)]
+  P --> RES[(stored result)]
+  RES --> PUMP[gateway delivery pump]
+  PUMP --> T
+  PUMP --> IM
   SCH[orchestrator · 60s poll] --> AG
   SCH --> DLV[channels/deliver.ts]
   DLV --> T
@@ -94,7 +100,7 @@ scripts/bootstrap.sh (once, out of band)
   │          Speech, Foundry), endpoints, deployment names, and the secrets
   │          above → the code's process.env is fully populated
   ├─ az acr build → taskbrain:<git-sha> BEFORE the Bicep deploy
-  │  (App Service and Container Apps refuse tags missing from the registry)
+  │  (App Service refuses image tags missing from the registry)
   ├─ Bicep only retags App Service after that image exists (or keeps the current tag)
   ├─ az acr build → taskbrain:<git-sha> again in the deploy job (idempotent) then linuxFxVersion + restart
   ├─ zip-deploy Flex Consumption Function (meeting ingest timer)
@@ -172,9 +178,15 @@ SCHEDULER — jobs-as-data
 
 | Path | Responsibility |
 |---|---|
-| `src/index.ts` | restify server, adapter, alert init, orchestrator start, `/admin` + `/admin/:section`, POST meetings/org, `/healthz` |
-| `src/pipeline.ts` | **channel-agnostic intent gateway**: dedup, transcription, context, interpretation, policy, execute → Outbound |
-| `src/bot.ts` | Teams adapter: 1:1 and @mentions in team/group chat; Adaptive Card; Graph task hook |
+| `src/index.ts` | role switch only: `TASKBRAIN_ROLE` loads `runtime/admin`, `runtime/gateway`, or `runtime/worker` |
+| `src/runtime/gateway.ts` | gateway restify: `/api/messages`, Photon start, request delivery pump, `/internal/deliver`, `/healthz` |
+| `src/runtime/worker.ts` | worker restify `/healthz`; starts the request worker and the job orchestrator |
+| `src/runtime/admin.ts` | admin restify: `/admin`, meeting/org/board writes, graph and memory APIs, `/healthz` |
+| `src/services/requestQueue.ts` | Cosmos `agent-requests`: enqueue, claim, complete, delivery cursor |
+| `src/services/requestWorker.ts` | worker poller; the only runtime caller of `processCapture` |
+| `src/services/requestDeliveryWorker.ts` | gateway pump: stored result → Adaptive Card or iMessage text |
+| `src/pipeline.ts` | **channel-agnostic intent gateway**, worker-only: dedup, transcription, context, interpretation, policy, execute → Outbound |
+| `src/bot.ts` | Teams adapter: 1:1 and @mentions; transcribes voice; enqueues; work-card actions stay inline |
 | `src/channels/teamsText.ts` | strip bot @mention markup; personal vs channel conversation |
 | `src/channels/photon.ts` | iMessage adapter via Photon spectrum-ts: stream consumer, allowlist, voice memo fetch, proactive send |
 | `src/channels/deliver.ts` | proactive delivery router (Teams or iMessage by last-used channel) |
@@ -764,10 +776,13 @@ zip and is read at boot via `src/config.ts`; edit, commit, push (the deploy
 is the restart). `CONFIG_DIR` can point at an alternate folder locally.
 
 **Add a channel:** write an adapter in `src/channels/` that resolves the
-sender to a canonical userId, builds a `CaptureInput`, calls
-`processCapture`, and renders the `Outbound`. Register proactive delivery in
+sender to a canonical userId, builds the envelope, and calls
+`enqueueAgentRequest` (see `bot.ts` and `channels/photon.ts`). Do not call
+`processCapture` from the adapter. Start the adapter from
+`src/runtime/gateway.ts`. Register proactive delivery in
 `channels/deliver.ts` and a channel value in `channels/types.ts`. Default
-`allowActions` to false. Start it from `src/index.ts`.
+`allowActions` to false. The worker (`requestWorker.ts`) is the only runtime
+caller of `processCapture`; the gateway delivery pump renders the stored result.
 
 **Go multi-agent (only when needed):** signals — agent runs hitting the
 8-round cap regularly, jobs queueing behind slow ones, or profiles needing

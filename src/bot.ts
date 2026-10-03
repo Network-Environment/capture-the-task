@@ -1,7 +1,8 @@
 /**
- * Teams channel adapter (Bot Framework). Normalizes an activity into a
- * CaptureInput, runs the shared pipeline, renders the result as an Adaptive
- * Card. All capture logic lives in src/pipeline.ts.
+ * Teams channel adapter (Bot Framework). Normalizes an activity, transcribes
+ * voice on the gateway, and enqueues an agent request. The worker runs
+ * processCapture; the gateway delivery pump renders the stored result as an
+ * Adaptive Card. All capture logic lives in src/pipeline.ts.
  */
 import { ActivityHandler, TurnContext, Attachment } from "botbuilder";
 import { downloadAudio } from "./services/transcription";

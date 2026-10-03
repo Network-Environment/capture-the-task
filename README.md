@@ -11,29 +11,40 @@ capture, retrieval, or approved action.
 Path 2 build: Bot Framework + Azure AI Foundry, everything in-tenant.
 
 ```
-Teams (desktop / mobile voice clip)
-        │  Activity (text or audio attachment)
-        ▼
-Azure Bot Service ──► App Service / Functions (this code)
-        │
-        ├── audio? ──► Azure AI Speech (fast transcription)
+Teams (desktop / mobile voice clip) or iMessage
         │
         ▼
-Triage (CHEAP model tier) — classify → extract → decide
+gateway role (TASKBRAIN_ROLE=gateway)
+  bot.ts / channels/photon.ts acknowledge, then enqueue
+  Teams voice is transcribed here before the request is queued
+        │
+        ▼
+Cosmos agent-requests
+        │
+        ▼
+worker role → requestWorker → processCapture (pipeline.ts)
+        │
+        ▼
+Intent (CHEAP model tier) — interpret → policy → decide
         │
         ├── task        ──► Microsoft To Do (Graph API)
         ├── idea/note   ──► Blob (markdown, Obsidian-compatible) + Cosmos (metadata + embedding)
         ├── question    ──► private brain + shared execution-graph recall
         ├── action      ──► AGENT LOOP (STANDARD tier) with unified tool registry:
-        │                     native tools (brain, scheduler, execution graph)
+        │                     native tools (brain, scheduler, execution graph, Tavily web search)
         │                     + MCP servers from config (Smartsheet PMO first)
         └── follow-up   ──► short-window session state (Cosmos, TTL)
         ▼
-Adaptive Card confirmation back to Teams ("Filed as task ✓ due Friday")
+result stored on the request
+        │
+        ▼
+gateway delivery pump → Adaptive Card (Teams) or plain text (iMessage)
 
-Scheduler: jobs-as-data. schedule_job tool → approval preview → Cosmos `jobs`
-doc (cron/one-off + immutable read-only tool envelope) → single orchestrator
-polls every 60s → proactive message with the result.
+Same image, three App Service roles: gateway, worker, and admin.
+Scheduler: jobs-as-data on the worker. schedule_job tool → approval preview →
+Cosmos `jobs` doc (cron/one-off + immutable read-only tool envelope) →
+orchestrator polls every 60s → proactive message with the result.
+Meeting ingest is a separate Functions timer, not a chat job.
 ```
 
 ## Modularity contracts
@@ -71,11 +82,20 @@ polls every 60s → proactive message with the result.
 
 ```
 src/
-  index.ts                 entry point, adapter, orchestrator startup
-  bot.ts                   activity handler: text + voice attachments
+  index.ts                 TASKBRAIN_ROLE switch: admin | gateway | worker
+  runtime/
+    gateway.ts             Teams + iMessage ingress, delivery pump, /healthz
+    worker.ts              request worker + job orchestrator
+    admin.ts               /admin portal and control-plane APIs
+  bot.ts                   Teams adapter: normalize, transcribe, enqueue
+  channels/                Photon iMessage, delivery, acknowledgements
+  pipeline.ts              processCapture; called by the worker, not adapters
   services/
+    requestQueue.ts        Cosmos agent-requests
+    requestWorker.ts       claim → processCapture → store result
+    requestDeliveryWorker.ts  gateway pump back to the conversation
     router.ts              model routing: task class → deployment, escalation
-    agent.ts               triage (cheap tier) + agentic tool loop (standard)
+    agent.ts               intent (cheap tier) + agentic tool loop (standard)
     transcription.ts       Azure AI Speech fast transcription
     brain.ts               Blob markdown + Cosmos metadata/vectors + recall
     scheduler.ts           jobs-as-data: cron parsing, due-job queries
@@ -86,7 +106,7 @@ src/
     mcpClient.ts           MCP Streamable HTTP client, config-driven discovery
     webResearch.ts         native Tavily search + public page extract
   jobs/
-    orchestrator.ts        single 60s poller: due jobs → agent → proactive msg
+    orchestrator.ts        worker 60s poller: due jobs → agent → proactive msg
   graph/
     types.ts               projects/tasks/people/meetings + typed edges
     store.ts               scoped Cosmos CRUD, hybrid recall, traversal
