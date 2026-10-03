@@ -130,11 +130,11 @@
     "mustClarify": false
   },
   {
-    "name": "ambiguous calendar mutation clarifies",
+    "name": "own calendar move is an act",
     "input": "Move my next meeting with Joe to Friday.",
-    "expectedDisposition": "clarify",
-    "expectedKinds": ["clarify"],
-    "mustClarify": true
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["act"],
+    "mustClarify": false
   },
   {
     "name": "quoted calendar mutation is analysis",
@@ -169,6 +169,20 @@
     "input": "Pending original request: Daily check-in for the warranty review\nPending question: What changed on the warranty review?\nCurrent message: done",
     "expectedDisposition": "proceed",
     "expectedKinds": ["act"],
+    "mustClarify": false
+  },
+  {
+    "name": "explicit plan evaluation is a read",
+    "input": "What do you think of moving the warranty review to Friday?",
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["read"],
+    "mustClarify": false
+  },
+  {
+    "name": "idea filing stays a capture",
+    "input": "Idea: cancel the weekly digest",
+    "expectedDisposition": "proceed",
+    "expectedKinds": ["capture"],
     "mustClarify": false
   }
 ]

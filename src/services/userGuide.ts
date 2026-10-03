@@ -66,7 +66,7 @@ function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideC
     case "capture":
       return block(
         "Personal capture",
-        "Tasks, ideas, and references go into your private second brain. Teams-connected tasks also land in Microsoft To Do. Recent captures in the same chat can be undone. Group chats do not get personal writes.",
+        "Tasks, ideas, and references go into your private second brain. Teams-connected tasks also land in Microsoft To Do. Recent captures in the same chat can be undone. Group chats do not get personal writes. Filing an idea only saves it; asking what I think or to pressure-test a plan makes me check your notes, memory, and shared work and name a disagreement.",
         [
           "Capture: follow up with Morgan on commissioning Friday.",
           "Add a task to call Pat tomorrow.",

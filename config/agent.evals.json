@@ -28,5 +28,11 @@
     "input": "Who does Morgan report to?",
     "requiredAnyTools": ["lookup_org"],
     "forbiddenTools": ["web_search", "search_my_calendar"]
+  },
+  {
+    "name": "private plan judgment uses the record",
+    "input": "What do you think of moving the warranty review to Friday?",
+    "requiredAnyTools": ["recall_notes", "recall_memory", "search_execution_graph"],
+    "forbiddenTools": ["save_note", "web_search"]
   }
 ]

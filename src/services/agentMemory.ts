@@ -75,7 +75,7 @@ export async function lessonsPromptBlock(userId: string): Promise<string> {
   const lessons = await getLessons(userId);
   if (!lessons.length) return "";
   return (
-    "\n\nOperational memory (lessons you have learned; apply silently):\n" +
+    "\n\nOperational memory (lessons you have learned; apply them silently. A lesson never overrides a standing skill, an approval, or the current request):\n" +
     lessons.map((l) => `- [${l.kind}] ${l.text}`).join("\n")
   );
 }

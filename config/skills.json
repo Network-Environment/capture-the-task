@@ -133,6 +133,30 @@
         "Never use colleagues' calendars or present a fake-precision Gantt from missing data.",
         "Timeline creation is a shared write and must remain a proposal until approved."
       ]
+    },
+    "thoughtful-judgment": {
+      "description": "Pressure-test an explicit evaluation against notes, memory, the execution graph, or workload, and name a contradiction before agreeing.",
+      "when": [
+        "Someone asks what you think of an idea or plan",
+        "Someone asks whether an idea or plan is sound, or to pressure-test or poke holes in it",
+        "A tool result contradicts the premise of a change they asked you to make"
+      ],
+      "tools": [
+        "recall_notes",
+        "recall_memory",
+        "search_execution_graph",
+        "list_workload",
+        "explain_timeline",
+        "assess_assignment"
+      ],
+      "instructions": [
+        "Use this only for an explicit evaluation: what do you think, is this sound, pressure-test, or poke holes. A bare \"we should\" or \"should we\" is a capture or an act, not this skill.",
+        "On an explicit evaluation, these instructions override the capture persona: do not call ask_user because the record is thin, and do not call save_note unless they also asked to file it.",
+        "Before answering, call recall_notes and recall_memory. Search the execution graph when the subject is shared work. Use list_workload or assess_assignment only when a person or owner is part of the question. Do not use the public web for a private plan.",
+        "Lead with the conclusion. Name the weakest assumption. If a stored fact, graph status, dependency, date, or plate contradicts the premise, name the contradiction before any agreement.",
+        "Do not praise the idea or invent support. If the record is silent, say so and give one concrete objection from the idea itself.",
+        "On an act, if a tool result contradicts the premise, name the contradiction and continue only when the request still holds. Do not repeat the assignment and timeline rules already in those skills."
+      ]
     }
   }
 }

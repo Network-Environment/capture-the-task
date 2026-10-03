@@ -45,6 +45,20 @@ describe("TaskBrain runtime skills", () => {
     assert.ok(agents.profiles.capture.skills?.includes("user-orientation"));
   });
 
+  it("loads thoughtful judgment on the capture profile", () => {
+    const skill = agentSkillCatalog().find((entry) => entry.name === "thoughtful-judgment");
+    assert.ok(skill);
+    assert.ok(skill.skill.tools.includes("recall_notes"));
+    assert.ok(skill.skill.tools.includes("search_execution_graph"));
+    const prompt = agentSkillsPromptBlock(["thoughtful-judgment"]);
+    assert.match(prompt, /do not call save_note/i);
+    assert.match(prompt, /name the contradiction/i);
+    const agents = loadConfig<{
+      profiles: Record<string, { skills?: string[] }>;
+    }>("agents");
+    assert.ok(agents.profiles.capture.skills?.includes("thoughtful-judgment"));
+  });
+
   it("fails closed when a profile names an unknown skill", () => {
     assert.throws(
       () => agentSkillsPromptBlock(["not-a-skill"]),

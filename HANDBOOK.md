@@ -134,12 +134,16 @@ QUALITY GATE  (no model)  — inboundQuality.ts
 INTENT  (cheap model tier)  — agent.ts::interpretIntent
         one message → IntentPlan {disposition, intents[]}
         help / refuse / clarify STOP. Else risk policy, then execute.
+        An explicit evaluation (what do you think / is this sound / pressure-test)
+        is a read on the capture agent. Filing an idea with no evaluation ask
+        stays a quiet capture.
         Legacy triage() may still classify reads/conversation if the gateway is
         off; it cannot persist notes unless LEGACY_TRIAGE_WRITES_ENABLED=true.
         │
         ├── conversation → natural response; nothing persisted or executed
         ├── task       → Graph → Microsoft To Do (fallback: brain) + note
-        ├── idea/ref   → brain.ts: embed → Blob markdown → Cosmos index
+        ├── idea/ref   → brain.ts: quiet file (title and path); no critique
+        │                embed → Blob markdown → Cosmos index
         │                (Cosmos failure deletes the blob)
         ├── question   → brain.ts::recall (vector) → synthesis tier answer
         ├── action     → AGENT LOOP; PMO/Smartsheet wording uses the pmo profile
@@ -503,7 +507,7 @@ genuinely separate requests, records explicitness and confidence, and assigns
 `proceed`, `clarify`, `help`, or `refuse` before execution. Invalid output fails
 closed to clarification. Clear reversible personal captures proceed; shared,
 destructive, scheduled, costly, or broad operations are parked with a preview
-for approval. Read requests go to the tool-capable agent with a read-only
+for approval. An explicit evaluation — what do you think, is this sound, pressure-test, poke holes — is a read on the capture profile and uses the thoughtful-judgment skill. A bare “we should” is not that read. Filing an idea with no evaluation ask stays a quiet capture. Read requests go to the tool-capable agent with a read-only
 envelope; the model chooses among the user guide, live calendar, meeting summaries, memory,
 execution graph, org, and PMO tools from their capability descriptions rather
 than from phrase-specific routing. Production enforcement is on:
