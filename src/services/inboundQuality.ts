@@ -1,6 +1,6 @@
 import type { SessionTurn } from "./session";
 import type { IntentPlan } from "./intent";
-import { envFlag } from "../config";
+import { envFlag, PRODUCTION_FLAG_DEFAULTS } from "../config";
 
 export type MessageDisposition = "proceed" | "clarify" | "help" | "refuse";
 
@@ -135,7 +135,7 @@ export function assessInboundQuality(
   hasSummary = false
 ): InboundQualityResult {
   const trimmed = text.trim();
-  if (!envFlag("INBOUND_QUALITY_GATE_ENABLED", true)) {
+  if (!envFlag("INBOUND_QUALITY_GATE_ENABLED", PRODUCTION_FLAG_DEFAULTS.INBOUND_QUALITY_GATE_ENABLED)) {
     return { disposition: "proceed", reason: "understood" };
   }
 

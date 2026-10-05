@@ -5,6 +5,8 @@
  * Adaptive Card. All capture logic lives in src/pipeline.ts.
  */
 import { ActivityHandler, TurnContext, Attachment } from "botbuilder";
+import { InvokeException } from "botbuilder-core";
+import { StatusCodes } from "botframework-schema";
 import { downloadAudio } from "./services/transcription";
 import { saveConversationRef } from "./services/conversations";
 import { acceptInboundMessage } from "./channels/acceptInbound";
@@ -18,6 +20,7 @@ import {
   stripBotMention,
 } from "./channels/teamsText";
 import { handleWorkCardAction } from "./work/assign";
+import { completeGraphSignIn, graphConnectionName } from "./services/graphTasks";
 
 const AUDIO_TYPES = [
   "audio/mp4", "audio/mpeg", "audio/wav", "audio/aac", "audio/ogg",
@@ -140,15 +143,39 @@ export class TaskBrainBot extends ActivityHandler {
       for (const m of context.activity.membersAdded ?? []) {
         if (m.id !== context.activity.recipient.id) {
           await context.sendActivity(
-            "Hey — I'm TaskBrain. Send me anything: a voice memo from your phone, a half-formed idea, a task. " +
-              "I'll transcribe it, figure out what it is, and file it. Ask me things like " +
-              "\"what did I capture about the substation project?\" to recall. " +
-              "In a team channel, @mention me."
+            "Hey — I'm TaskBrain. Send a voice memo, a task, or a question. Ask “what can you do?” and I’ll walk what I can do, and what is still limited. " +
+              "When you need Microsoft 365, I’ll send a sign-in card in this chat. One sign-in covers Teams and iMessage. " +
+              "In a team channel, @mention me. Group chats can look things up, but they don’t save or assign work."
           );
         }
       }
       await next();
     });
+
+    this.onTokenResponseEvent(async (context, next) => {
+      const token = await completeGraphSignIn(context);
+      if (token) {
+        await context.sendActivity(
+          "Signed in. Ask again and I’ll use your calendar, mail, files, and To Do."
+        );
+      }
+      await next();
+    });
+  }
+
+  protected async onSignInInvoke(context: TurnContext): Promise<void> {
+    const token = await completeGraphSignIn(context);
+    if (!token) {
+      const value = (context.activity.value ?? {}) as { id?: string };
+      throw new InvokeException(StatusCodes.PRECONDITION_FAILED, {
+        id: value.id,
+        connectionName: graphConnectionName(),
+        failureDetail: "The bot is unable to exchange token.",
+      });
+    }
+    await context.sendActivity(
+      "Signed in. Ask again and I’ll use your calendar, mail, files, and To Do."
+    );
   }
 }
 

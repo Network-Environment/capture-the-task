@@ -110,6 +110,10 @@ param planSku string = 'B1'
 
 var planAlwaysOn = planSku != 'F1'
 
+// Stable internal bearer for worker → gateway delivery. Not the admin app secret:
+// that credential can sign in as the admin app, and this one can only post a message.
+var deliveryGatewayToken = concat(uniqueString(resourceGroup().id, appName, 'delivery-gateway-a'), uniqueString(resourceGroup().id, appName, 'delivery-gateway-b'))
+
 @description('Immutable container tag deployed to App Service. CI passes the Git commit SHA.')
 param containerImageTag string = 'bootstrap'
 
@@ -748,7 +752,7 @@ resource app 'Microsoft.Web/sites@2024-04-01' = {
       appSettings: concat(runtimeAppSettings, [
         { name: 'TASKBRAIN_ROLE', value: 'gateway' }
         { name: 'ADMIN_BASE_URL', value: 'https://admin-${appName}-${suffix}.azurewebsites.net' }
-        { name: 'DELIVERY_GATEWAY_TOKEN', value: adminAppSecret }
+        { name: 'DELIVERY_GATEWAY_TOKEN', value: deliveryGatewayToken }
       ])
     }
   }
@@ -804,7 +808,7 @@ resource workerApp 'Microsoft.Web/sites@2024-04-01' = {
       appSettings: concat(runtimeAppSettings, [
         { name: 'TASKBRAIN_ROLE', value: 'worker' }
         { name: 'DELIVERY_GATEWAY_URL', value: 'https://${app.properties.defaultHostName}' }
-        { name: 'DELIVERY_GATEWAY_TOKEN', value: adminAppSecret }
+        { name: 'DELIVERY_GATEWAY_TOKEN', value: deliveryGatewayToken }
       ])
     }
   }

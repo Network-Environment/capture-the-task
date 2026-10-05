@@ -41,11 +41,26 @@ export interface RecallHit {
   score: number;
 }
 
+let saveNoteForTests:
+  | ((
+      userId: string,
+      n: NoteInput,
+      attribution?: Partial<ActivityAttribution>
+    ) => Promise<{ id: string; path: string }>)
+  | undefined;
+
+export function setSaveNoteForTests(
+  fn: NonNullable<typeof saveNoteForTests> | undefined
+): void {
+  saveNoteForTests = fn;
+}
+
 export async function saveNote(
   userId: string,
   n: NoteInput,
   attribution: Partial<ActivityAttribution> = {}
 ): Promise<{ id: string; path: string }> {
+  if (saveNoteForTests) return saveNoteForTests(userId, n, attribution);
   const now = new Date();
   const id = `${now.getTime()}-${slug(n.title).slice(0, 40)}`;
   const path = `${userId}/${now.toISOString().slice(0, 7)}/${id}.md`;

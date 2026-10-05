@@ -20,6 +20,21 @@ const cache = new Map<string, unknown>();
  * type "true"/"false", so parsing must be case-insensitive. Unset or
  * unrecognized values return the default.
  */
+/**
+ * Defaults used when an app setting is missing. These match the Bicep
+ * parameters and the deploy workflow. A stripped environment must not fall
+ * back to shadow mode or skip approvals.
+ */
+export const PRODUCTION_FLAG_DEFAULTS = {
+  INTENT_GATEWAY_ENABLED: true,
+  INTENT_SHADOW_MODE: false,
+  CLARIFICATION_ENFORCEMENT_ENABLED: true,
+  UNIFIED_ACTION_POLICY_ENABLED: true,
+  LEGACY_TRIAGE_WRITES_ENABLED: false,
+  INBOUND_QUALITY_GATE_ENABLED: true,
+  EXECUTION_GRAPH_WRITES_ENABLED: false,
+} as const;
+
 export function envFlag(name: string, defaultValue: boolean): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
   if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;

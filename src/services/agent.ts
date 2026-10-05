@@ -234,12 +234,30 @@ function recentMessages(
   return messages;
 }
 
+let interpretIntentForTests:
+  | ((
+      text: string,
+      recent: SessionTurn[],
+      attribution?: Partial<ActivityAttribution>,
+      history?: PromptHistory
+    ) => Promise<IntentPlan>)
+  | undefined;
+
+export function setInterpretIntentForTests(
+  fn: NonNullable<typeof interpretIntentForTests> | undefined
+): void {
+  interpretIntentForTests = fn;
+}
+
 export async function interpretIntent(
   text: string,
   recent: SessionTurn[],
   attribution: Partial<ActivityAttribution> = {},
   history: PromptHistory = {}
 ): Promise<IntentPlan> {
+  if (interpretIntentForTests) {
+    return interpretIntentForTests(text, recent, attribution, history);
+  }
   const readCapabilities = nativeToolCatalog()
     .filter((tool) => operationMetadata(tool.name).effect === "read")
     .map((tool) => `- ${tool.name}: ${tool.description}`)
@@ -420,6 +438,22 @@ function filterTools(all: ChatCompletionTool[], allow: "*" | string[]): ChatComp
 
 const MAX_TOOL_ROUNDS = 8;
 
+let runAgentForTests:
+  | ((
+      ctx: ToolContext,
+      userMessage: string,
+      profileName: string | undefined,
+      recent: SessionTurn[],
+      history: PromptHistory
+    ) => Promise<string>)
+  | undefined;
+
+export function setRunAgentForTests(
+  fn: NonNullable<typeof runAgentForTests> | undefined
+): void {
+  runAgentForTests = fn;
+}
+
 export async function runAgent(
   ctx: ToolContext,
   userMessage: string,
@@ -427,6 +461,9 @@ export async function runAgent(
   recent: SessionTurn[] = [],
   history: PromptHistory = {}
 ): Promise<string> {
+  if (runAgentForTests) {
+    return runAgentForTests(ctx, userMessage, profileName, recent, history);
+  }
   const { name, profile } = getProfile(profileName);
   const startedAt = Date.now();
   let tools = filterTools(await allToolDefinitions(), profile.tools);

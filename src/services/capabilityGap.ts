@@ -17,6 +17,14 @@ export const FILES_UNAVAILABLE =
 export const GRAPH_DISABLED = "Execution graph is disabled.";
 export const GRAPH_WRITES_OFF =
   "Execution graph writes are disabled during read-only rollout.";
+export const GRAPH_SIGN_IN_REQUIRED = "Microsoft 365 sign-in is required.";
+
+const SIGN_IN_FAILURE =
+  /user not signed in to Graph|no token client|Microsoft 365 sign-in is required|Microsoft 365 lookup failed:.*(?:not signed in|no token client)/i;
+
+export function isGraphSignInFailure(message: string): boolean {
+  return message === GRAPH_SIGN_IN_REQUIRED || SIGN_IN_FAILURE.test(message);
+}
 
 const ENVELOPE_GAP =
   /^NOT_ALLOWED: \S+ is outside this job's approved tool envelope\.$/;
@@ -88,6 +96,13 @@ export function classifyCapabilityBoundary(
   if (message === FILES_UNAVAILABLE) {
     return {
       capability: "read or change your files",
+      limit: "That needs the one-time Microsoft sign-in, which happens in Teams. After that it works in every chat.",
+      alternative: "sign in once in Teams, then ask again here",
+    };
+  }
+  if (isGraphSignInFailure(message)) {
+    return {
+      capability: "use your Microsoft 365 account",
       limit: "That needs the one-time Microsoft sign-in, which happens in Teams. After that it works in every chat.",
       alternative: "sign in once in Teams, then ask again here",
     };

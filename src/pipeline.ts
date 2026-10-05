@@ -26,7 +26,7 @@ import { getOpenQuestion, setPendingClarification, openQuestionExpired, isUndoCo
 import { recordConversationTurn } from "./services/sessionFold";
 import { logActivity } from "./services/activityLog";
 import { handleApprovalCommand } from "./services/approvals";
-import { maybeProposeSheetUpdate } from "./services/smartsheet";
+import { agentProfileFor, maybeProposeSheetUpdate } from "./services/smartsheet";
 import { Channel } from "./channels/types";
 import { graphEnabled, searchExecutionGraph } from "./graph/store";
 import { canViewMeetings } from "./meetings/access";
@@ -47,7 +47,7 @@ import {
 import { claimInboundEvent, finishInboundEvent } from "./services/inboundReceipts";
 import { assessInboundQuality, restrainShortReply } from "./services/inboundQuality";
 import { userHasPendingCheckIn } from "./org/checkins";
-import { envFlag } from "./config";
+import { envFlag, PRODUCTION_FLAG_DEFAULTS } from "./config";
 
 export interface CaptureInput {
   userId: string; // canonical user id (Entra object id) — channels must resolve to this
@@ -303,8 +303,8 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     detail: { source, channel, chars: text.length },
   });
 
-  const shadow = envFlag("INTENT_SHADOW_MODE", true);
-  const enabled = envFlag("INTENT_GATEWAY_ENABLED", true);
+  const shadow = envFlag("INTENT_SHADOW_MODE", PRODUCTION_FLAG_DEFAULTS.INTENT_SHADOW_MODE);
+  const enabled = envFlag("INTENT_GATEWAY_ENABLED", PRODUCTION_FLAG_DEFAULTS.INTENT_GATEWAY_ENABLED);
   let plan: IntentPlan | undefined;
   if (enabled || shadow) {
     const interpretationText = pending
@@ -385,7 +385,10 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     }
     if (
       planNeedsClarification(plan) &&
-      envFlag("CLARIFICATION_ENFORCEMENT_ENABLED", false)
+      envFlag(
+        "CLARIFICATION_ENFORCEMENT_ENABLED",
+        PRODUCTION_FLAG_DEFAULTS.CLARIFICATION_ENFORCEMENT_ENABLED
+      )
     ) {
       const question = withExpiredChatNote(
         plan.clarification ??
@@ -448,7 +451,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
 
   const captureKinds = new Set(["task", "idea", "reference"]);
   if (
-    !envFlag("LEGACY_TRIAGE_WRITES_ENABLED", false) &&
+    !envFlag("LEGACY_TRIAGE_WRITES_ENABLED", PRODUCTION_FLAG_DEFAULTS.LEGACY_TRIAGE_WRITES_ENABLED) &&
     (captureKinds.has(kind.kind) || kind.kind === "followup")
   ) {
     const body = withExpiredChatNote(
@@ -642,7 +645,13 @@ async function executeIntent(
         getGraphToken: input.getGraphToken,
         traceId: input.traceId,
     };
-    const result = await runAgent(ctx, intent.standalone, undefined, recent, history);
+    const result = await runAgent(
+      ctx,
+      intent.standalone,
+      agentProfileFor("action", intent.standalone),
+      recent,
+      history
+    );
     return agentOutbound(ctx, result, "Done");
   }
   return {
@@ -814,7 +823,7 @@ async function execute(
           getGraphToken: input.getGraphToken,
           traceId: input.traceId,
       };
-      const result = await runAgent(ctx, text, undefined, recent, history);
+      const result = await runAgent(ctx, text, agentProfileFor("action", text), recent, history);
       return agentOutbound(ctx, result, "Done");
     }
 

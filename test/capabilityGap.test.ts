@@ -7,7 +7,9 @@ import {
   GROUP_CHAT_GAP,
   UNMET_TITLE,
   capabilityGapOutbound,
+  GRAPH_SIGN_IN_REQUIRED,
   classifyCapabilityBoundary,
+  isGraphSignInFailure,
   resetCapabilityGapNotes,
   subscribeCapabilityGaps,
 } from "../src/services/capabilityGap";
@@ -181,6 +183,16 @@ describe("capability gaps", () => {
     } finally {
       stop();
     }
+  });
+
+  it("turns a raw Graph sign-in failure into the guided reply", () => {
+    assert.equal(isGraphSignInFailure("user not signed in to Graph"), true);
+    assert.equal(isGraphSignInFailure("Microsoft 365 lookup failed: user not signed in to Graph"), true);
+    assert.equal(isGraphSignInFailure("Outlook calendar lookup failed: user not signed in to Graph"), true);
+    assert.equal(isGraphSignInFailure(GRAPH_SIGN_IN_REQUIRED), true);
+    const gap = classifyCapabilityBoundary("Microsoft 365 lookup failed: user not signed in to Graph");
+    assert.equal(gap?.capability, "use your Microsoft 365 account");
+    assert.match(gap?.alternative ?? "", /sign in once in Teams/);
   });
 
   it("handbook points operators at unmet asks and keeps policy refusals as codes", () => {

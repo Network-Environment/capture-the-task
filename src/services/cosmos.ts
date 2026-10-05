@@ -1,6 +1,15 @@
 import { CosmosClient, type Container } from "@azure/cosmos";
 
 let client: CosmosClient | undefined;
+let containerOverride: ((name: string) => Container) | undefined;
+
+/** Test seam. Production leaves this unset. */
+export function useCosmosContainerForTests(
+  factory: ((name: string) => Container) | undefined
+): void {
+  containerOverride = factory;
+  client = undefined;
+}
 
 export function cosmosConfigured(): boolean {
   return Boolean(process.env.COSMOS_ENDPOINT && process.env.COSMOS_KEY);
@@ -19,6 +28,7 @@ export function getCosmosClient(): CosmosClient {
 }
 
 export function cosmosContainer(name: string): Container {
+  if (containerOverride) return containerOverride(name);
   return getCosmosClient()
     .database(process.env.COSMOS_DB ?? "taskbrain")
     .container(name);

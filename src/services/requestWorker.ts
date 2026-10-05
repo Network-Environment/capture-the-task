@@ -6,10 +6,12 @@ import {
 import { processCapture, type Outbound } from "../pipeline";
 import { createTodoTask, getGraphUserToken, graphAccessForUser } from "./graphTasks";
 import { logActivity } from "./activityLog";
+import { alertAdmin } from "./alerts";
 import {
   claimNextAgentRequest,
   completeAgentRequest,
   getAgentRequest,
+  listDueQueuedRequests,
   markAgentRequestFailed,
   retryAgentRequest,
   type QueuedAgentRequest,
@@ -27,6 +29,22 @@ const REQUEST_DEADLINE_MS = Number(process.env.REQUEST_DEADLINE_MS ?? 240_000);
 let timer: ReturnType<typeof setInterval> | undefined;
 let startTimer: ReturnType<typeof setTimeout> | undefined;
 let running = false;
+const alertedStale = new Set<string>();
+
+async function reportStaleQueue(): Promise<void> {
+  try {
+    const stale = await listDueQueuedRequests();
+    for (const request of stale) {
+      if (alertedStale.has(request.id)) continue;
+      alertedStale.add(request.id);
+      await alertAdmin(
+        `Queued request ${request.id} on ${request.channel} has been waiting since ${request.createdAt}. The user already received an acknowledgement.`
+      );
+    }
+  } catch (err) {
+    console.error("[request-worker] stale-queue check failed:", err);
+  }
+}
 
 class RequestDeadline extends Error {
   constructor(id: string, ms: number) {
@@ -72,6 +90,8 @@ export async function tick(
   running = true;
   try {
     const request = await claimNextAgentRequest();
+    if (request) alertedStale.delete(request.id);
+    await reportStaleQueue();
     if (request) await processRequest(adapter, botAppId, request);
   } catch (err) {
     console.error("[request-worker] tick failed:", err);

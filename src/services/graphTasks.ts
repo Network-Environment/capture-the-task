@@ -1,32 +1,146 @@
 /**
- * Microsoft To Do task creation via Graph, using the Bot Service OAuth
- * connection (delegated Tasks.ReadWrite). If the user hasn't consented yet,
- * this throws and the bot falls back to filing the task in the brain — the
- * capture is never lost to an auth prompt.
- *
- * To enable: add an OAuth connection named GRAPH_CONNECTION_NAME on the Azure
- * Bot resource pointing at the same Entra app, scope Tasks.ReadWrite.
+ * Microsoft 365 access via the Bot Service OAuth connection. A missing token
+ * sends one sign-in card in a personal Teams chat, then retries the delegated
+ * token. The capture still lands in the brain if the user has not finished
+ * signing in.
  */
 import { CloudAdapter, type ConversationReference, TurnContext } from "botbuilder";
 import { UserTokenClient } from "botframework-connector";
+import type { SignInUrlResponse, TokenExchangeRequest, TokenResponse } from "botframework-schema";
+import { isPersonalTeamsConversation } from "../channels/teamsText";
 import { getConversationRef } from "./conversations";
 
-const CONNECTION = process.env.GRAPH_CONNECTION_NAME ?? "graph-connection";
+export const GRAPH_NOT_SIGNED_IN = "user not signed in to Graph";
+export const GRAPH_SIGN_IN_TEXT =
+  "Sign in once so I can use your calendar, mail, files, and To Do. After that, Teams and iMessage both work.";
+
+const SIGN_IN_SENT = "taskbrain.graphSignInCardSent";
+
+export function graphConnectionName(): string {
+  return process.env.GRAPH_CONNECTION_NAME ?? "graph-connection";
+}
+
+export class GraphSignInRequired extends Error {
+  constructor() {
+    super(GRAPH_NOT_SIGNED_IN);
+    this.name = "GraphSignInRequired";
+  }
+}
+
+type TokenClient = Pick<UserTokenClient, "getUserToken" | "getSignInResource" | "exchangeToken">;
+
+function tokenClient(context: TurnContext): TokenClient | undefined {
+  return context.turnState.get<TokenClient>((context.adapter as { UserTokenClientKey?: string }).UserTokenClientKey);
+}
+
+export function graphOAuthAttachment(
+  connectionName: string,
+  resource: SignInUrlResponse
+): { contentType: string; content: Record<string, unknown> } | undefined {
+  if (!resource.signInLink) return undefined;
+  return {
+    contentType: "application/vnd.microsoft.card.oauth",
+    content: {
+      text: GRAPH_SIGN_IN_TEXT,
+      connectionName,
+      tokenExchangeResource: resource.tokenExchangeResource,
+      tokenPostResource: resource.tokenPostResource,
+      buttons: [{ type: "signin", title: "Sign in", value: resource.signInLink }],
+    },
+  };
+}
+
+/** Exchange a Teams SSO token when present, then read the stored delegated token. */
+export async function exchangeGraphSignIn(
+  client: Pick<UserTokenClient, "getUserToken" | "exchangeToken">,
+  input: {
+    userId: string;
+    channelId: string;
+    connectionName: string;
+    activityName?: string;
+    magicCode?: string;
+    exchangeToken?: string;
+  }
+): Promise<string | undefined> {
+  let exchanged: TokenResponse | undefined;
+  if (input.activityName === "signin/tokenExchange" && input.exchangeToken) {
+    const request: TokenExchangeRequest = { token: input.exchangeToken };
+    exchanged = await client.exchangeToken(
+      input.userId,
+      input.connectionName,
+      input.channelId,
+      request
+    );
+    if (!exchanged?.token) return undefined;
+  }
+  const stored = await client.getUserToken(
+    input.userId,
+    input.connectionName,
+    input.channelId,
+    input.magicCode ?? ""
+  );
+  return stored?.token || exchanged?.token || undefined;
+}
+
+export async function sendGraphSignInCard(context: TurnContext): Promise<boolean> {
+  if (context.turnState.get(SIGN_IN_SENT)) return false;
+  if (!isPersonalTeamsConversation(context.activity.conversation?.conversationType)) return false;
+  const client = tokenClient(context);
+  const userId = context.activity.from?.id;
+  if (!client || !userId) return false;
+  try {
+    const resource = await client.getSignInResource(graphConnectionName(), context.activity, "");
+    const attachment = graphOAuthAttachment(graphConnectionName(), resource);
+    if (!attachment) return false;
+    context.turnState.set(SIGN_IN_SENT, true);
+    await context.sendActivity({ attachments: [attachment] });
+    return true;
+  } catch (err) {
+    console.error("[graph] sign-in card failed:", err);
+    return false;
+  }
+}
+
+async function readStoredToken(context: TurnContext, magicCode = ""): Promise<string | undefined> {
+  const client = tokenClient(context);
+  const userId = context.activity.from?.id;
+  if (!client || !userId) return undefined;
+  const tokenResponse = await client.getUserToken(
+    userId,
+    graphConnectionName(),
+    context.activity.channelId,
+    magicCode
+  );
+  return tokenResponse?.token || undefined;
+}
+
+/** Prompt once, then retry. Throws when the user still has no delegated token. */
+export async function ensureGraphUserToken(context: TurnContext): Promise<string> {
+  const existing = await readStoredToken(context);
+  if (existing) return existing;
+  await sendGraphSignInCard(context);
+  const retried = await readStoredToken(context);
+  if (retried) return retried;
+  throw new GraphSignInRequired();
+}
+
+export async function completeGraphSignIn(context: TurnContext): Promise<string | undefined> {
+  const client = tokenClient(context);
+  const userId = context.activity.from?.id;
+  if (!client || !userId) return undefined;
+  const value = (context.activity.value ?? {}) as { state?: string; token?: string };
+  return exchangeGraphSignIn(client, {
+    userId,
+    channelId: context.activity.channelId,
+    connectionName: graphConnectionName(),
+    activityName: context.activity.name,
+    magicCode: value.state,
+    exchangeToken: value.token,
+  });
+}
 
 export async function getGraphUserToken(context: TurnContext): Promise<string> {
-  const tokenClient = context.turnState.get<UserTokenClient>(
-    (context.adapter as any).UserTokenClientKey
-  );
-  if (!tokenClient) throw new Error("no token client");
-
-  const tokenResponse = await tokenClient.getUserToken(
-    context.activity.from.id,
-    CONNECTION,
-    context.activity.channelId,
-    ""
-  );
-  if (!tokenResponse?.token) throw new Error("user not signed in to Graph");
-  return tokenResponse.token;
+  return ensureGraphUserToken(context);
 }
 
 /** The requester's Teams sign-in, usable from any channel that maps to the same user. */

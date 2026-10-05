@@ -326,6 +326,41 @@ export async function markAgentRequestFailed(
   });
 }
 
+/** A due request that is still queued after the user was told work had started. */
+export const STALE_QUEUED_REQUEST_MS = 2 * 60_000;
+
+export function queuedRequestIsStale(
+  request: Pick<QueuedAgentRequest, "status" | "createdAt" | "availableAt">,
+  now = new Date(),
+  thresholdMs = STALE_QUEUED_REQUEST_MS
+): boolean {
+  if (request.status !== "queued") return false;
+  const available = Date.parse(request.availableAt);
+  const created = Date.parse(request.createdAt);
+  if (!Number.isFinite(available) || !Number.isFinite(created)) return false;
+  if (available > now.getTime()) return false;
+  return now.getTime() - created >= thresholdMs;
+}
+
+export async function listDueQueuedRequests(now = new Date()): Promise<QueuedAgentRequest[]> {
+  const cutoff = new Date(now.getTime() - STALE_QUEUED_REQUEST_MS).toISOString();
+  const { resources } = await requests()
+    .items.query<QueuedAgentRequest>({
+      query: `SELECT c.id, c.userId, c.channel, c.status, c.createdAt, c.availableAt FROM c
+        WHERE c.bucket = @bucket
+          AND c.status = "queued"
+          AND c.availableAt <= @now
+          AND c.createdAt <= @cutoff`,
+      parameters: [
+        { name: "@bucket", value: BUCKET },
+        { name: "@now", value: now.toISOString() },
+        { name: "@cutoff", value: cutoff },
+      ],
+    })
+    .fetchAll();
+  return resources.filter((request) => queuedRequestIsStale(request, now));
+}
+
 async function replaceRequest(
   request: QueuedAgentRequest,
   patch: Partial<QueuedAgentRequest>

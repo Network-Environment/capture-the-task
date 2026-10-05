@@ -37,8 +37,10 @@ import {
   CALENDAR_UNAVAILABLE,
   FILES_UNAVAILABLE,
   GRAPH_DISABLED,
+  GRAPH_SIGN_IN_REQUIRED,
   GRAPH_WRITES_OFF,
   MAIL_UNAVAILABLE,
+  isGraphSignInFailure,
   classifyCapabilityBoundary,
   recordCapabilityGap,
 } from "../services/capabilityGap";
@@ -106,7 +108,7 @@ import {
   type CheckInUpdate,
 } from "../org/checkins";
 import { formatUserGuide, USER_GUIDE_TOPICS } from "../services/userGuide";
-import { envFlag } from "../config";
+import { envFlag, PRODUCTION_FLAG_DEFAULTS } from "../config";
 import { setPendingClarification } from "../services/session";
 
 export interface ToolContext {
@@ -1411,6 +1413,9 @@ export async function dispatch(
         `NOT_ALLOWED: ${name} is outside this job's approved tool envelope.`
       );
     }
+    if (name.startsWith("browser__")) {
+      return "Public pages are read with read_public_page. TaskBrain does not drive a browser.";
+    }
     if (name === "schedule_job" && !Array.isArray(args.allowedTools)) {
       args = {
         ...args,
@@ -1434,7 +1439,7 @@ export async function dispatch(
           allowActions: false,
         }),
       } satisfies AuthorizationContext);
-    if (!options.approved && envFlag("UNIFIED_ACTION_POLICY_ENABLED", false)) {
+    if (!options.approved && envFlag("UNIFIED_ACTION_POLICY_ENABLED", PRODUCTION_FLAG_DEFAULTS.UNIFIED_ACTION_POLICY_ENABLED)) {
       const policy = evaluateOperation(operation, authorization);
       void logActivity({
         type: "policy",
@@ -1467,7 +1472,7 @@ export async function dispatch(
     }
     if (
       !options.approved &&
-      !envFlag("UNIFIED_ACTION_POLICY_ENABLED", false) &&
+      !envFlag("UNIFIED_ACTION_POLICY_ENABLED", PRODUCTION_FLAG_DEFAULTS.UNIFIED_ACTION_POLICY_ENABLED) &&
       ((isMcpTool(name) && requiresApproval(name)) || nativeConfirmTools.has(name))
     ) {
       const id = await parkAction(ctx.userId, name, args, {
@@ -1475,9 +1480,6 @@ export async function dispatch(
         authorization,
       });
       return approvalMessage(id, name, args);
-    }
-    if (name.startsWith("browser__")) {
-      return "Public pages are read with read_public_page. TaskBrain does not drive a browser.";
     }
     ctx.toolTrace = ctx.toolTrace ?? [];
     if (name !== "save_skill") ctx.toolTrace.push(name);
@@ -1609,7 +1611,7 @@ export async function dispatch(
             limit: args.limit == null ? undefined : Number(args.limit),
           });
         } catch (err) {
-          return `Outlook calendar lookup failed: ${(err as Error).message}`;
+          return graphToolFailure(ctx, err, "Outlook calendar lookup failed");
         }
       }
       case "list_commitments":
@@ -2096,7 +2098,7 @@ export async function dispatch(
     }
   } catch (err) {
     // Tool errors go back to the model as text so it can recover or report.
-    return `Tool ${name} failed: ${(err as Error).message}`;
+    return graphToolFailure(ctx, err, `Tool ${name} failed`);
   }
 }
 
@@ -2142,8 +2144,14 @@ async function withGraph(
   try {
     return await run(await ctx.getGraphToken());
   } catch (err) {
-    return `Microsoft 365 lookup failed: ${(err as Error).message}`;
+    return graphToolFailure(ctx, err, "Microsoft 365 lookup failed");
   }
+}
+
+function graphToolFailure(ctx: ToolContext, err: unknown, prefix: string): Promise<string> {
+  const message = err instanceof Error ? err.message : String(err);
+  if (isGraphSignInFailure(message)) return presentToolResult(ctx, GRAPH_SIGN_IN_REQUIRED);
+  return Promise.resolve(`${prefix}: ${message}`);
 }
 
 function parseCheckInUpdates(value: unknown): CheckInUpdate[] {

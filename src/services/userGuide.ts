@@ -57,8 +57,27 @@ function formatOverview(ctx: UserGuideContext): string {
     "",
     "Try saying: “Capture: follow up with Morgan on Friday.” or “Who should own the risk register update?”",
     "Shared or scheduled changes come back as a preview you confirm with approve pa-…. Timezone is US Central.",
+    "",
+    currentLimits(ctx),
+    "",
     `Ask about a specific area (${availableAreas(ctx).map((a) => a.topic).join(", ")}) if you want more detail.`,
   ].join("\n");
+}
+
+function currentLimits(ctx: UserGuideContext): string {
+  const lines = [
+    "What is limited right now:",
+    "- Sign in once in the Teams chat when I send the Microsoft card. That unlocks your calendar, mail, files, and To Do here and in iMessage.",
+    "- Undo removes the note from your brain. It does not delete the Microsoft To Do task.",
+    "- Group chats can look things up. They cannot save personal work or assign work.",
+    "- Meeting summaries are only for designated meeting viewers.",
+    "- iMessage works only for phone numbers already linked to a person. Everyone else uses Teams.",
+    "- Smartsheet changes use the organization’s connection, not your personal Smartsheet login.",
+  ];
+  if (!ctx.graphEnabled || !ctx.graphWritesEnabled) {
+    lines.push("- Shared project changes are read-only. I can still search status, owners, and blockers.");
+  }
+  return lines.join("\n");
 }
 
 function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideContext): string {
@@ -71,7 +90,7 @@ function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideC
           "Capture: follow up with Morgan on commissioning Friday.",
           "Add a task to call Pat tomorrow.",
         ],
-        "I will not silently publish a personal capture into the shared project graph."
+        "I will not silently publish a personal capture into the shared project graph. Undo removes the brain note only. It does not delete the Microsoft To Do task."
       );
     case "calendar":
       return block(
@@ -159,7 +178,7 @@ function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideC
           "What’s open on the commissioning risk register?",
           "Open a normal kanban called Launch.",
         ],
-        "A board is for a named effort; a single obligation uses assign work instead."
+        "A board is for a named effort; a single obligation uses assign work instead. Smartsheet changes use the organization’s connection, not your personal Smartsheet login."
       );
     case "schedule":
       return block(

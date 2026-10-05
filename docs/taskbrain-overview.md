@@ -62,6 +62,16 @@ Before named work is assigned, it checks mandate fit and current capacity/load. 
 
 ---
 
+## What is limited right now
+
+- Shared project changes are read-only. Searching status, owners, and blockers still works.
+- Meeting summaries are only for designated meeting viewers. Your own calendar still answers when you met.
+- Group chats can look things up. They do not save personal work or assign work.
+- Undo removes the note from your brain. It does not delete the Microsoft To Do task.
+- iMessage works only for phone numbers already linked. Everyone else uses Teams.
+- Smartsheet changes use the organization’s connection, not your personal Smartsheet login.
+- The first time Microsoft 365 is needed, TaskBrain sends a sign-in card in the personal Teams chat, then retries the sign-in. One sign-in covers Teams and iMessage.
+
 ## Channels and identity
 
 Teams and iMessage use the same tools, including To Do, your calendar, your mail, the shared mailbox, and your files, after a one-time Microsoft sign-in in Teams. Group chats do not get personal writes. That sign-in covers `Calendars.ReadWrite`, `Mail.ReadWrite`, and `Files.ReadWrite.All`.

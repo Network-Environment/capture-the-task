@@ -17,6 +17,12 @@ describe("TaskBrain user guide", () => {
     assert.match(text, /last few hours of this private chat/i);
     assert.match(text, /what you asked it to remember/i);
     assert.match(text, /Ask about a specific area/);
+    assert.match(text, /What is limited right now/);
+    assert.match(text, /does not delete the Microsoft To Do task/);
+    assert.match(text, /designated meeting viewers/);
+    assert.match(text, /phone numbers already linked/);
+    assert.match(text, /organization’s connection/);
+    assert.doesNotMatch(text, /read-only/);
     assert.doesNotMatch(text, /Cosmos|Bicep|MCP|Admin/i);
   });
 
@@ -51,6 +57,7 @@ describe("TaskBrain user guide", () => {
     assert.doesNotMatch(off, /source of truth for project/);
     const overviewOff = formatUserGuide("overview", { ...full, graphEnabled: false });
     assert.doesNotMatch(overviewOff, /Shared projects/);
+    assert.match(overviewOff, /Shared project changes are read-only/);
     const readOnly = formatUserGuide("projects", {
       ...full,
       graphWritesEnabled: false,
