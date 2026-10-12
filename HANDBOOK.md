@@ -94,7 +94,7 @@ scripts/bootstrap.sh (once, out of band)
   │     infra/main.bicep
   │       ├─ creates every resource + 3 Foundry models + Basic ACR
   │       ├─ Easy Auth + Admin/Reader app roles on the web app
-  │       │  (TaskBrain Admin Entra app; /api/messages and /healthz excluded)
+  │       │  (TaskBrain Admin Entra app; /healthz and /readyz excluded)
   │       ├─ gives the App Service system identity AcrPull on ACR
   │       └─ WRITES ALL APP SETTINGS: keys via listKeys() (Cosmos, Storage,
   │          Speech, Foundry), endpoints, deployment names, and the secrets
@@ -104,7 +104,7 @@ scripts/bootstrap.sh (once, out of band)
   ├─ Bicep only retags App Service after that image exists (or keeps the current tag)
   ├─ az acr build → taskbrain:<git-sha> again in the deploy job (idempotent) then linuxFxVersion + restart
   ├─ zip-deploy Flex Consumption Function (meeting ingest timer)
-  └─ smoke test /healthz (retries)
+  └─ smoke test /healthz and /readyz (retries)
                                                                 ▼
 runtime: src/config.ts loads /config/*.json from the container image;
          every process.env read in src/ has a Bicep-written setting.
@@ -695,8 +695,9 @@ order-independent and re-runnable.
   origin; legacy meeting events normalize to internal discovery instead of
   unknown. Auto-refreshes 60s. Add
   viewers in Entra → Enterprise applications → TaskBrain Admin → Users and
-  groups. `/api/messages` and `/healthz` stay anonymous so the bot and CI
-  smoke test keep working.
+  groups. On the admin app, `/healthz` and `/readyz` stay anonymous so App
+  Service probes and the deploy smoke test keep working. The dashboard and
+  admin APIs stay behind Entra.
 - **Execution graph:** `/admin/graph` is an interactive, non-auto-refreshing
   Cytoscape view. Search or filter by type/status/owner, inspect dependencies
   and source evidence, edit TaskBrain-owned projects/tasks, and accept/reject
@@ -947,7 +948,8 @@ logging already support it. Do not pay this tax early.
 - **`/healthz` is green but work is stuck:** `/healthz` is process liveness.
   `/readyz` checks Cosmos and role heartbeats. App Service must keep probing
   `/healthz`; do not point it at `/readyz`, or a Cosmos blip restarts every
-  instance. Deploy fails if `/readyz` is not 200.
+  instance. Deploy fails if `/readyz` is not 200. Admin Easy Auth excludes
+  `/healthz` and `/readyz`; every other admin path requires Entra.
 - **Alerts:** set the Bicep `alertEmail` parameter. Azure Monitor emails
   health, Cosmos availability, and Function failures. TaskBrain still sends
   the existing Teams admin alerts for queue and model failures.
