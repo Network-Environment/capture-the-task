@@ -96,7 +96,7 @@ server.get("/healthz", (_req, res, next) => {
   res.send(200, liveness("gateway"));
   return next();
 });
-server.get("/readyz", async (_req, res, next) => {
+server.get("/readyz", async (_req, res) => {
   if (!cosmosCache || Date.now() - cosmosCache.at > 15_000) {
     cosmosCache = { at: Date.now(), ok: await pingCosmos() };
   }
@@ -105,7 +105,6 @@ server.get("/readyz", async (_req, res, next) => {
   const body = readiness("gateway");
   const ok = body.ok && photonHealthy();
   res.send(ok ? 200 : 503, { ...body, ok });
-  return next();
 });
 
 const port = process.env.PORT || 3978;

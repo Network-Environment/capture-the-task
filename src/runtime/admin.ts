@@ -77,14 +77,13 @@ server.get("/healthz", (_req, res, next) => {
   res.send(200, liveness("admin"));
   return next();
 });
-server.get("/readyz", async (_req, res, next) => {
+server.get("/readyz", async (_req, res) => {
   if (!cosmosCache || Date.now() - cosmosCache.at > 15_000) {
     cosmosCache = { at: Date.now(), ok: await pingCosmos() };
   }
   noteCosmosReady(cosmosCache.ok);
   const body = readiness("admin");
   res.send(body.ok ? 200 : 503, body);
-  return next();
 });
 
 const port = process.env.PORT || 3978;
