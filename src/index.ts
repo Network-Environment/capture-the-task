@@ -1,3 +1,6 @@
+import { initTelemetry } from "./runtime/telemetry";
+import { bindShutdown } from "./runtime/lifecycle";
+
 const role = (process.env.TASKBRAIN_ROLE ?? "gateway").toLowerCase();
 
 const entrypoints: Record<string, () => Promise<unknown>> = {
@@ -8,12 +11,19 @@ const entrypoints: Record<string, () => Promise<unknown>> = {
 
 const start = entrypoints[role];
 if (!start) {
-  throw new Error(
-    `Unknown TASKBRAIN_ROLE "${role}"; expected admin, gateway, or worker.`
-  );
+  console.error(JSON.stringify({ event: "startup_failed", role, message: "unknown role" }));
+  process.exit(1);
 }
 
-void start().catch((err) => {
-  console.error(`[startup:${role}]`, err);
-  process.exitCode = 1;
+void (async () => {
+  await bindShutdown(role);
+  await initTelemetry(role);
+  await start();
+})().catch((err) => {
+  console.error(JSON.stringify({
+    event: "startup_failed",
+    role,
+    message: err instanceof Error ? err.message : String(err),
+  }));
+  process.exit(1);
 });

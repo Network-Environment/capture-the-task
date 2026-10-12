@@ -27,6 +27,16 @@ export function getCosmosClient(): CosmosClient {
   return client;
 }
 
+export async function pingCosmos(): Promise<boolean> {
+  if (!cosmosConfigured()) return false;
+  try {
+    await cosmosContainer("activity").items.query("SELECT TOP 1 c.id FROM c").fetchAll();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function cosmosContainer(name: string): Container {
   if (containerOverride) return containerOverride(name);
   return getCosmosClient()

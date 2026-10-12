@@ -1,4 +1,5 @@
 import { embed } from "../services/router";
+import { delimitUntrusted } from "./trust";
 import type { ActivityAttribution } from "../services/activityLog";
 import { readableBanks } from "./banks";
 import { intervalsOverlap, parseQueryWindow } from "./extract";
@@ -82,7 +83,7 @@ export function recallPromptBlock(result: RecallResult): string {
   const body = formatRecallBlock(result.facts);
   if (!body) return "";
   const cites = result.citations.length ? `\nCitations: ${result.citations.join(", ")}` : "";
-  return `${body}${cites}`;
+  return delimitUntrusted("memory", `${body}${cites}`);
 }
 
 async function rerankFacts(

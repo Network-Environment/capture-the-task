@@ -16,6 +16,8 @@ export interface MemoryFact {
   entityIds: string[];
   source: MemorySource;
   sourceId: string;
+  trust?: "user" | "authoritative" | "inference" | "summary" | "legacy";
+  supersededBy?: string;
   createdAt: string;
   updatedAt: string;
 }

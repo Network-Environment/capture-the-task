@@ -5,7 +5,9 @@
  * dashboard reads this; nothing else in the system depends on it, so logging
  * failures never break the pipeline.
  */
+import { redactUnknown } from "../runtime/redact";
 import { cosmosContainer } from "./cosmos";
+import { currentBehaviorManifest } from "./behaviorVersion";
 
 function activity() {
   return cosmosContainer("activity");
@@ -28,7 +30,10 @@ export type ActivityType =
   | "meeting_discovery"
   | "meeting_summary"
   | "capability_gap"
-  | "error";
+  | "error"
+  | "recovery"
+  | "feedback"
+  | "model_assessment";
 
 export type ActivityOrigin =
   | "user_message"
@@ -58,6 +63,9 @@ export interface ActivityEvent {
   inputMode?: ActivityInputMode;
   trigger?: string;
   traceId?: string;
+  requestId?: string;
+  runId?: string;
+  incidentId?: string;
   detail: Record<string, unknown>;
 }
 
@@ -102,14 +110,19 @@ export async function logActivity(e: ActivityEvent): Promise<void> {
       at: new Date().toISOString(),
       ...e,
       ...attribution,
-      detail: {
+      traceId: e.traceId,
+      requestId: e.requestId,
+      runId: e.runId,
+      incidentId: e.incidentId,
+      behaviorVersion: currentBehaviorManifest().version,
+      detail: redactUnknown({
         ...e.detail,
         origin: attribution.origin,
         channel: attribution.channel,
         ...(attribution.inputMode ? { inputMode: attribution.inputMode } : {}),
         ...(attribution.trigger ? { trigger: attribution.trigger } : {}),
         ...(attribution.traceId ? { traceId: attribution.traceId } : {}),
-      },
+      }) as Record<string, unknown>,
     });
   } catch (err) {
     console.error("[activity] log failed (non-fatal):", err);

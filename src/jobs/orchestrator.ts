@@ -36,21 +36,32 @@ import {
 const POLL_MS = 60_000;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5 * 60_000;
+const JOB_DEADLINE_MS = Number(process.env.REQUEST_DEADLINE_MS ?? 240_000);
 let running = false;
+let timer: ReturnType<typeof setInterval> | undefined;
+let cursor = 0;
 
 export function startOrchestrator(adapter: CloudAdapter, botAppId: string): void {
-  setInterval(() => tick(adapter, botAppId), POLL_MS);
+  if (timer) return;
+  timer = setInterval(() => tick(adapter, botAppId), POLL_MS);
   console.log("[orchestrator] polling every 60s");
+}
+
+export function stopOrchestrator(): void {
+  if (timer) clearInterval(timer);
+  timer = undefined;
 }
 
 export async function tick(adapter: CloudAdapter, botAppId: string): Promise<void> {
   if (running) return;
   running = true;
   try {
-    for (const job of await dueJobs()) {
+    const due = await dueJobs();
+    if (due.length) {
+      const job = due[cursor % due.length];
+      cursor += 1;
       const claimed = await claim(job);
-      if (!claimed) continue; // another instance got it
-      await runJob(adapter, botAppId, claimed);
+      if (claimed) await withDeadline(runJob(adapter, botAppId, claimed), JOB_DEADLINE_MS);
     }
     await runOutcomes(adapter, botAppId);
     await maybeConsolidateObservations();
@@ -231,7 +242,8 @@ async function runJob(_adapter: CloudAdapter, _botAppId: string, job: Job): Prom
     const prefer = (job.conversationRef as { channel?: string } | undefined)?.channel === "imessage"
       ? { channel: "imessage" as const, phone: (job.conversationRef as { phone: string }).phone }
       : undefined;
-    await deliver(job.userId, `⏰ **${job.name}**\n\n${result}`, prefer, { recordTurn: true });
+    const delivered = await deliver(job.userId, `⏰ **${job.name}**\n\n${result}`, prefer, { recordTurn: true });
+    if (!delivered) throw new Error("scheduled job result was not delivered");
     await markRun({ ...job, ...( { retryCount: 0 } as object) } as Job, "ok", result);
     void logActivity({
       type: "job_run",

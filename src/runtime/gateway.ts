@@ -3,8 +3,10 @@ import { TaskBrainBot } from "../bot";
 import { warmAckNames } from "../channels/acknowledge";
 import { imessageUserIds } from "../channels/types";
 import { deliver, initDelivery } from "../channels/deliver";
-import { startPhotonChannel, stopPhotonChannel } from "../channels/photon";
-import { cosmosConfigured } from "../services/cosmos";
+import { stopPhotonChannel, supervisePhotonChannel, photonHealthy } from "../channels/photon";
+import { pingCosmos } from "../services/cosmos";
+import { onStop } from "./lifecycle";
+import { beat, liveness, readiness, noteCosmosReady } from "./health";
 import {
   startRequestDeliveryWorker,
   stopRequestDeliveryWorker,
@@ -17,9 +19,7 @@ const bot = new TaskBrainBot();
 const botAppId = process.env.MicrosoftAppId ?? "";
 
 initDelivery(adapter, botAppId);
-void startPhotonChannel().catch((err) =>
-  console.error("[imessage] failed to start:", err)
-);
+void supervisePhotonChannel();
 startRequestDeliveryWorker(adapter, botAppId);
 
 const warmNames = () =>
@@ -80,14 +80,31 @@ server.post("/internal/deliver", async (req, res) => {
     res.send(400, { delivered: false });
     return;
   }
-  const delivered = await deliver(body.userId, body.text, body.prefer, {
-    recordTurn: body.recordTurn === true,
-  });
-  res.send(200, { delivered });
+  try {
+    const delivered = await deliver(body.userId, body.text, body.prefer, {
+      recordTurn: body.recordTurn === true,
+    });
+    res.send(200, { delivered });
+  } catch (err) {
+    console.error("[gateway] internal deliver failed:", err);
+    res.send(200, { delivered: false });
+  }
 });
 
+let cosmosCache: { at: number; ok: boolean } | undefined;
 server.get("/healthz", (_req, res, next) => {
-  res.send(200, { ok: true, role: "gateway", cosmos: cosmosConfigured() });
+  res.send(200, liveness("gateway"));
+  return next();
+});
+server.get("/readyz", async (_req, res, next) => {
+  if (!cosmosCache || Date.now() - cosmosCache.at > 15_000) {
+    cosmosCache = { at: Date.now(), ok: await pingCosmos() };
+  }
+  noteCosmosReady(cosmosCache.ok, cosmosCache.ok ? "cosmos query succeeded" : "cosmos query failed");
+  beat("gateway", 60_000);
+  const body = readiness("gateway");
+  const ok = body.ok && photonHealthy();
+  res.send(ok ? 200 : 503, { ...body, ok });
   return next();
 });
 
@@ -96,8 +113,5 @@ server.listen(port, () => {
   console.log(`[gateway] listening on :${port}`);
 });
 
-process.on("SIGTERM", async () => {
-  stopRequestDeliveryWorker();
-  await stopPhotonChannel();
-  process.exit(0);
-});
+onStop(() => stopRequestDeliveryWorker());
+onStop(() => stopPhotonChannel());

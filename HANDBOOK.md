@@ -939,3 +939,25 @@ logging already support it. Do not pay this tax early.
 - **Graph canvas is blank but the list works:** verify
   `/admin/assets/graph.js` returns JavaScript. `npm run build` creates the
   local bundle; `npm run dev` builds it once before starting the watcher.
+- **A request was acknowledged but never finished:** open `/admin/recovery`.
+  Processing and delivery are separate. A quarantined request keeps its id for
+  30 days. Replay is allowed only for a production Admin, with a valid CSRF
+  token, when `RECOVERY_REPLAY_ENABLED=true` and no tool call has an unknown
+  outcome. Delivery retry does not rerun the model.
+- **`/healthz` is green but work is stuck:** `/healthz` is process liveness.
+  `/readyz` checks Cosmos and role heartbeats. App Service must keep probing
+  `/healthz`; do not point it at `/readyz`, or a Cosmos blip restarts every
+  instance. Deploy fails if `/readyz` is not 200.
+- **Alerts:** set the Bicep `alertEmail` parameter. Azure Monitor emails
+  health, Cosmos availability, and Function failures. TaskBrain still sends
+  the existing Teams admin alerts for queue and model failures.
+- **Model quality changed:** `/admin/models` shows the real cheap, standard,
+  premium, and embedding deployments. Premium currently aliases standard
+  (`gpt-5-mini`). Recommendations compare quality, tool reliability, latency,
+  and cost per successful outcome. A newer or cheaper model is not promoted
+  automatically. Approve a separate deployment, canary it, and roll back if
+  policy violations, corrections, quarantine, or groundedness regress.
+- **Lessons disappeared from prompts:** missing status means a grandfathered
+  approved lesson. With `MODEL_LEARNING_CANDIDATES_ENABLED=true`, only
+  `approved` lessons are injected. Candidates wait for review.
+

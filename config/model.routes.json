@@ -11,6 +11,12 @@
     "to": "agent",
     "on": ["parse_failure", "low_confidence"]
   },
+  "fallbacks": {
+    "triage": "agent",
+    "ack": "triage",
+    "synthesis": "agent",
+    "digest": "agent"
+  },
   "_notes": [
     "Values name env vars that hold Foundry deployment names, so swapping",
     "models is an app-setting change, not a deploy.",

@@ -101,6 +101,33 @@ param dailyTokenBudget string = '5000000'
 @description('Cron timezone for scheduled jobs')
 param jobsTimezone string = 'America/Chicago'
 
+@description('Record recovery incidents')
+param recoveryIncidentsEnabled bool = true
+
+@description('Stop delivery and processing after the retry cap')
+param recoveryEnforceQuarantine bool = false
+
+@description('Automatically requeue transient meeting transcript failures')
+param recoveryMeetingRetry bool = false
+
+@description('Allow administrators to replay quarantined work')
+param recoveryReplayEnabled bool = false
+
+@description('Repair invalid model output inside a turn')
+param modelRepairEnabled bool = false
+
+@description('Score answers without changing them')
+param modelVerifierShadow bool = true
+
+@description('Store new lessons and skills as review candidates')
+param modelLearningCandidatesEnabled bool = false
+
+@description('Compare candidate behavior without showing it to users')
+param modelBehaviorShadow bool = false
+
+@description('Azure Monitor email recipient. Leave empty to skip alert resources.')
+param alertEmail string = ''
+
 @description('Region for the App Service plan and web app only. Kept separate from `location` because App Service SKU quota is granted per region: this subscription has 0 quota for every Basic/Free SKU in eastus, but centralus and westus2 allow any SKU. Move back to `location` once an eastus B1 quota request is approved.')
 param appLocation string = location
 
@@ -371,6 +398,31 @@ resource agentRequestsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/c
   }
 }
 
+
+resource recoveryIncidentsColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
+  parent: cosmosDb
+  name: 'recovery-incidents'
+  properties: {
+    resource: {
+      id: 'recovery-incidents'
+      partitionKey: { paths: ['/shard'], kind: 'Hash' }
+      defaultTtl: 2592000
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        automatic: true
+        includedPaths: [ { path: '/*' } ]
+        excludedPaths: [ { path: '/"_etag"/?' } ]
+        compositeIndexes: [
+          [
+            { path: '/status', order: 'ascending' }
+            { path: '/kind', order: 'ascending' }
+            { path: '/createdAt', order: 'descending' }
+          ]
+        ]
+      }
+    }
+  }
+}
 
 resource activityColl 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-11-15' = {
   parent: cosmosDb
@@ -715,6 +767,14 @@ var runtimeAppSettings = [
   { name: 'ADMIN_AAD_OBJECT_ID', value: adminAadObjectId }
   { name: 'DAILY_TOKEN_BUDGET', value: dailyTokenBudget }
   { name: 'JOBS_TIMEZONE', value: jobsTimezone }
+  { name: 'RECOVERY_INCIDENTS_ENABLED', value: string(recoveryIncidentsEnabled) }
+  { name: 'RECOVERY_ENFORCE_QUARANTINE', value: string(recoveryEnforceQuarantine) }
+  { name: 'RECOVERY_MEETING_RETRY', value: string(recoveryMeetingRetry) }
+  { name: 'RECOVERY_REPLAY_ENABLED', value: string(recoveryReplayEnabled) }
+  { name: 'MODEL_REPAIR_ENABLED', value: string(modelRepairEnabled) }
+  { name: 'MODEL_VERIFIER_SHADOW', value: string(modelVerifierShadow) }
+  { name: 'MODEL_LEARNING_CANDIDATES_ENABLED', value: string(modelLearningCandidatesEnabled) }
+  { name: 'MODEL_BEHAVIOR_SHADOW', value: string(modelBehaviorShadow) }
   { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
   { name: 'WEBSITES_PORT', value: '3978' }
   { name: 'WEBSITE_HEALTHCHECK_MAXPINGFAILURES', value: '10' }
@@ -1062,6 +1122,134 @@ resource graphConnection 'Microsoft.BotService/botServices/connections@2023-09-1
       { key: 'tenantId', value: tenant().tenantId }
       { key: 'tokenExchangeUrl', value: ' ' }
     ]
+  }
+}
+
+resource alertGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (!empty(alertEmail)) {
+  name: 'ag-${appName}-${suffix}'
+  location: 'global'
+  properties: {
+    groupShortName: 'tbAlert'
+    enabled: true
+    emailReceivers: [
+      {
+        name: 'operator'
+        emailAddress: alertEmail
+        useCommonAlertSchema: true
+      }
+    ]
+  }
+}
+
+resource gatewayHealthAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(alertEmail)) {
+  name: 'health-${app.name}'
+  location: 'global'
+  properties: {
+    description: 'Gateway App Service health check is failing'
+    severity: 2
+    enabled: true
+    scopes: [ app.id ]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT5M'
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'HealthCheck'
+          metricName: 'HealthCheckStatus'
+          metricNamespace: 'Microsoft.Web/sites'
+          operator: 'LessThan'
+          threshold: 100
+          timeAggregation: 'Average'
+          criterionType: 'StaticThresholdCriterion'
+        }
+      ]
+    }
+    actions: [ { actionGroupId: alertGroup.id } ]
+  }
+}
+
+resource workerHealthAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(alertEmail)) {
+  name: 'health-${workerApp.name}'
+  location: 'global'
+  properties: {
+    description: 'Worker App Service health check is failing'
+    severity: 2
+    enabled: true
+    scopes: [ workerApp.id ]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT5M'
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'HealthCheck'
+          metricName: 'HealthCheckStatus'
+          metricNamespace: 'Microsoft.Web/sites'
+          operator: 'LessThan'
+          threshold: 100
+          timeAggregation: 'Average'
+          criterionType: 'StaticThresholdCriterion'
+        }
+      ]
+    }
+    actions: [ { actionGroupId: alertGroup.id } ]
+  }
+}
+
+resource adminHealthAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(alertEmail)) {
+  name: 'health-${adminApp.name}'
+  location: 'global'
+  properties: {
+    description: 'Admin App Service health check is failing'
+    severity: 2
+    enabled: true
+    scopes: [ adminApp.id ]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT5M'
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'HealthCheck'
+          metricName: 'HealthCheckStatus'
+          metricNamespace: 'Microsoft.Web/sites'
+          operator: 'LessThan'
+          threshold: 100
+          timeAggregation: 'Average'
+          criterionType: 'StaticThresholdCriterion'
+        }
+      ]
+    }
+    actions: [ { actionGroupId: alertGroup.id } ]
+  }
+}
+
+resource cosmosAvailabilityAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(alertEmail)) {
+  name: 'cosmos-availability-${uniqueString(cosmos.id)}'
+  location: 'global'
+  properties: {
+    description: 'Cosmos DB availability dropped'
+    severity: 1
+    enabled: true
+    scopes: [ cosmos.id ]
+    evaluationFrequency: 'PT5M'
+    windowSize: 'PT15M'
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'Availability'
+          metricName: 'ServiceAvailability'
+          metricNamespace: 'Microsoft.DocumentDB/databaseAccounts'
+          operator: 'LessThan'
+          threshold: 99
+          timeAggregation: 'Average'
+          criterionType: 'StaticThresholdCriterion'
+        }
+      ]
+    }
+    actions: [ { actionGroupId: alertGroup.id } ]
   }
 }
 

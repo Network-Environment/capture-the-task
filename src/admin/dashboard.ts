@@ -32,6 +32,8 @@ import type {
   TranscriptAvailabilityDoc,
 } from "../meetings/types";
 import { loadConfig } from "../config";
+import { renderModels, renderRecovery } from "./recoveryConsole";
+import { listOpenIncidents } from "../services/recoveryIncidents";
 import { nativeToolCatalog } from "../tools/registry";
 import { connectorCandidates } from "../services/connectorBacklog";
 import {
@@ -306,6 +308,12 @@ async function renderSection(
         : [];
       return renderMemory(signedIn, lessons.resources as Record<string, unknown>[], facts, params);
     }
+    case "recovery": {
+      const incidents = await listOpenIncidents().catch(() => []);
+      return renderRecovery(signedIn, incidents, Boolean(process.env.WEBSITE_INSTANCE_ID && canWrite), meetingCsrfToken("recovery"));
+    }
+    case "models":
+      return renderModels(signedIn);
   }
 }
 

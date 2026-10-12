@@ -16,7 +16,11 @@ import {
   dayStats,
   type ActivityAttribution,
 } from "./activityLog";
+import { compatibleFallback, preserveModelTier } from "./modelHealing";
 import { alertAdmin } from "./alerts";
+import { circuitAllows, circuitFailure, circuitSuccess, CircuitOpenError } from "../runtime/circuits";
+import { classifyFailure } from "../runtime/errors";
+import { currentBehaviorManifest } from "./behaviorVersion";
 
 export type TaskClass = "triage" | "ack" | "agent" | "synthesis" | "digest";
 
@@ -70,8 +74,12 @@ async function refreshBudget(): Promise<void> {
 setInterval(refreshBudget, 5 * 60_000);
 void refreshBudget();
 
-function budgetGuard(task: TaskClass, s: RouteSpec & { model: string }): RouteSpec & { model: string } {
-  if (task === "triage" || task === "ack" || todayTokens < BUDGET) return s;
+function budgetGuard(
+  task: TaskClass,
+  s: RouteSpec & { model: string },
+  purpose?: RouteOptions["purpose"]
+): RouteSpec & { model: string } {
+  if (task === "triage" || task === "ack" || preserveModelTier(purpose) || todayTokens < BUDGET) return s;
   if (!budgetAlerted) {
     budgetAlerted = true;
     void alertAdmin(
@@ -87,6 +95,8 @@ export interface RouteOptions {
   json?: boolean;
   tools?: ChatCompletionTool[];
   attribution?: Partial<ActivityAttribution>;
+  purpose?: "clarification" | "policy" | "mutation" | "recovery" | "verification" | "synthesis";
+  allowFallback?: boolean;
 }
 
 /**
@@ -140,7 +150,7 @@ export async function route(
   messages: ChatCompletionMessageParam[],
   opts: RouteOptions = {}
 ) {
-  const s = budgetGuard(task, spec(task));
+  const s = budgetGuard(task, spec(task), opts.purpose);
   const body = {
     model: s.model,
     messages,
@@ -148,6 +158,7 @@ export async function route(
     ...(opts.tools?.length ? { tools: opts.tools } : {}),
   };
 
+  if (!circuitAllows("foundry")) throw new CircuitOpenError("foundry");
   let caps = capabilitiesFor(s.model);
   let res;
   for (let attempt = 0; ; attempt++) {
@@ -156,13 +167,30 @@ export async function route(
         ...body,
         ...chatSamplingParams(caps, s.maxTokens, s.temperature),
       });
+      circuitSuccess("foundry");
       break;
     } catch (err) {
       const next = attempt < 2 ? capabilitiesFromError(caps, (err as Error).message ?? "") : undefined;
-      if (!next) throw err;
-      caps = next;
-      capabilities.set(s.model, caps);
-      console.log(`[router] ${s.model} needs ${caps.completionParam}, temperature=${caps.allowTemperature}`);
+      if (next) {
+        caps = next;
+        capabilities.set(s.model, caps);
+        console.log(`[router] ${s.model} needs ${caps.completionParam}, temperature=${caps.allowTemperature}`);
+        continue;
+      }
+      if (attempt < 2 && classifyFailure(err) === "transient") {
+        circuitFailure("foundry");
+        await new Promise((resolve) => setTimeout(resolve, 200 * 2 ** attempt));
+        if (!circuitAllows("foundry")) throw new CircuitOpenError("foundry");
+        continue;
+      }
+      if (classifyFailure(err) === "transient") circuitFailure("foundry");
+      const fallback = opts.allowFallback === false
+        ? undefined
+        : compatibleFallback(task, routesConfig as { fallbacks?: Record<string, string> });
+      if (err instanceof CircuitOpenError && fallback && fallback !== task) {
+        return route(fallback as TaskClass, messages, { ...opts, allowFallback: false });
+      }
+      throw err;
     }
   }
   capabilities.set(s.model, caps);
@@ -177,6 +205,8 @@ export async function route(
     detail: {
       task,
       model: s.model,
+      behaviorVersion: currentBehaviorManifest().version,
+      purpose: opts.purpose,
       inputTokens: res.usage?.prompt_tokens ?? 0,
       outputTokens: res.usage?.completion_tokens ?? 0,
     },

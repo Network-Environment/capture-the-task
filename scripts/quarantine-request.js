@@ -3,7 +3,7 @@
  *
  * A request that wedges the worker is re-claimed on every container start,
  * so the app never stays up long enough to drain it. This marks the document
- * terminal (status `failed`) without deleting the audit trail.
+ * terminal (status `quarantined`) without deleting the audit trail.
  *
  * Usage: node scripts/quarantine-request.js <requestId>
  */
@@ -35,7 +35,10 @@ if (!endpoint || !key || !id) {
 
   await container.item(id, "agent").replace({
     ...resource,
-    status: "failed",
+    status: "quarantined",
+    quarantineReason: "permanent",
+    deliveryStatus: "pending",
+    ttl: 30 * 24 * 60 * 60,
     leaseUntil: undefined,
     finishedAt: new Date().toISOString(),
     lastError: "Quarantined: request wedged the worker and was replayed on every restart.",

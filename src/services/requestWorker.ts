@@ -7,15 +7,21 @@ import { processCapture, type Outbound } from "../pipeline";
 import { createTodoTask, getGraphUserToken, graphAccessForUser } from "./graphTasks";
 import { logActivity } from "./activityLog";
 import { alertAdmin } from "./alerts";
+import { classifyFailure } from "../runtime/errors";
+import { beat } from "../runtime/health";
 import {
+  beginRequestRun,
   claimNextAgentRequest,
   completeAgentRequest,
   getAgentRequest,
   listDueQueuedRequests,
   markAgentRequestFailed,
+  quarantineAgentRequest,
   retryAgentRequest,
   type QueuedAgentRequest,
 } from "./requestQueue";
+import { openIncident } from "./recoveryIncidents";
+import { RunFencedError } from "./runFence";
 
 const POLL_MS = Number(process.env.REQUEST_POLL_MS ?? 5_000);
 /**
@@ -29,14 +35,26 @@ const REQUEST_DEADLINE_MS = Number(process.env.REQUEST_DEADLINE_MS ?? 240_000);
 let timer: ReturnType<typeof setInterval> | undefined;
 let startTimer: ReturnType<typeof setTimeout> | undefined;
 let running = false;
-const alertedStale = new Set<string>();
+let lastTickAt = Date.now();
+
+export function requestWorkerHealthy(now = Date.now()): boolean {
+  if (startTimer) return true;
+  if (!timer) return false;
+  if (running && now - lastTickAt > REQUEST_DEADLINE_MS + 30_000) return false;
+  return now - lastTickAt < POLL_MS * 4 + REQUEST_DEADLINE_MS;
+}
 
 async function reportStaleQueue(): Promise<void> {
   try {
     const stale = await listDueQueuedRequests();
     for (const request of stale) {
-      if (alertedStale.has(request.id)) continue;
-      alertedStale.add(request.id);
+      await openIncident({
+        source: "stale-queue",
+        subject: request.id,
+        kind: "queue",
+        summary: `Queued request ${request.id} has been waiting since ${request.createdAt}.`,
+        requestId: request.id,
+      });
       await alertAdmin(
         `Queued request ${request.id} on ${request.channel} has been waiting since ${request.createdAt}. The user already received an acknowledgement.`
       );
@@ -88,9 +106,10 @@ export async function tick(
 ): Promise<void> {
   if (running) return;
   running = true;
+  lastTickAt = Date.now();
+  beat("request-worker", POLL_MS * 4 + REQUEST_DEADLINE_MS);
   try {
     const request = await claimNextAgentRequest();
-    if (request) alertedStale.delete(request.id);
     await reportStaleQueue();
     if (request) await processRequest(adapter, botAppId, request);
   } catch (err) {
@@ -113,10 +132,11 @@ async function processRequest(
   botAppId: string,
   request: QueuedAgentRequest
 ): Promise<void> {
+  const controller = new AbortController();
   try {
-    const current = (await getAgentRequest(request.id)) ?? request;
+    const current = await beginRequestRun((await getAgentRequest(request.id)) ?? request);
     const run = async (item: QueuedAgentRequest) => {
-      if (item.channel === "teams") return processTeamsRequest(adapter, botAppId, item);
+      if (item.channel === "teams") return processTeamsRequest(adapter, botAppId, item, controller.signal);
       const graph = await graphAccessForUser(adapter, botAppId, item.userId);
       return processCapture({
         userId: item.userId,
@@ -127,14 +147,26 @@ async function processRequest(
         conversationRef: item.conversationRef,
         getGraphToken: graph?.getGraphToken,
         createTask: graph?.createTask,
+        traceId: item.activeRunId,
+        runId: item.activeRunId,
+        signal: controller.signal,
       });
     };
     let out = await withDeadline(run(current), REQUEST_DEADLINE_MS, request.id);
     const latest = await getAgentRequest(request.id);
-    if (latest && shouldRerunAfterDetail(out.title, current.text, latest.text)) {
+    if (latest?.activeRunId && latest.activeRunId !== current.activeRunId) throw new RunFencedError(current.activeRunId ?? request.id);
+    if (latest && !latest.checkpoint?.mutations.length && latest.text !== current.text) {
+      out = await withDeadline(run(latest), REQUEST_DEADLINE_MS, request.id);
+    } else if (latest && latest.text !== current.text) {
+      out = {
+        ...out,
+        body: `${out.body}\n\nI also kept the follow-up you sent while this was running.`,
+      };
+    } else if (latest && shouldRerunAfterDetail(out.title, current.text, latest.text)) {
       out = await withDeadline(run(latest), REQUEST_DEADLINE_MS, request.id);
     }
-    await completeAgentRequest(request, out);
+    controller.abort();
+    await completeAgentRequest(latest ?? current, out);
     void logActivity({
       type: "request_queue",
       userId: request.userId,
@@ -148,11 +180,18 @@ async function processRequest(
       },
     });
   } catch (err) {
+    controller.abort();
     const message = (err as Error).message;
     // A request that ran out its deadline is terminal: retrying it would stall
     // the worker again and starve everyone behind it.
+    const kind = classifyFailure(err, {
+      mutating: Boolean(request.checkpoint?.mutations.some((row) => row.status !== "completed")),
+    });
     let retrying = false;
-    if (err instanceof RequestDeadline) {
+    if (err instanceof RunFencedError) return;
+    if (kind === "deadline" || kind === "unknown_outcome" || (kind === "permanent" && request.attempts >= 3)) {
+      await quarantineAgentRequest(request, message, kind === "permanent" ? "permanent" : kind);
+    } else if (kind === "permanent") {
       await markAgentRequestFailed(request, message);
     } else {
       retrying = await retryAgentRequest(request, message);
@@ -179,7 +218,8 @@ async function processRequest(
 async function processTeamsRequest(
   adapter: CloudAdapter,
   botAppId: string,
-  request: QueuedAgentRequest
+  request: QueuedAgentRequest,
+  signal?: AbortSignal
 ): Promise<Outbound> {
   if (request.conversationRef.channel !== "teams") {
     throw new Error("Queued Teams request has no Teams conversation reference.");
@@ -200,6 +240,9 @@ async function processTeamsRequest(
         createTask: (title, detail, due) =>
           createTodoTask(ctx, title, detail, due),
         getGraphToken: () => getGraphUserToken(ctx),
+        traceId: request.activeRunId,
+        runId: request.activeRunId,
+        signal,
       });
     }
   );

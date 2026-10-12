@@ -73,6 +73,9 @@ export interface CaptureInput {
   conversationRef?: unknown;
   /** Correlates interpretation, model, policy, and tool events for one request. */
   traceId?: string;
+  /** Worker run generation. Distinct from eventId so retries are not treated as duplicates. */
+  runId?: string;
+  signal?: AbortSignal;
 }
 
 export interface Outbound {
@@ -107,7 +110,8 @@ export async function processCapture(input: CaptureInput): Promise<Outbound> {
 
 async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   const { userId, channel } = input;
-  input.traceId ??= randomUUID();
+  input.traceId ??= input.runId ?? randomUUID();
+  if (input.signal?.aborted) throw new Error("request aborted before processing");
 
   // 1. Resolve input text (voice → transcript) before interpreting approvals.
   let text = (input.text ?? "").trim();
@@ -816,8 +820,8 @@ async function execute(
           conversationRef: input.conversationRef,
           ...attribution,
           authorization: {
-            explicit: true,
-            confidence: 1,
+            explicit: false,
+            confidence: 0,
             channel: effectivePolicy,
           },
           getGraphToken: input.getGraphToken,

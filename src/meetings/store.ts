@@ -178,10 +178,11 @@ export async function claimQueuedTranscripts(limit = 2): Promise<TranscriptAvail
   const { resources } = await availabilityCol().items
     .query<TranscriptAvailabilityDoc>({
       query:
-        "SELECT TOP @n * FROM c WHERE c.status = 'queued' OR (c.status = 'processing' AND c.processingAt < @stale) ORDER BY c.requestedAt",
+        "SELECT TOP @n * FROM c WHERE (c.status = 'queued' AND (NOT IS_DEFINED(c.availableAt) OR c.availableAt <= @now)) OR (c.status = 'processing' AND c.processingAt < @stale) ORDER BY c.requestedAt",
       parameters: [
         { name: "@n", value: limit },
         { name: "@stale", value: staleBefore },
+        { name: "@now", value: new Date().toISOString() },
       ],
     })
     .fetchAll();

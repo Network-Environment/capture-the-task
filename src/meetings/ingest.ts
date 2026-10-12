@@ -1,3 +1,5 @@
+import { envFlag } from "../config";
+import { openIncident } from "../services/recoveryIncidents";
 import { embed } from "../services/router";
 import { logActivity } from "../services/activityLog";
 import { rememberLesson } from "../services/agentMemory";
@@ -260,10 +262,26 @@ export async function processQueuedTranscripts(
       result.errors.push(
         `${item.organizerName ?? item.organizerId}: ${message}`.slice(0, 180)
       );
-      await setTranscriptAvailabilityStatus(item, "failed", {
-        retryCount: Number(item.retryCount ?? 0) + 1,
-        error: message.slice(0, 500),
-      });
+      const retryCount = Number(item.retryCount ?? 0) + 1;
+      const transient = /429|timeout|503|502|500|temporarily/i.test(message);
+      if (envFlag("RECOVERY_MEETING_RETRY", false) && transient && retryCount < 3) {
+        await setTranscriptAvailabilityStatus(item, "queued", {
+          retryCount,
+          error: message.slice(0, 500),
+          availableAt: new Date(Date.now() + retryCount * 60_000).toISOString(),
+        });
+      } else {
+        await setTranscriptAvailabilityStatus(item, "failed", {
+          retryCount,
+          error: message.slice(0, 500),
+        });
+        void openIncident({
+          source: "meeting",
+          subject: item.transcriptId,
+          kind: transient ? "transient" : "permanent",
+          summary: message,
+        });
+      }
       void logActivity({
         type: "error",
         agent: "meeting-worker",

@@ -94,6 +94,7 @@ export interface TranscriptAvailabilityDoc {
   processingAt?: string;
   completedAt?: string;
   retryCount?: number;
+  availableAt?: string;
   error?: string;
   meetingDocId?: string;
   _etag?: string;

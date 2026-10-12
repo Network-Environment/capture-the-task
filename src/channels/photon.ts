@@ -20,6 +20,8 @@
 import type { SpectrumInstance, Platform, PlatformInstance } from "spectrum-ts" with { "resolution-mode": "import" };
 import { saveConversationRef } from "../services/conversations";
 import { logActivity } from "../services/activityLog";
+import { alertAdmin } from "../services/alerts";
+import { openIncident } from "../services/recoveryIncidents";
 import { acceptInboundMessage } from "./acceptInbound";
 import { enqueueAgentRequest } from "../services/requestQueue";
 import { transcribeBuffer } from "../services/transcription";
@@ -45,6 +47,12 @@ type IMessageMessage = IMessageStream extends AsyncIterable<[unknown, infer M]> 
 
 let app: SpectrumInstance | null = null;
 let im: IMessageInstance | null = null;
+let photonHealthyFlag = false;
+let photonAlerted = false;
+
+export function photonHealthy(): boolean {
+  return !imessageEnabled() || photonHealthyFlag;
+}
 
 export async function startPhotonChannel(): Promise<void> {
   if (!imessageEnabled()) {
@@ -62,22 +70,38 @@ export async function startPhotonChannel(): Promise<void> {
   });
   app = spectrum;
   im = imessage(spectrum);
+  photonHealthyFlag = true;
+  photonAlerted = false;
   console.log("[imessage] Photon stream connected");
 
-  // Fire-and-forget consumer; reconnects are handled inside the SDK.
   void (async () => {
-    for await (const [space, message] of im!.messages) {
-      try {
-        await handleInbound(space, message);
-      } catch (err) {
-        console.error("[imessage] handler error:", err);
-        void logActivity({
-          type: "error",
-          origin: "system",
-          channel: "imessage",
-          trigger: "photon_stream",
-          detail: { channel: "imessage", message: (err as Error).message },
+    try {
+      for await (const [space, message] of im!.messages) {
+        photonHealthyFlag = true;
+        try {
+          await handleInbound(space, message);
+        } catch (err) {
+          console.error("[imessage] handler error:", err);
+          void logActivity({
+            type: "error",
+            origin: "system",
+            channel: "imessage",
+            trigger: "photon_stream",
+            detail: { channel: "imessage", message: (err as Error).message },
+          });
+        }
+      }
+    } finally {
+      photonHealthyFlag = false;
+      if (!photonAlerted) {
+        photonAlerted = true;
+        void openIncident({
+          source: "photon",
+          subject: "stream",
+          kind: "channel",
+          summary: "Photon stream stopped",
         });
+        void alertAdmin("The iMessage Photon stream stopped. Startup will retry with backoff.");
       }
     }
   })();
@@ -90,12 +114,12 @@ async function handleInbound(space: IMessageSpace, message: IMessageMessage): Pr
   if (!phone) return;
   const userId = resolveIMessageUser(phone);
   if (!userId) {
-    console.warn(`[imessage] ignoring unknown sender ${phone}`);
+    console.warn("[imessage] ignoring an unknown sender");
     return; // allowlist: no reply, no trace of a brain
   }
 
   void saveConversationRef(userId, { channel: "imessage", phone, spaceId: space.id });
-  console.log(`[imessage] inbound space=${space.id} phone=${phone}`);
+  console.log(`[imessage] inbound space=${space.id}`);
 
   // Content is one part per message: text, a voice memo, or an attachment
   // whose bytes are fetched lazily. Anything else (reactions, typing) is noise.
@@ -182,6 +206,31 @@ export async function sendIMessage(userId: string, text: string): Promise<boolea
   } catch (err) {
     console.error("[imessage] proactive send failed:", err);
     return false;
+  }
+}
+
+export async function supervisePhotonChannel(): Promise<void> {
+  let attempt = 0;
+  for (;;) {
+    try {
+      await startPhotonChannel();
+      return;
+    } catch (err) {
+      attempt += 1;
+      photonHealthyFlag = false;
+      console.error("[imessage] startup failed:", err);
+      if (attempt >= 3 && !photonAlerted) {
+        photonAlerted = true;
+        void openIncident({
+          source: "photon",
+          subject: "startup",
+          kind: "channel",
+          summary: err instanceof Error ? err.message : String(err),
+        });
+        void alertAdmin("Photon did not start. Retrying with capped backoff.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(60_000, 2_000 * 2 ** attempt)));
+    }
   }
 }
 

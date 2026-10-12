@@ -314,7 +314,11 @@ export async function callMcpTool(
   const ref = refs.find((r) => r.server === server && r.name === toolName);
   if (!ref) return `Tool ${qualifiedName} not found.`;
 
-  const result = await ref.client.callTool({ name: toolName, arguments: args });
+  const result = await withTimeout(
+    Promise.resolve(ref.client.callTool({ name: toolName, arguments: args })),
+    DEFAULT_TIMEOUT_MS,
+    server
+  );
   const parts = Array.isArray(result.content) ? result.content : [];
   const text = parts
     .filter((c: { type: string }) => c.type === "text")

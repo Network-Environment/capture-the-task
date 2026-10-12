@@ -232,3 +232,10 @@ speak per-agent. Don't pay the coordination tax before the workload demands it.
   infra-level telemetry alongside the app-level activity log.
 - **Tests + supply chain.** node:test suite runs in CI before deploy;
   Dependabot keeps npm and Actions dependencies patched weekly.
+- **Self-healing.** Accepted work ends delivered, explicitly failed, or
+  quarantined with a request id. Transient dependencies retry with jitter;
+  deadlines and ambiguous tool writes do not run again automatically.
+  `/admin/recovery` and `/admin/models` expose incidents and Foundry model
+  portfolio recommendations. Model and prompt changes are versioned,
+  evaluated, and human-approved before promotion.
+

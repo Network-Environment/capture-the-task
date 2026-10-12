@@ -1,15 +1,22 @@
 import { createHash } from "node:crypto";
 import type { ConversationReference } from "botbuilder";
 import type { Channel } from "../channels/types";
+import { envFlag } from "../config";
 import type { ChannelPolicy } from "./intent";
 import { cosmosContainer } from "./cosmos";
 import type { Outbound } from "../pipeline";
+import type { RunCheckpoint } from "./runFence";
+import { openIncident } from "./recoveryIncidents";
 
 const BUCKET = "agent";
 const MAX_ATTEMPTS = 3;
 const LEASE_MS = 10 * 60_000;
+export const MAX_DELIVERY_ATTEMPTS = 5;
+export const QUARANTINE_TTL_SEC = 30 * 24 * 60 * 60;
+export const MAX_REPLAYS = 3;
 
-export type RequestStatus = "queued" | "processing" | "completed" | "failed";
+export type RequestStatus = "queued" | "processing" | "completed" | "failed" | "quarantined";
+export type DeliveryStatus = "pending" | "delivering" | "delivered" | "delivery_quarantined";
 
 export interface QueuedAgentRequest {
   id: string;
@@ -35,8 +42,15 @@ export interface QueuedAgentRequest {
   result?: Outbound;
   deliveredAt?: string;
   deliveryAttempts?: number;
+  enforcedDeliveryAttempts?: number;
+  deliveryStatus?: DeliveryStatus;
   deliveryLeaseUntil?: string;
   nextDeliveryAt?: string;
+  activeRunId?: string;
+  generation?: number;
+  checkpoint?: RunCheckpoint;
+  replayCount?: number;
+  quarantineReason?: string;
   ttl: number;
   _etag?: string;
 }
@@ -51,6 +65,15 @@ export function requestId(channel: Channel, eventId: string): string {
 
 export function retryDelayMs(attempts: number): number {
   return Math.min(5 * 60_000, 30_000 * 2 ** Math.max(0, attempts - 1));
+}
+
+export function quarantineEnforced(): boolean {
+  return envFlag("RECOVERY_ENFORCE_QUARANTINE", false);
+}
+
+export function deliveryBackoffMs(attempts: number, jitter = Math.random()): number {
+  const base = Math.min(15 * 60_000, retryDelayMs(attempts));
+  return base + Math.floor(jitter * Math.min(5_000, base * 0.2));
 }
 
 export function mergeRequestText(existing: string, extra: string): string {
@@ -199,6 +222,19 @@ export async function claimNextAgentRequest(
   return undefined;
 }
 
+export async function beginRequestRun(request: QueuedAgentRequest): Promise<QueuedAgentRequest> {
+  const generation = (request.generation ?? 0) + 1;
+  const runId = `${request.id}:${generation}`;
+  const checkpoint = {
+    runId,
+    generation,
+    completedIntents: request.checkpoint?.completedIntents ?? [],
+    mutations: request.checkpoint?.mutations ?? [],
+  };
+  await replaceRequest(request, { activeRunId: runId, generation, checkpoint });
+  return { ...request, activeRunId: runId, generation, checkpoint };
+}
+
 export async function completeAgentRequest(
   request: QueuedAgentRequest,
   result: Outbound
@@ -210,6 +246,8 @@ export async function completeAgentRequest(
     result,
     resultPreview: result.summaryLine.slice(0, 500),
     deliveryAttempts: 0,
+    enforcedDeliveryAttempts: 0,
+    deliveryStatus: "pending",
     nextDeliveryAt: new Date().toISOString(),
     ttl: 604800,
   });
@@ -222,9 +260,10 @@ export async function nextUndeliveredResult(
     .items.query<QueuedAgentRequest>({
       query: `SELECT TOP 5 * FROM c
         WHERE c.bucket = @bucket
-          AND c.status IN ("completed", "failed")
+          AND c.status IN ("completed", "failed", "quarantined")
           AND IS_DEFINED(c.result)
           AND NOT IS_DEFINED(c.deliveredAt)
+          AND (NOT IS_DEFINED(c.deliveryStatus) OR c.deliveryStatus = "pending" OR c.deliveryStatus = "delivering")
           AND c.nextDeliveryAt <= @now
           AND (
             NOT IS_DEFINED(c.deliveryLeaseUntil)
@@ -241,6 +280,10 @@ export async function nextUndeliveredResult(
     const claimed = {
       ...candidate,
       deliveryAttempts: (candidate.deliveryAttempts ?? 0) + 1,
+      enforcedDeliveryAttempts: quarantineEnforced()
+        ? (candidate.enforcedDeliveryAttempts ?? 0) + 1
+        : candidate.enforcedDeliveryAttempts ?? 0,
+      deliveryStatus: "delivering" as const,
       deliveryLeaseUntil: new Date(now.getTime() + 2 * 60_000).toISOString(),
     };
     try {
@@ -265,6 +308,7 @@ export async function markAgentRequestDelivered(
 ): Promise<void> {
   await replaceRequest(request, {
     deliveredAt: new Date().toISOString(),
+    deliveryStatus: "delivered",
     deliveryLeaseUntil: undefined,
     ttl: 172800,
   });
@@ -273,15 +317,34 @@ export async function markAgentRequestDelivered(
 export async function deferAgentRequestDelivery(
   request: QueuedAgentRequest,
   error: string
-): Promise<void> {
+): Promise<"retry" | "quarantined"> {
   const attempts = request.deliveryAttempts ?? 1;
+  const enforcedAttempts = request.enforcedDeliveryAttempts ?? (quarantineEnforced() ? attempts : 0);
+  await openIncident({
+    source: "delivery",
+    subject: request.id,
+    kind: "delivery",
+    summary: error,
+    requestId: request.id,
+    traceId: request.activeRunId,
+  });
+  if (quarantineEnforced() && enforcedAttempts >= MAX_DELIVERY_ATTEMPTS) {
+    await replaceRequest(request, {
+      deliveryStatus: "delivery_quarantined",
+      deliveryLeaseUntil: undefined,
+      nextDeliveryAt: undefined,
+      lastError: `Delivery: ${error}`.slice(0, 500),
+      ttl: QUARANTINE_TTL_SEC,
+    });
+    return "quarantined";
+  }
   await replaceRequest(request, {
+    deliveryStatus: "pending",
     deliveryLeaseUntil: undefined,
-    nextDeliveryAt: new Date(
-      Date.now() + Math.min(15 * 60_000, retryDelayMs(attempts))
-    ).toISOString(),
+    nextDeliveryAt: new Date(Date.now() + deliveryBackoffMs(attempts)).toISOString(),
     lastError: `Delivery: ${error}`.slice(0, 500),
   });
+  return "retry";
 }
 
 export async function retryAgentRequest(
@@ -321,9 +384,71 @@ export async function markAgentRequestFailed(
     result,
     resultPreview: result.summaryLine,
     deliveryAttempts: 0,
+    enforcedDeliveryAttempts: 0,
+    deliveryStatus: "pending",
     nextDeliveryAt: new Date().toISOString(),
     ttl: 604800,
   });
+}
+
+export function supportFailure(requestId: string, error: string): Outbound {
+  return {
+    title: "Request needs attention",
+    body:
+      `Request \`${requestId}\` could not finish safely. ` +
+      "An administrator can see the incident. Nothing was intentionally discarded.",
+    tags: [],
+    summaryLine: `Request quarantined: ${error}`.slice(0, 500),
+  };
+}
+
+export async function quarantineAgentRequest(
+  request: QueuedAgentRequest,
+  error: string,
+  kind: "deadline" | "unknown_outcome" | "permanent"
+): Promise<void> {
+  await openIncident({
+    source: "request",
+    subject: request.id,
+    kind,
+    summary: error,
+    requestId: request.id,
+    runId: request.activeRunId,
+  });
+  if (!quarantineEnforced()) {
+    await markAgentRequestFailed(request, error);
+    return;
+  }
+  const result = supportFailure(request.id, error);
+  await replaceRequest(request, {
+    status: "quarantined",
+    quarantineReason: kind,
+    finishedAt: new Date().toISOString(),
+    leaseUntil: undefined,
+    lastError: error.slice(0, 500),
+    result,
+    resultPreview: result.summaryLine,
+    deliveryAttempts: 0,
+    enforcedDeliveryAttempts: 0,
+    deliveryStatus: "pending",
+    nextDeliveryAt: new Date().toISOString(),
+    ttl: QUARANTINE_TTL_SEC,
+  });
+}
+
+export function replayAllowed(request: QueuedAgentRequest): { ok: boolean; reason: string } {
+  if (!envFlag("RECOVERY_REPLAY_ENABLED", false)) return { ok: false, reason: "replay is disabled" };
+  if (request.status !== "quarantined" && request.status !== "failed") {
+    return { ok: false, reason: "request is not replayable" };
+  }
+  if ((request.replayCount ?? 0) >= MAX_REPLAYS) return { ok: false, reason: "replay limit reached" };
+  if (request.leaseUntil && Date.parse(request.leaseUntil) > Date.now()) {
+    return { ok: false, reason: "request is leased" };
+  }
+  if (request.checkpoint?.mutations.some((row) => row.status === "unknown")) {
+    return { ok: false, reason: "a mutation has an unknown outcome" };
+  }
+  return { ok: true, reason: "replay allowed" };
 }
 
 /** A due request that is still queued after the user was told work had started. */

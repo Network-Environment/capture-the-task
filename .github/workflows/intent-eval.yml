@@ -43,3 +43,7 @@ jobs:
           done
       - name: Evaluate intent fixtures
         run: npm run intent:evaluate
+      - name: Evaluate agent tool fixtures
+        run: npm run agent:evaluate
+      - name: Evaluate deterministic reliability gates
+        run: npx tsx --test test/reliability.test.ts

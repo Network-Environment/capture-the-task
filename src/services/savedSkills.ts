@@ -2,6 +2,8 @@
  * Skills a person saved from a finished tool trace. Separate from the
  * repo skill catalog. Running one still goes through the normal tool policy.
  */
+import { envFlag } from "../config";
+import { delimitUntrusted } from "../memory/trust";
 import { cosmosContainer, cosmosConfigured } from "./cosmos";
 
 export interface SavedSkill {
@@ -14,6 +16,9 @@ export interface SavedSkill {
   tools: string[];
   confirmationPoints: string[];
   instructions: string[];
+  status?: "candidate" | "approved" | "rejected";
+  provenance?: "legacy" | "user" | "trace";
+  idempotent?: boolean;
   createdAt: string;
 }
 
@@ -73,6 +78,9 @@ export async function saveUserSkill(
     tools: [...new Set(skill.tools.map((item) => item.trim()).filter(Boolean))],
     confirmationPoints: [...new Set(skill.confirmationPoints)],
     instructions: skill.instructions.map((item) => item.trim()).filter(Boolean),
+    status: envFlag("MODEL_LEARNING_CANDIDATES_ENABLED", false) ? "candidate" : "approved",
+    provenance: "trace",
+    idempotent: false,
   };
   await skills().items.create(doc);
   return doc;
@@ -90,7 +98,11 @@ export async function listSavedSkills(userId: string): Promise<SavedSkill[]> {
         ],
       })
       .fetchAll();
-    return resources as SavedSkill[];
+    return (resources as SavedSkill[]).filter((skill) => {
+      if (skill.status === "rejected") return false;
+      if (skill.status === "candidate" && envFlag("MODEL_LEARNING_CANDIDATES_ENABLED", false)) return false;
+      return true;
+    });
   } catch {
     return [];
   }
@@ -99,7 +111,7 @@ export async function listSavedSkills(userId: string): Promise<SavedSkill[]> {
 export function formatSavedSkills(rows: SavedSkill[]): string {
   if (!rows.length) return "";
   const blocks = rows.map((skill) =>
-    [
+      delimitUntrusted("saved-skill", [
       `Saved skill: ${skill.name} (${skill.scope})`,
       skill.description,
       skill.when.length ? `Use when: ${skill.when.join("; ")}` : "",
@@ -111,7 +123,7 @@ export function formatSavedSkills(rows: SavedSkill[]): string {
       "- Running this skill does not skip the normal approval gate.",
     ]
       .filter(Boolean)
-      .join("\n")
+      .join("\n")),
   );
   return `\n\nSaved skills:\n${blocks.join("\n\n")}`;
 }

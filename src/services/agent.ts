@@ -24,6 +24,7 @@ import {
 } from "../tools/registry";
 import { lessonsPromptBlock } from "./agentMemory";
 import { logActivity, type ActivityAttribution } from "./activityLog";
+import { chunkEvidence, renderEvidence, unsupportedLimitation, verifierShadow, verifyResponse } from "./modelHealing";
 import { RecallHit } from "./brain";
 import { condensedBlock, renderTurnLine, turnBody, type PromptHistory, type SessionTurn } from "./session";
 import { loadConfig } from "../config";
@@ -533,15 +534,40 @@ export async function runAgent(
         traceId: ctx.traceId,
         detail: { phase: "complete", rounds: round + 1, durationMs: Date.now() - startedAt },
       });
+      const answer = msg.content ?? "Done.";
+      const verification = verifyResponse({
+        risk: "factual",
+        body: answer,
+        sources: round > 0 ? ["tool-results"] : [],
+      });
+      if (verification.needed && !verification.supported) {
+        void logActivity({
+          type: "agent_turn",
+          userId: ctx.userId,
+          agent: name,
+          traceId: ctx.traceId,
+          detail: { phase: "verifier", reason: verification.reason, shadow: verifierShadow() },
+        });
+        if (!verifierShadow()) return unsupportedLimitation(verification.reason);
+      }
       persistTrace();
-      return msg.content ?? "Done.";
+      return answer;
     }
 
     messages.push(msg as ChatCompletionMessageParam);
     for (const call of calls) {
       if (call.type !== "function") continue;
       let args: Record<string, unknown> = {};
-      try { args = JSON.parse(call.function.arguments || "{}"); } catch { /* empty */ }
+      try {
+        args = JSON.parse(call.function.arguments || "{}");
+      } catch {
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: "INVALID_ARGUMENTS: the tool arguments were not valid JSON. Ask the user if a required value is missing.",
+        });
+        continue;
+      }
       const toolStartedAt = Date.now();
       ctx.observeToolCall?.(call.function.name);
       const result = ctx.dryRunTools
@@ -571,7 +597,11 @@ export async function runAgent(
             !result.includes("lookup failed:"),
         },
       });
-      messages.push({ role: "tool", tool_call_id: call.id, content: result.slice(0, 12_000) });
+      messages.push({
+        role: "tool",
+        tool_call_id: call.id,
+        content: renderEvidence(chunkEvidence(result, call.function.name)).slice(0, 12_000),
+      });
       if (ctx.askedQuestion) {
         persistTrace();
         return ctx.askedQuestion;

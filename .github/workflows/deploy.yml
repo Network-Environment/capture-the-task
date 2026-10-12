@@ -189,6 +189,14 @@ jobs:
               if BODY=$(curl --connect-timeout 5 --max-time 10 -sf \
                 "https://${APP}.azurewebsites.net/healthz"); then
                 echo "$APP $BODY"
+                echo "$BODY" | jq -e '.ok == true and (.role == "gateway" or .role == "worker" or .role == "admin")' >/dev/null
+                READY=$(curl --connect-timeout 5 --max-time 20 -sS -o /tmp/ready.json -w "%{http_code}" "https://${APP}.azurewebsites.net/readyz" || true)
+                echo "$APP readyz $READY $(cat /tmp/ready.json 2>/dev/null || true)"
+                if [ "$READY" != "200" ]; then
+                  echo "$APP readiness check failed"
+                  exit 1
+                fi
+                jq -e '.ok == true and .role != null' /tmp/ready.json >/dev/null
                 HEALTHY=true
                 break
               fi

@@ -217,7 +217,12 @@ export async function claimOutcome(job: OutcomeJob): Promise<OutcomeJob | null> 
 
 export async function saveOutcome(job: OutcomeJob): Promise<void> {
   const { _etag, ...rest } = job;
-  void _etag;
+  if (_etag) {
+    await outcomes().item(job.id, job.userId).replace(rest, {
+      accessCondition: { type: "IfMatch", condition: _etag },
+    });
+    return;
+  }
   await outcomes().items.upsert(rest);
 }
 

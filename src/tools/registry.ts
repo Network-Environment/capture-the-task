@@ -1458,7 +1458,30 @@ export async function dispatch(
             authorization.confidence >= 0.9 ? "high" : authorization.confidence >= 0.72 ? "medium" : "low",
         },
       });
-      if (policy.decision === "clarify") return `CLARIFY: ${policy.reason}`;
+      if (policy.decision === "clarify") {
+        const question = policy.reason;
+        await setPendingClarification(ctx.userId, ctx.conversationId, {
+          plan: {
+            disposition: "clarify",
+            reason: "insufficient_context",
+            confidence: authorization.confidence,
+            assumptions: [],
+            clarification: question,
+            intents: [{
+              kind: "clarify",
+              standalone: String(ctx.requestText ?? question),
+              confidence: authorization.confidence,
+              explicit: false,
+              question,
+            }],
+          },
+          originalText: String(ctx.requestText ?? question),
+          question,
+          createdAt: new Date().toISOString(),
+        });
+        ctx.askedQuestion = question;
+        return `CLARIFY: ${question}`;
+      }
       if (policy.decision === "deny") return `NOT_ALLOWED: ${policy.reason}`;
       if (policy.decision === "approve") {
         const id = await parkAction(ctx.userId, name, args, {
