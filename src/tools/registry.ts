@@ -367,7 +367,8 @@ const nativeDefs: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "recall_notes",
-      description: "Vector-search the user's second brain. Use before answering questions about past captures.",
+      description:
+        "Vector-search the user's second brain. Use before answering questions about past captures, and before judging a plan or a proposed date change for stored work.",
       parameters: {
         type: "object",
         properties: {
@@ -457,6 +458,7 @@ const nativeDefs: ChatCompletionTool[] = [
       description:
         "Search the requesting user's own live Outlook calendar for events in a date range. " +
         "Use this source for whether or when the requester met someone, event subjects, and attendees. " +
+        "It does not judge a plan, recall stored work, or decide whether named work should move to a day. " +
         "It does not read another person's mailbox or meeting transcript content.",
       parameters: {
         type: "object",
@@ -1095,7 +1097,7 @@ const nativeDefs: ChatCompletionTool[] = [
     function: {
       name: "search_execution_graph",
       description:
-        "Search TaskBrain's shared execution graph, then expand connected projects, tasks, people, meetings, and evidence. Use for status, ownership, blockers, dependencies, and why work exists.",
+        "Search TaskBrain's shared execution graph, then expand connected projects, tasks, people, meetings, and evidence. Use for status, ownership, blockers, dependencies, why work exists, and whether moving shared work to another day is sound.",
       parameters: {
         type: "object",
         properties: {

@@ -4,6 +4,8 @@ import { describe, it } from "node:test";
 import {
   agentSkillCatalog,
   agentSkillsPromptBlock,
+  explicitEvaluationRequest,
+  judgmentReadToolNames,
 } from "../src/services/agentSkills";
 import { loadConfig } from "../src/config";
 
@@ -53,6 +55,17 @@ describe("TaskBrain runtime skills", () => {
     const prompt = agentSkillsPromptBlock(["thoughtful-judgment"]);
     assert.match(prompt, /do not call save_note/i);
     assert.match(prompt, /name the contradiction/i);
+    assert.match(prompt, /not a calendar search/i);
+    assert.equal(
+      explicitEvaluationRequest("What do you think of moving the warranty review to Friday?"),
+      true
+    );
+    assert.equal(explicitEvaluationRequest("What do you think they mean?"), false);
+    assert.equal(explicitEvaluationRequest("We should cancel the weekly digest"), false);
+    assert.deepEqual(
+      judgmentReadToolNames(["search_my_calendar", "recall_notes", "web_search", "search_execution_graph"]),
+      ["recall_notes", "search_execution_graph"]
+    );
     const agents = loadConfig<{
       profiles: Record<string, { skills?: string[] }>;
     }>("agents");

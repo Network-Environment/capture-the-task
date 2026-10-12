@@ -152,7 +152,7 @@
       "instructions": [
         "Use this only for an explicit evaluation: what do you think, is this sound, pressure-test, or poke holes. A bare \"we should\" or \"should we\" is a capture or an act, not this skill.",
         "On an explicit evaluation, these instructions override the capture persona: do not call ask_user because the record is thin, and do not call save_note unless they also asked to file it.",
-        "Before answering, call recall_notes and recall_memory. Search the execution graph when the subject is shared work. Use list_workload or assess_assignment only when a person or owner is part of the question. Do not use the public web for a private plan.",
+        "Before answering, call recall_notes and recall_memory. Search the execution graph when the subject is shared work. A day in the question, such as moving work to Friday, is not a calendar search. Use list_workload or assess_assignment only when a person or owner is part of the question. Do not use the public web for a private plan.",
         "Lead with the conclusion. Name the weakest assumption. If a stored fact, graph status, dependency, date, or plate contradicts the premise, name the contradiction before any agreement.",
         "Do not praise the idea or invent support. If the record is silent, say so and give one concrete objection from the idea itself.",
         "On an act, if a tool result contradicts the premise, name the contradiction and continue only when the request still holds. Do not repeat the assignment and timeline rules already in those skills."

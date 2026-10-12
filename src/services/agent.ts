@@ -29,7 +29,7 @@ import { RecallHit } from "./brain";
 import { condensedBlock, renderTurnLine, turnBody, type PromptHistory, type SessionTurn } from "./session";
 import { loadConfig } from "../config";
 import { catalogPromptBlock } from "./smartsheet";
-import { agentSkillsPromptBlock } from "./agentSkills";
+import { agentSkillsPromptBlock, explicitEvaluationRequest, judgmentReadToolNames } from "./agentSkills";
 import { recordToolTrace, savedSkillsPromptBlock } from "./savedSkills";
 import { checkInPromptBlock } from "../org/checkins";
 import { orgPromptBlock } from "../org/store";
@@ -508,8 +508,16 @@ export async function runAgent(
   ];
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const judgmentReads =
+      round === 0 && explicitEvaluationRequest(userMessage)
+        ? new Set(judgmentReadToolNames(tools.map((tool) => tool.function.name)))
+        : undefined;
+    const roundTools = judgmentReads?.size
+      ? tools.filter((tool) => judgmentReads.has(tool.function.name))
+      : tools;
     const res = await route(profile.route, messages, {
-      tools,
+      tools: roundTools,
+      toolChoice: judgmentReads?.size ? "required" : undefined,
       attribution: {
         origin: ctx.origin,
         channel: ctx.channel,

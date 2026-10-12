@@ -94,6 +94,7 @@ function budgetGuard(
 export interface RouteOptions {
   json?: boolean;
   tools?: ChatCompletionTool[];
+  toolChoice?: "auto" | "required" | "none";
   attribution?: Partial<ActivityAttribution>;
   purpose?: "clarification" | "policy" | "mutation" | "recovery" | "verification" | "synthesis";
   allowFallback?: boolean;
@@ -155,7 +156,9 @@ export async function route(
     model: s.model,
     messages,
     ...(opts.json ? { response_format: { type: "json_object" as const } } : {}),
-    ...(opts.tools?.length ? { tools: opts.tools } : {}),
+    ...(opts.tools?.length
+      ? { tools: opts.tools, ...(opts.toolChoice ? { tool_choice: opts.toolChoice } : {}) }
+      : {}),
   };
 
   if (!circuitAllows("foundry")) throw new CircuitOpenError("foundry");
