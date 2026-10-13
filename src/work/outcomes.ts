@@ -206,10 +206,12 @@ export async function claimOutcome(job: OutcomeJob): Promise<OutcomeJob | null> 
       status: "running",
       nextRun: new Date(Date.now() + 10 * 60_000).toISOString(),
     };
-    await outcomes().item(job.id, job.userId).replace(claimed, {
+    const { resource } = await outcomes().item(job.id, job.userId).replace<OutcomeJob>(claimed, {
       accessCondition: { type: "IfMatch", condition: job._etag ?? "" },
     });
-    return claimed;
+    // The claim write changes the etag. Returning the pre-claim object makes
+    // the subsequent checkpoint save fail with 412 and rerun after the lease.
+    return resource ?? null;
   } catch {
     return null;
   }

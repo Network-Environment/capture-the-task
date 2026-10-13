@@ -11,7 +11,10 @@ import { onStop } from "./lifecycle";
 import { beat, liveness, noteCosmosReady, readiness } from "./health";
 import { createBotAdapter } from "./adapter";
 
-const adapter = createBotAdapter();
+// Proactive turns run outside an inbound capture. Their failures are handled
+// by the scheduler/request queue and must not send the gateway's capture error
+// directly to a user.
+const adapter = createBotAdapter({ notifyUserOnError: false });
 const botAppId = process.env.MicrosoftAppId ?? "";
 
 // The adapter is required to create a proactive TurnContext for delegated
