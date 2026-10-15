@@ -10,6 +10,12 @@ export function redactText(value: string): string {
     .replace(/sk-[a-z0-9]{8,}/gi, "[redacted]");
 }
 
+function isCredentialKey(key: string, value: unknown): boolean {
+  // Usage counters such as inputTokens are not credentials.
+  if (typeof value === "number" && /tokens$/i.test(key)) return false;
+  return /authorization|token|secret|password|api[-_]?key|cookie/i.test(key);
+}
+
 export function redactUnknown(value: unknown, depth = 0): unknown {
   if (depth > 6) return "[truncated]";
   if (typeof value === "string") return redactText(value).slice(0, 500);
@@ -17,7 +23,7 @@ export function redactUnknown(value: unknown, depth = 0): unknown {
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value).slice(0, 40)) {
-      if (/authorization|token|secret|password|api[-_]?key|cookie/i.test(key)) {
+      if (isCredentialKey(key, item)) {
         out[key] = "[redacted]";
       } else {
         out[key] = redactUnknown(item, depth + 1);

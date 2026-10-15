@@ -1,7 +1,7 @@
 import "./setup";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { capabilitiesFromError, chatSamplingParams, type ChatCapabilities } from "../src/services/router";
+import { budgetExceeded, capabilitiesFromError, chatSamplingParams, type ChatCapabilities } from "../src/services/router";
 
 const legacy: ChatCapabilities = { completionParam: "max_tokens", allowTemperature: true };
 
@@ -37,4 +37,10 @@ test("a temperature rejection drops temperature but keeps the token param", () =
 
 test("unrelated errors do not change capabilities", () => {
   assert.equal(capabilitiesFromError(legacy, "429 rate limit exceeded"), undefined);
+});
+
+test("a corrupt token counter does not trip the daily budget", () => {
+  assert.equal(budgetExceeded(Number.NaN, 5_000_000), false);
+  assert.equal(budgetExceeded(4_999_999, 5_000_000), false);
+  assert.equal(budgetExceeded(5_000_000, 5_000_000), true);
 });

@@ -211,8 +211,8 @@ export async function dayStats(day = new Date().toISOString().slice(0, 10)): Pro
     if (e.type === "model_call" || e.type === "embedding") {
       const d = e.detail ?? {};
       const model = String(d.model ?? "unknown");
-      const inTok = Number(d.inputTokens ?? 0);
-      const outTok = Number(d.outputTokens ?? 0);
+      const inTok = usageTokens(d.inputTokens);
+      const outTok = usageTokens(d.outputTokens);
       stats.inputTokens += inTok;
       stats.outputTokens += outTok;
       stats.byModel[model] ??= { calls: 0, inputTokens: 0, outputTokens: 0 };
@@ -236,6 +236,12 @@ export interface UsageBreakdown {
 
 function bump(map: Record<string, number>, key: string): void {
   map[key] = (map[key] ?? 0) + 1;
+}
+
+/** Model usage counters. Non-numeric placeholders such as "[redacted]" count as zero. */
+export function usageTokens(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
 /** Today's activity sliced for the Usage section with normalized attribution. */
@@ -295,8 +301,8 @@ export async function usageBreakdown(
     if (e.userId) bump(byUser, String(e.userId));
     if (e.type === "model_call" || e.type === "embedding") {
       const model = String(d.model ?? "unknown");
-      const inTok = Number(d.inputTokens ?? 0);
-      const outTok = Number(d.outputTokens ?? 0);
+      const inTok = usageTokens(d.inputTokens);
+      const outTok = usageTokens(d.outputTokens);
       stats.inputTokens += inTok;
       stats.outputTokens += outTok;
       stats.byModel[model] ??= { calls: 0, inputTokens: 0, outputTokens: 0 };

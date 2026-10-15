@@ -1,7 +1,7 @@
 import "./setup";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeAttribution } from "../src/services/activityLog";
+import { normalizeAttribution, usageTokens } from "../src/services/activityLog";
 
 test("legacy Teams capture resolves to user message, Teams, and text", () => {
   assert.deepEqual(
@@ -48,4 +48,10 @@ test("scheduled and explicit events never fall back to unknown", () => {
   });
   assert.equal(explicit.origin, "admin_summary");
   assert.equal(explicit.trigger, "meeting_summary");
+});
+
+test("unreadable token counters do not become NaN", () => {
+  assert.equal(usageTokens(1200), 1200);
+  assert.equal(usageTokens("[redacted]"), 0);
+  assert.equal(usageTokens(undefined), 0);
 });

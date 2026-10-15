@@ -53,9 +53,14 @@ function spec(task: TaskClass): RouteSpec & { model: string } {
  * DAILY_TOKEN_BUDGET, non-triage calls are downgraded to the cheap tier for
  * the rest of the day (triage and acknowledgements already run cheap) and the admin is alerted
  * once. Counter refreshes from the activity log every 5 minutes so restarts
- * and scale-out don't reset it.
+ * and scale-out don't reset it. A missing or corrupt counter does not trip
+ * the guard; only a finite total at or above the budget does.
  */
 const BUDGET = Number(process.env.DAILY_TOKEN_BUDGET ?? 5_000_000);
+
+export function budgetExceeded(tokens: number, budget = BUDGET): boolean {
+  return Number.isFinite(tokens) && tokens >= budget;
+}
 let todayTokens = 0;
 let budgetDay = "";
 let budgetAlerted = false;
@@ -64,7 +69,8 @@ async function refreshBudget(): Promise<void> {
   try {
     const day = new Date().toISOString().slice(0, 10);
     const stats = await dayStats(day);
-    todayTokens = stats.inputTokens + stats.outputTokens;
+    const counted = stats.inputTokens + stats.outputTokens;
+    todayTokens = Number.isFinite(counted) ? counted : 0;
     if (day !== budgetDay) {
       budgetDay = day;
       budgetAlerted = false;
@@ -79,7 +85,7 @@ function budgetGuard(
   s: RouteSpec & { model: string },
   purpose?: RouteOptions["purpose"]
 ): RouteSpec & { model: string } {
-  if (task === "triage" || task === "ack" || preserveModelTier(purpose) || todayTokens < BUDGET) return s;
+  if (task === "triage" || task === "ack" || preserveModelTier(purpose) || !budgetExceeded(todayTokens)) return s;
   if (!budgetAlerted) {
     budgetAlerted = true;
     void alertAdmin(

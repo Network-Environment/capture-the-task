@@ -2,7 +2,7 @@ import "./setup";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { classifyFailure } from "../src/runtime/errors";
-import { redactText } from "../src/runtime/redact";
+import { redactText, redactUnknown } from "../src/runtime/redact";
 import { circuitAllows, circuitFailure, resetCircuits } from "../src/runtime/circuits";
 import { liveness, readiness, noteCosmosReady, beat } from "../src/runtime/health";
 import { replayAllowed, deliveryBackoffMs, type QueuedAgentRequest } from "../src/services/requestQueue";
@@ -55,6 +55,20 @@ describe("reliability", () => {
     assert.match(text, /\[phone\]/);
     assert.doesNotMatch(text, /super-secret/);
     assert.doesNotMatch(text, /415/);
+  });
+
+  it("preserves token counts while redacting credentials", () => {
+    const detail = redactUnknown({
+      inputTokens: 1200,
+      outputTokens: 30,
+      accessToken: "secret-value",
+      nested: { totalTokens: 1230, refreshToken: "another-secret" },
+    }) as { inputTokens: number; outputTokens: number; accessToken: string; nested: { totalTokens: number; refreshToken: string } };
+    assert.equal(detail.inputTokens, 1200);
+    assert.equal(detail.outputTokens, 30);
+    assert.equal(detail.accessToken, "[redacted]");
+    assert.equal(detail.nested.totalTokens, 1230);
+    assert.equal(detail.nested.refreshToken, "[redacted]");
   });
 
   it("opens a dependency circuit after repeated failures", () => {
