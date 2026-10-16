@@ -15,6 +15,8 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
 import { route, routeWithEscalation, TaskClass } from "./router";
+import { fitRunMessages, routePromptBudget } from "./promptBudget";
+import { toolStore } from "./runReplay";
 import {
   allToolDefinitions,
   dispatch,
@@ -515,7 +517,7 @@ export async function runAgent(
     const roundTools = judgmentReads?.size
       ? tools.filter((tool) => judgmentReads.has(tool.function.name))
       : tools;
-    const res = await route(profile.route, messages, {
+    const res = await route(profile.route, fitRunMessages(messages, routePromptBudget(profile.route)), {
       tools: roundTools,
       toolChoice: judgmentReads?.size ? "required" : undefined,
       attribution: {
@@ -597,6 +599,7 @@ export async function runAgent(
         detail: {
           tool: call.function.name,
           effect: operationMetadata(call.function.name).effect,
+          ...(toolStore(call.function.name) ? { store: toolStore(call.function.name) } : {}),
           round: round + 1,
           durationMs: Date.now() - toolStartedAt,
           ok:

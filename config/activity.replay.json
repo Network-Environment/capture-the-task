@@ -1,0 +1,132 @@
+[
+  {
+    "name": "fail-closed clarify",
+    "runId": "run-clarify",
+    "events": [
+      {
+        "type": "intent",
+        "traceId": "run-clarify",
+        "detail": { "disposition": "clarify", "explicit": [false], "ambiguous": true }
+      },
+      {
+        "type": "clarification",
+        "traceId": "run-clarify",
+        "detail": { "reason": "low_confidence" }
+      }
+    ]
+  },
+  {
+    "name": "inferred mutation asks first",
+    "runId": "run-inferred",
+    "events": [
+      {
+        "type": "intent",
+        "traceId": "run-inferred",
+        "detail": { "disposition": "proceed", "explicit": [false], "ambiguous": true }
+      },
+      {
+        "type": "policy",
+        "traceId": "run-inferred",
+        "detail": { "tool": "save_note", "effect": "personal_write", "decision": "clarify", "explicit": false }
+      },
+      {
+        "type": "clarification",
+        "traceId": "run-inferred",
+        "detail": { "reason": "inferred" }
+      }
+    ]
+  },
+  {
+    "name": "shared write waits for approval",
+    "runId": "run-approve",
+    "events": [
+      {
+        "type": "intent",
+        "traceId": "run-approve",
+        "detail": { "disposition": "proceed", "explicit": [true], "ambiguous": false }
+      },
+      {
+        "type": "policy",
+        "traceId": "run-approve",
+        "detail": {
+          "tool": "send_mail",
+          "effect": "shared_write",
+          "decision": "approve",
+          "explicit": true,
+          "approvalId": "pa-abc123"
+        }
+      },
+      {
+        "type": "request_queue",
+        "traceId": "run-approve",
+        "trigger": "request_completed",
+        "detail": { "requestId": "rq-approve" }
+      }
+    ]
+  },
+  {
+    "name": "note stays in the notes bank",
+    "runId": "run-note",
+    "events": [
+      {
+        "type": "intent",
+        "traceId": "run-note",
+        "detail": { "disposition": "proceed", "explicit": [true] }
+      },
+      {
+        "type": "tool_call",
+        "traceId": "run-note",
+        "detail": { "tool": "save_note", "effect": "personal_write", "store": "notes" }
+      },
+      {
+        "type": "agent_turn",
+        "traceId": "run-note",
+        "detail": { "phase": "complete" }
+      }
+    ]
+  },
+  {
+    "name": "scheduled job stays in its envelope",
+    "runId": "run-job",
+    "events": [
+      {
+        "type": "intent",
+        "traceId": "run-job",
+        "detail": { "disposition": "proceed", "explicit": [true] }
+      },
+      {
+        "type": "job_run",
+        "traceId": "run-job",
+        "trigger": "job:digest",
+        "detail": { "status": "ok", "allowedTools": ["recall_notes", "list_jobs"] }
+      },
+      {
+        "type": "tool_call",
+        "traceId": "run-job",
+        "detail": { "tool": "recall_notes", "effect": "read", "store": "notes" }
+      }
+    ]
+  },
+  {
+    "name": "capture is not silently lost",
+    "runId": "run-capture",
+    "events": [
+      {
+        "type": "intent",
+        "traceId": "run-capture",
+        "detail": { "disposition": "proceed", "explicit": [true] }
+      },
+      {
+        "type": "capture",
+        "traceId": "run-capture",
+        "detail": { "noteId": "note-1" }
+      },
+      {
+        "type": "request_queue",
+        "traceId": "run-capture",
+        "trigger": "request_completed",
+        "detail": { "requestId": "rq-capture" }
+      }
+    ]
+  }
+]

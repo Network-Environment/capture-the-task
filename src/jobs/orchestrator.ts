@@ -32,6 +32,7 @@ import {
   type OutcomeJob,
   type OutcomeStep,
 } from "../work/outcomes";
+import { isUnknownMutation, sealPendingMutations, type MutationLedger } from "../services/runFence";
 
 const POLL_MS = 60_000;
 const MAX_RETRIES = 3;
@@ -132,6 +133,19 @@ async function runOutcomes(adapter: CloudAdapter, botAppId: string): Promise<voi
       await saveOutcome({ ...claimed, status: "done", enabled: false });
       continue;
     }
+    let current = claimed;
+    const ledger: MutationLedger = {
+      checkpoint: claimed.checkpoint ?? {
+        runId: claimed.id,
+        generation: claimed.cursor,
+        completedIntents: [],
+        mutations: [],
+      },
+      persist: async (next) => {
+        current = await saveOutcome({ ...current, checkpoint: next });
+        ledger.checkpoint = current.checkpoint ?? next;
+      },
+    };
     try {
       const getGraphToken = await graphTokenFor(
         adapter,
@@ -149,6 +163,7 @@ async function runOutcomes(adapter: CloudAdapter, botAppId: string): Promise<voi
             trigger: `outcome:${claimed.name}`,
             allowedTools: step.allowedTools,
             getGraphToken,
+            ledger,
             authorization: {
               explicit: true,
               confidence: 1,
@@ -163,7 +178,7 @@ async function runOutcomes(adapter: CloudAdapter, botAppId: string): Promise<voi
           step.profile
         )
       );
-      const updated = applyStepResult(claimed, result);
+      const updated = applyStepResult({ ...current, checkpoint: ledger.checkpoint }, result);
       await saveOutcome(updated);
       const prefer = teamsPrefer(claimed.conversationRef);
       await deliver(
@@ -182,7 +197,12 @@ async function runOutcomes(adapter: CloudAdapter, botAppId: string): Promise<voi
       });
     } catch (err) {
       const message = (err as Error).message;
-      const updated = applyStepError(claimed, message);
+      const sealed = sealPendingMutations(ledger.checkpoint);
+      const base = { ...current, checkpoint: sealed };
+      const interrupted = isUnknownMutation(err) || sealed.mutations.some((row) => row.status === "unknown");
+      const updated = interrupted
+        ? { ...base, status: "failed" as const, enabled: false, progress: message.slice(0, 500) }
+        : applyStepError(base, message);
       await saveOutcome(updated);
       if (updated.status === "failed") {
         await alertUser(claimed.userId, `Outcome "${claimed.name}" stopped: ${message.slice(0, 200)}`);

@@ -226,13 +226,31 @@ export async function beginRequestRun(request: QueuedAgentRequest): Promise<Queu
   const generation = (request.generation ?? 0) + 1;
   const runId = `${request.id}:${generation}`;
   const checkpoint = {
-    runId,
+    runId: request.checkpoint?.runId ?? runId,
     generation,
     completedIntents: request.checkpoint?.completedIntents ?? [],
     mutations: request.checkpoint?.mutations ?? [],
+    intentResults: request.checkpoint?.intentResults,
   };
   await replaceRequest(request, { activeRunId: runId, generation, checkpoint });
   return { ...request, activeRunId: runId, generation, checkpoint };
+}
+
+export async function saveRequestCheckpoint(
+  id: string,
+  checkpoint: RunCheckpoint
+): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const current = await getAgentRequest(id);
+    if (!current) return;
+    try {
+      await replaceRequest(current, { checkpoint });
+      return;
+    } catch (err) {
+      if ((err as { code?: number }).code !== 412) throw err;
+    }
+  }
+  throw new Error(`could not checkpoint request ${id}`);
 }
 
 export async function completeAgentRequest(

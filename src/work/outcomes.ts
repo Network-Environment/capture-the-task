@@ -4,6 +4,7 @@
  */
 import { loadConfig } from "../config";
 import { cosmosContainer } from "../services/cosmos";
+import type { RunCheckpoint } from "../services/runFence";
 
 export const OUTCOME_STEP_DEADLINE_MS = Number(process.env.REQUEST_DEADLINE_MS ?? 240_000);
 const MAX_STEPS = 8;
@@ -29,6 +30,8 @@ export interface OutcomeJob {
   enabled: boolean;
   progress?: string;
   attempts?: number;
+  /** Tool writes for this outcome. The cursor remains the step checkpoint. */
+  checkpoint?: RunCheckpoint;
   _etag?: string;
 }
 
@@ -217,15 +220,16 @@ export async function claimOutcome(job: OutcomeJob): Promise<OutcomeJob | null> 
   }
 }
 
-export async function saveOutcome(job: OutcomeJob): Promise<void> {
+export async function saveOutcome(job: OutcomeJob): Promise<OutcomeJob> {
   const { _etag, ...rest } = job;
   if (_etag) {
-    await outcomes().item(job.id, job.userId).replace(rest, {
+    const { resource } = await outcomes().item(job.id, job.userId).replace<OutcomeJob>(rest, {
       accessCondition: { type: "IfMatch", condition: _etag },
     });
-    return;
+    return resource ?? rest;
   }
-  await outcomes().items.upsert(rest);
+  const { resource } = await outcomes().items.upsert<OutcomeJob>(rest);
+  return resource ?? rest;
 }
 
 export function withDeadline<T>(work: Promise<T>, ms = OUTCOME_STEP_DEADLINE_MS): Promise<T> {

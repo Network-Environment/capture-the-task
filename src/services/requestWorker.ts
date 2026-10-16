@@ -18,10 +18,11 @@ import {
   markAgentRequestFailed,
   quarantineAgentRequest,
   retryAgentRequest,
+  saveRequestCheckpoint,
   type QueuedAgentRequest,
 } from "./requestQueue";
 import { openIncident } from "./recoveryIncidents";
-import { RunFencedError } from "./runFence";
+import { RunFencedError, isUnknownMutation, sealPendingMutations, type MutationLedger } from "./runFence";
 
 const POLL_MS = Number(process.env.REQUEST_POLL_MS ?? 5_000);
 /**
@@ -133,10 +134,23 @@ async function processRequest(
   request: QueuedAgentRequest
 ): Promise<void> {
   const controller = new AbortController();
+  let ledger: MutationLedger | undefined;
   try {
     const current = await beginRequestRun((await getAgentRequest(request.id)) ?? request);
+    ledger = {
+      checkpoint: current.checkpoint ?? {
+        runId: current.activeRunId ?? current.id,
+        generation: current.generation ?? 1,
+        completedIntents: [],
+        mutations: [],
+      },
+      persist: async (next) => {
+        ledger!.checkpoint = next;
+        await saveRequestCheckpoint(current.id, next);
+      },
+    };
     const run = async (item: QueuedAgentRequest) => {
-      if (item.channel === "teams") return processTeamsRequest(adapter, botAppId, item, controller.signal);
+      if (item.channel === "teams") return processTeamsRequest(adapter, botAppId, item, controller.signal, ledger);
       const graph = await graphAccessForUser(adapter, botAppId, item.userId);
       return processCapture({
         userId: item.userId,
@@ -150,6 +164,7 @@ async function processRequest(
         traceId: item.activeRunId,
         runId: item.activeRunId,
         signal: controller.signal,
+        ledger,
       });
     };
     let out = await withDeadline(run(current), REQUEST_DEADLINE_MS, request.id);
@@ -182,19 +197,25 @@ async function processRequest(
   } catch (err) {
     controller.abort();
     const message = (err as Error).message;
+    let failed = (await getAgentRequest(request.id)) ?? request;
+    if (ledger) {
+      const sealed = sealPendingMutations(ledger.checkpoint);
+      ledger.checkpoint = sealed;
+      failed = { ...failed, checkpoint: sealed };
+    }
     // A request that ran out its deadline is terminal: retrying it would stall
     // the worker again and starve everyone behind it.
-    const kind = classifyFailure(err, {
-      mutating: Boolean(request.checkpoint?.mutations.some((row) => row.status !== "completed")),
+    const kind = classifyFailure(isUnknownMutation(err) ? new Error("mutation may have succeeded") : err, {
+      mutating: Boolean(failed.checkpoint?.mutations.some((row) => row.status !== "completed")),
     });
     let retrying = false;
     if (err instanceof RunFencedError) return;
     if (kind === "deadline" || kind === "unknown_outcome" || (kind === "permanent" && request.attempts >= 3)) {
-      await quarantineAgentRequest(request, message, kind === "permanent" ? "permanent" : kind);
+      await quarantineAgentRequest(failed, message, kind === "permanent" ? "permanent" : kind);
     } else if (kind === "permanent") {
-      await markAgentRequestFailed(request, message);
+      await markAgentRequestFailed(failed, message);
     } else {
-      retrying = await retryAgentRequest(request, message);
+      retrying = await retryAgentRequest(failed, message);
     }
     console.error(
       `[request-worker] ${request.id} ${retrying ? "retrying" : "failed"}:`,
@@ -219,7 +240,8 @@ async function processTeamsRequest(
   adapter: CloudAdapter,
   botAppId: string,
   request: QueuedAgentRequest,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  ledger?: MutationLedger
 ): Promise<Outbound> {
   if (request.conversationRef.channel !== "teams") {
     throw new Error("Queued Teams request has no Teams conversation reference.");
@@ -243,6 +265,7 @@ async function processTeamsRequest(
         traceId: request.activeRunId,
         runId: request.activeRunId,
         signal,
+        ledger,
       });
     }
   );

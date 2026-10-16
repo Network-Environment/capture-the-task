@@ -16,6 +16,7 @@
     "org:import": "tsx scripts/import-org.ts",
     "intent:evaluate": "tsx scripts/evaluate-intent.ts",
     "agent:evaluate": "tsx scripts/evaluate-agent.ts",
+    "activity:replay": "tsx scripts/replay-activity.ts",
     "plaud:import-token": "tsx scripts/import-plaud-token.ts"
   },
   "dependencies": {

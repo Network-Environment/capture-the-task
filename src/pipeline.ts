@@ -48,6 +48,15 @@ import { claimInboundEvent, finishInboundEvent } from "./services/inboundReceipt
 import { assessInboundQuality, restrainShortReply } from "./services/inboundQuality";
 import { userHasPendingCheckIn } from "./org/checkins";
 import { envFlag, PRODUCTION_FLAG_DEFAULTS } from "./config";
+import {
+  findMutation,
+  guardedMutation,
+  intentId,
+  isUnknownMutation,
+  mutationKey,
+  rememberIntent,
+  type MutationLedger,
+} from "./services/runFence";
 
 export interface CaptureInput {
   userId: string; // canonical user id (Entra object id) — channels must resolve to this
@@ -76,6 +85,8 @@ export interface CaptureInput {
   /** Worker run generation. Distinct from eventId so retries are not treated as duplicates. */
   runId?: string;
   signal?: AbortSignal;
+  /** Present for queued requests and outcome steps. Direct calls leave it unset. */
+  ledger?: MutationLedger;
 }
 
 export interface Outbound {
@@ -150,6 +161,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
         conversationRef: input.conversationRef,
         conversationId: input.conversationId,
         channel: input.channel,
+        ledger: input.ledger,
       })
   );
   if (approval) {
@@ -510,8 +522,33 @@ async function executePlan(
   history: PromptHistory
 ): Promise<Outbound> {
   const outputs: Outbound[] = [];
-  for (const intent of plan.intents) {
-    outputs.push(await executeIntent(input, intent, recent, source, history));
+  for (let index = 0; index < plan.intents.length; index++) {
+    const intent = plan.intents[index];
+    const id = intentId(index, intent);
+    const stored = input.ledger?.checkpoint.intentResults?.[id];
+    if (input.ledger?.checkpoint.completedIntents.includes(id) && stored) {
+      outputs.push({
+        title: stored.title,
+        body: stored.body,
+        tags: stored.tags,
+        summaryLine: stored.summaryLine,
+        references: stored.references,
+      });
+      continue;
+    }
+    const out = await executeIntent(input, intent, recent, source, history);
+    if (input.ledger) {
+      const next = rememberIntent(input.ledger.checkpoint, id, {
+        title: out.title,
+        body: out.body.slice(0, 2000),
+        summaryLine: out.summaryLine,
+        tags: out.tags,
+        references: out.references,
+      });
+      input.ledger.checkpoint = next;
+      await input.ledger.persist(next);
+    }
+    outputs.push(out);
   }
   if (outputs.length === 1) return outputs[0];
   return {
@@ -570,6 +607,7 @@ async function executeIntent(
         allowedTools: await interactiveReadToolEnvelope(),
         getGraphToken: input.getGraphToken,
         traceId: input.traceId,
+        ledger: input.ledger,
     };
     const result = await runAgent(ctx, intent.standalone, undefined, recent, history);
     return agentOutbound(ctx, result, "TaskBrain");
@@ -648,6 +686,7 @@ async function executeIntent(
         authorization: auth,
         getGraphToken: input.getGraphToken,
         traceId: input.traceId,
+        ledger: input.ledger,
     };
     const result = await runAgent(
       ctx,
@@ -664,6 +703,45 @@ async function executeIntent(
     tags: [],
     summaryLine: "Waiting for clarification",
   };
+}
+
+async function fileCapturedNote(
+  input: CaptureInput,
+  userId: string,
+  note: {
+    kind: "task" | "idea" | "reference";
+    title: string;
+    body: string;
+    tags: string[];
+    links?: string[];
+    source: "text" | "voice";
+  },
+  attribution: { origin: "user_message"; channel: Channel; inputMode: "text" | "voice" }
+): Promise<{ id: string; path: string }> {
+  const args = { kind: note.kind, title: note.title, body: note.body };
+  const key = input.ledger ? mutationKey(input.ledger.checkpoint.runId, "save_note", args) : "";
+  const prior = key ? findMutation(input.ledger?.checkpoint, key) : undefined;
+  const recorded = await guardedMutation(
+    input.ledger,
+    "save_note",
+    args,
+    "personal_write",
+    async () => {
+      const saved = await saveNote(userId, note, attribution);
+      return JSON.stringify({ id: saved.id, path: saved.path });
+    }
+  );
+  const saved = JSON.parse(recorded) as { id: string; path: string };
+  if (prior?.status !== "completed") {
+    void retainFromCapture(userId, `${note.title}\n${note.body}`, saved.id, attribution);
+    await setLastCapture(userId, input.conversationId, {
+      id: saved.id,
+      path: saved.path,
+      title: note.title,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  return saved;
 }
 
 async function execute(
@@ -690,26 +768,30 @@ async function execute(
       let line = `**${r.title}**` + (r.due ? ` — due ${r.due}` : "");
       if (input.createTask) {
         try {
-          await input.createTask(r.title, r.detail, r.due);
-          line += "\n✓ Created in Microsoft To Do";
-        } catch {
+          const todo = await guardedMutation(
+            input.ledger,
+            "create_todo",
+            { title: r.title, detail: r.detail, due: r.due },
+            "personal_write",
+            async () => {
+              await input.createTask!(r.title, r.detail, r.due);
+              return "created";
+            }
+          );
+          if (todo === "created") line += "\n✓ Created in Microsoft To Do";
+        } catch (err) {
+          if (isUnknownMutation(err)) throw err;
           line += "\n⚠ To Do not connected — saved to the brain instead";
         }
       } else {
         line += "\n✓ Saved to the brain. Sign in once in Teams and I can file To Do from any chat.";
       }
-      const saved = await saveNote(
+      const saved = await fileCapturedNote(
+        input,
         userId,
         { kind: "task", title: r.title, body: r.detail || text, tags: r.tags, source },
         attribution
       );
-      void retainFromCapture(userId, `${r.title}\n${r.detail || text}`, saved.id, attribution);
-      await setLastCapture(userId, input.conversationId, {
-        id: saved.id,
-        path: saved.path,
-        title: r.title,
-        createdAt: new Date().toISOString(),
-      });
       if (allowInferredSheetProposal && effectivePolicy.allowSharedWrites) {
         const proposed = await maybeProposeSheetUpdate(userId, {
           title: r.title,
@@ -729,7 +811,8 @@ async function execute(
 
     case "idea":
     case "reference": {
-      const { path, id } = await saveNote(
+      const { path, id } = await fileCapturedNote(
+        input,
         userId,
         {
           kind: r.kind,
@@ -741,13 +824,6 @@ async function execute(
         },
         attribution
       );
-      void retainFromCapture(userId, `${r.title}\n${r.detail || text}`, id, attribution);
-      await setLastCapture(userId, input.conversationId, {
-        id,
-        path,
-        title: r.title,
-        createdAt: new Date().toISOString(),
-      });
       const links = r.links.length ? `\nLinked: ${r.links.map((l) => `[[${l}]]`).join(", ")}` : "";
       return {
         title: r.kind === "idea" ? "Idea filed" : "Reference filed",
@@ -826,6 +902,7 @@ async function execute(
           },
           getGraphToken: input.getGraphToken,
           traceId: input.traceId,
+          ledger: input.ledger,
       };
       const result = await runAgent(ctx, text, agentProfileFor("action", text), recent, history);
       return agentOutbound(ctx, result, "Done");

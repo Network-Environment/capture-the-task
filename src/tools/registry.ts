@@ -110,6 +110,7 @@ import {
 import { formatUserGuide, USER_GUIDE_TOPICS } from "../services/userGuide";
 import { envFlag, PRODUCTION_FLAG_DEFAULTS } from "../config";
 import { setPendingClarification } from "../services/session";
+import { guardedMutation, isUnknownMutation, type MutationLedger } from "../services/runFence";
 
 export interface ToolContext {
   userId: string;
@@ -142,6 +143,8 @@ export interface ToolContext {
   unmetNoted?: boolean;
   /** Tool names called during this turn, used when saving a skill. */
   toolTrace?: string[];
+  /** Durable write ledger for this request or outcome. Reads ignore it. */
+  ledger?: MutationLedger;
 }
 
 const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversible">> = {
@@ -1443,23 +1446,36 @@ export async function dispatch(
       } satisfies AuthorizationContext);
     if (!options.approved && envFlag("UNIFIED_ACTION_POLICY_ENABLED", PRODUCTION_FLAG_DEFAULTS.UNIFIED_ACTION_POLICY_ENABLED)) {
       const policy = evaluateOperation(operation, authorization);
-      void logActivity({
-        type: "policy",
-        userId: ctx.userId,
-        origin: ctx.origin,
-        channel: ctx.channel,
-        inputMode: ctx.inputMode,
-        trigger: ctx.trigger ?? "operation_policy",
-        traceId: ctx.traceId,
-        detail: {
-          tool: name,
+      let approvalId: string | undefined;
+      const logPolicy = () => {
+        void logActivity({
+          type: "policy",
+          userId: ctx.userId,
+          origin: ctx.origin,
+          channel: ctx.channel,
+          inputMode: ctx.inputMode,
+          trigger: ctx.trigger ?? "operation_policy",
+          traceId: ctx.traceId,
+          detail: {
+            tool: name,
+            effect: operation.effect,
+            decision: policy.decision,
+            explicit: authorization.explicit,
+            confidenceBand:
+              authorization.confidence >= 0.9 ? "high" : authorization.confidence >= 0.72 ? "medium" : "low",
+            ...(approvalId ? { approvalId } : {}),
+          },
+        });
+      };
+      if (policy.decision === "approve") {
+        approvalId = await parkAction(ctx.userId, name, args, {
           effect: operation.effect,
-          decision: policy.decision,
-          explicit: authorization.explicit,
-          confidenceBand:
-            authorization.confidence >= 0.9 ? "high" : authorization.confidence >= 0.72 ? "medium" : "low",
-        },
-      });
+          reason: policy.reason,
+          summary: `${operation.description}: ${JSON.stringify(args).slice(0, 500)}`,
+          authorization,
+        });
+      }
+      logPolicy();
       if (policy.decision === "clarify") {
         const question = policy.reason;
         await setPendingClarification(ctx.userId, ctx.conversationId, {
@@ -1485,14 +1501,8 @@ export async function dispatch(
         return `CLARIFY: ${question}`;
       }
       if (policy.decision === "deny") return `NOT_ALLOWED: ${policy.reason}`;
-      if (policy.decision === "approve") {
-        const id = await parkAction(ctx.userId, name, args, {
-          effect: operation.effect,
-          reason: policy.reason,
-          summary: `${operation.description}: ${JSON.stringify(args).slice(0, 500)}`,
-          authorization,
-        });
-        return approvalMessage(id, name, args) + ` Reason: ${policy.reason}`;
+      if (policy.decision === "approve" && approvalId) {
+        return approvalMessage(approvalId, name, args) + ` Reason: ${policy.reason}`;
       }
     }
     if (
@@ -1504,8 +1514,25 @@ export async function dispatch(
         effect: operation.effect,
         authorization,
       });
+      void logActivity({
+        type: "policy",
+        userId: ctx.userId,
+        origin: ctx.origin,
+        channel: ctx.channel,
+        inputMode: ctx.inputMode,
+        trigger: ctx.trigger ?? "operation_policy",
+        traceId: ctx.traceId,
+        detail: {
+          tool: name,
+          effect: operation.effect,
+          decision: "approve",
+          approvalId: id,
+          explicit: authorization.explicit,
+        },
+      });
       return approvalMessage(id, name, args);
     }
+    const perform = async (): Promise<string> => {
     ctx.toolTrace = ctx.toolTrace ?? [];
     if (name !== "save_skill") ctx.toolTrace.push(name);
     if (isMcpTool(name)) {
@@ -2121,7 +2148,11 @@ export async function dispatch(
       default:
         return `Unknown tool: ${name}`;
     }
+    };
+    if (operation.effect === "read") return perform();
+    return guardedMutation(ctx.ledger, name, args, operation.effect, perform);
   } catch (err) {
+    if (isUnknownMutation(err)) throw err;
     // Tool errors go back to the model as text so it can recover or report.
     return graphToolFailure(ctx, err, `Tool ${name} failed`);
   }
@@ -2153,6 +2184,7 @@ export async function executeApprovedAction(
       getGraphToken: extras.getGraphToken,
       conversationRef: extras.conversationRef,
       conversationId: extras.conversationId,
+      ledger: extras.ledger,
     },
     action.tool,
     action.args,

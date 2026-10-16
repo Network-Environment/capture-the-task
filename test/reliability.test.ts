@@ -6,7 +6,16 @@ import { redactText, redactUnknown } from "../src/runtime/redact";
 import { circuitAllows, circuitFailure, resetCircuits } from "../src/runtime/circuits";
 import { liveness, readiness, noteCosmosReady, beat } from "../src/runtime/health";
 import { replayAllowed, deliveryBackoffMs, type QueuedAgentRequest } from "../src/services/requestQueue";
-import { completedIntent, findMutation, mutationKey, recordMutation } from "../src/services/runFence";
+import {
+  completedIntent,
+  findMutation,
+  guardedMutation,
+  mutationKey,
+  recordMutation,
+  sealPendingMutations,
+  type MutationLedger,
+  type RunCheckpoint,
+} from "../src/services/runFence";
 import { verifyResponse, chunkEvidence } from "../src/services/modelHealing";
 import { lessonIsActive, type Lesson } from "../src/services/agentMemory";
 import { canaryShouldRollback, promotionAllowed } from "../src/services/behaviorVersion";
@@ -106,6 +115,62 @@ describe("reliability", () => {
   it("adds jitter without exceeding the delivery cap", () => {
     assert.ok(deliveryBackoffMs(1, 0) >= 30_000);
     assert.ok(deliveryBackoffMs(10, 1) <= 15 * 60_000 + 5_000);
+  });
+
+  it("runs a mutation once across the three crash points", async () => {
+    let calls = 0;
+    const run = async () => {
+      calls += 1;
+      return "saved-note";
+    };
+    const empty: RunCheckpoint = { runId: "run", generation: 1, completedIntents: [], mutations: [] };
+    assert.equal(empty.mutations.length, 0);
+    assert.equal(calls, 0);
+
+    let stored = empty;
+    const killed: MutationLedger = {
+      checkpoint: empty,
+      persist: async (next) => {
+        const status = next.mutations.find((row) => row.tool === "save_note")?.status;
+        if (status === "pending") {
+          stored = next;
+          killed.checkpoint = next;
+          return;
+        }
+        throw new Error("killed after the external write");
+      },
+    };
+    await assert.rejects(
+      guardedMutation(killed, "save_note", { title: "A" }, "personal_write", run),
+      /may have succeeded/
+    );
+    assert.equal(calls, 1);
+    assert.equal(stored.mutations[0]?.status, "pending");
+
+    const resumed: MutationLedger = {
+      checkpoint: stored,
+      persist: async (next) => {
+        stored = next;
+        resumed.checkpoint = next;
+      },
+    };
+    await assert.rejects(
+      guardedMutation(resumed, "save_note", { title: "A" }, "personal_write", run),
+      /may have succeeded/
+    );
+    assert.equal(calls, 1);
+    assert.equal(stored.mutations[0]?.status, "unknown");
+    assert.equal(sealPendingMutations(stored), stored);
+
+    const key = mutationKey("run", "save_note", { title: "B" });
+    const completed: MutationLedger = {
+      checkpoint: recordMutation(empty, { key, tool: "save_note", status: "completed", result: "saved" }),
+      persist: async () => {
+        throw new Error("completed result must be reused");
+      },
+    };
+    assert.equal(await guardedMutation(completed, "save_note", { title: "B" }, "personal_write", run), "saved");
+    assert.equal(calls, 1);
   });
 
   it("reuses a completed mutation and checkpoints intents", () => {
