@@ -143,6 +143,12 @@ export interface ToolContext {
   unmetNoted?: boolean;
   /** Tool names called during this turn, used when saving a skill. */
   toolTrace?: string[];
+  /** Successful mutation results used to prevent unsupported completion claims. */
+  mutationReceipts?: string[];
+  /** Real parked ids returned by the approval store during this turn. */
+  pendingApprovals?: string[];
+  /** Deterministic approval copy; preferred over model narration. */
+  pendingApprovalMessages?: string[];
   /** Durable write ledger for this request or outcome. Reads ignore it. */
   ledger?: MutationLedger;
 }
@@ -201,13 +207,13 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   update_graph_item: { effect: "shared_write", reversible: true },
   propose_graph_relationship: { effect: "shared_write", reversible: true },
   propose_timeline: { effect: "shared_write", reversible: true },
-  open_pmo_board: { effect: "shared_write", reversible: true },
+  open_pmo_board: { effect: "reversible_shared_write", reversible: true },
   list_pmo_boards: { effect: "read", reversible: true },
   list_pmo_board: { effect: "read", reversible: true },
-  add_pmo_item: { effect: "shared_write", reversible: true },
-  update_pmo_item: { effect: "shared_write", reversible: true },
-  add_pmo_column: { effect: "shared_write", reversible: true },
-  close_pmo_board: { effect: "shared_write", reversible: true },
+  add_pmo_item: { effect: "reversible_shared_write", reversible: true },
+  update_pmo_item: { effect: "reversible_shared_write", reversible: true },
+  add_pmo_column: { effect: "reversible_shared_write", reversible: true },
+  close_pmo_board: { effect: "reversible_shared_write", reversible: true },
 };
 const scheduledNativeReads = new Set([
   "explain_taskbrain",
@@ -1474,6 +1480,7 @@ export async function dispatch(
           summary: `${operation.description}: ${JSON.stringify(args).slice(0, 500)}`,
           authorization,
         });
+        ctx.pendingApprovals = [...(ctx.pendingApprovals ?? []), approvalId];
       }
       logPolicy();
       if (policy.decision === "clarify") {
@@ -1502,7 +1509,9 @@ export async function dispatch(
       }
       if (policy.decision === "deny") return `NOT_ALLOWED: ${policy.reason}`;
       if (policy.decision === "approve" && approvalId) {
-        return approvalMessage(approvalId, name, args) + ` Reason: ${policy.reason}`;
+        const message = approvalMessage(approvalId, name, args) + ` Reason: ${policy.reason}`;
+        ctx.pendingApprovalMessages = [...(ctx.pendingApprovalMessages ?? []), message];
+        return message;
       }
     }
     if (
@@ -1514,6 +1523,7 @@ export async function dispatch(
         effect: operation.effect,
         authorization,
       });
+      ctx.pendingApprovals = [...(ctx.pendingApprovals ?? []), id];
       void logActivity({
         type: "policy",
         userId: ctx.userId,
@@ -1530,7 +1540,9 @@ export async function dispatch(
           explicit: authorization.explicit,
         },
       });
-      return approvalMessage(id, name, args);
+      const message = approvalMessage(id, name, args);
+      ctx.pendingApprovalMessages = [...(ctx.pendingApprovalMessages ?? []), message];
+      return message;
     }
     const perform = async (): Promise<string> => {
     ctx.toolTrace = ctx.toolTrace ?? [];
@@ -2150,7 +2162,16 @@ export async function dispatch(
     }
     };
     if (operation.effect === "read") return perform();
-    return guardedMutation(ctx.ledger, name, args, operation.effect, perform);
+    const result = await guardedMutation(ctx.ledger, name, args, operation.effect, perform);
+    if (
+      !result.startsWith("NOT_ALLOWED:") &&
+      !result.startsWith("INVALID_ARGUMENTS:") &&
+      !result.startsWith(`Tool ${name} failed`) &&
+      !/execution failed|may have succeeded/i.test(result)
+    ) {
+      ctx.mutationReceipts = [...(ctx.mutationReceipts ?? []), result.slice(0, 1000)];
+    }
+    return result;
   } catch (err) {
     if (isUnknownMutation(err)) throw err;
     // Tool errors go back to the model as text so it can recover or report.

@@ -50,13 +50,13 @@ function formatOverview(ctx: UserGuideContext): string {
     .join("\n");
   return [
     "TaskBrain is Net Env’s capture-and-follow-through assistant. Send a complete thought in this chat; I infer the outcome. I am not a general chatbot, a transcript archive, or a replacement for Outlook, Teams, or Smartsheet.",
-    "TaskBrain keeps the last few hours of this private chat, and it keeps what you asked it to remember.",
+    "TaskBrain keeps a rolling 24 hours of this private chat, and it keeps what you asked it to remember.",
     "",
     "What I can help with:",
     areas,
     "",
     "Try saying: “Capture: follow up with Morgan on Friday.” or “Who should own the risk register update?”",
-    "Shared or scheduled changes come back as a preview you confirm with approve pa-…. Timezone is US Central.",
+    "Explicit TaskBrain board edits happen immediately and return a record id. External or scheduled changes, including Smartsheet writes, come back as a preview you confirm with approve pa-…. Timezone is US Central.",
     "",
     currentLimits(ctx),
     "",

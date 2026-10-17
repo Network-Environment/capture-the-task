@@ -32,7 +32,7 @@ test("capture fields are normalized for valid persistent kinds", () => {
 });
 
 test("both adapters hide queue internals behind a natural acknowledgement", () => {
-  assert.equal(WORKING_RESPONSE, "Got it — I’m working on that.");
+  assert.equal(WORKING_RESPONSE, "Received — I’ll follow up with the result.");
   assert.doesNotMatch(WORKING_RESPONSE, /queue|request id/i);
   const routes = loadConfig<{
     routes: Record<string, { deployment: string; maxTokens: number }>;

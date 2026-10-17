@@ -1,5 +1,16 @@
 {
-  "sheets": [],
+  "sheets": [
+    {
+      "alias": "Task to Capture 2026",
+      "sheetId": "782519954788228",
+      "purpose": "Task capture sheet; Administrative is a parent row"
+    },
+    {
+      "alias": "(3) Task to Capture 2026 - Smartsheet.com",
+      "sheetId": "782519954788228",
+      "purpose": "Teams/browser title alias for Task to Capture 2026"
+    }
+  ],
   "_notes": [
     "Bounded PMO catalog injected into the pmo agent prompt (names/ids only, never row data).",
     "Add entries as: { \"alias\": \"risk register\", \"sheetId\": \"123\", \"purpose\": \"open risks\" }.",

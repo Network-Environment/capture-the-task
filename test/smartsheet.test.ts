@@ -21,6 +21,10 @@ test("PMO wording is an action profile, greetings are not", () => {
   assert.equal(agentProfileFor("action", "what's open on the risk register?"), "pmo");
   assert.equal(agentProfileFor("action", "schedule a Friday digest"), undefined);
   assert.equal(agentProfileFor("question", "risk register"), undefined);
+  assert.equal(isPmoRequest("create an ephemeral Admin board"), false);
+  assert.equal(isPmoRequest("on the HR-Talent Acquisition card add these roles"), false);
+  assert.equal(isPmoRequest("add this item to the TaskBrain PMO board"), false);
+  assert.equal(isPmoRequest("sheet id 782519954788228"), true);
 });
 
 test("search JSON parses sheet and row ids", () => {
@@ -93,6 +97,35 @@ test("get_sheet_summary JSON becomes row hits with status columns", () => {
   assert.equal(fromSummary[0]?.rowId, "88");
   assert.equal(fromSummary[0]?.statusColumnId, 2);
   assert.equal(fromSummary[0]?.owner, "Val");
+});
+
+test("live MCP text summary becomes searchable row hits", () => {
+  const summary = `sheet_id: 782519954788228
+sheet_name: Task to Capture 2026
+available_columns[3]:
+  - index: 0
+    title: Initiative
+    type: TEXTNUMBER
+  - index: 3
+    title: Workstream
+    type: TEXTNUMBER
+  - index: 5
+    title: WS Owner
+    type: PICKLIST
+rows[1]:
+  - row_id: 731399982284676
+    row_number: 3
+    cells[3]{column_index value}:
+      0\tAdministrative
+      3\tAdministrative
+      5\tValerie Moraru
+    predecessors: null`;
+  const rows = parseSheetForRows(summary, "fallback", "fallback");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.sheetId, "782519954788228");
+  assert.equal(rows[0]?.rowId, "731399982284676");
+  assert.match(rows[0]?.text ?? "", /Administrative/);
+  assert.equal(rows[0]?.owner, "Valerie Moraru");
 });
 
 test("parked Smartsheet writes are human-readable; search does not need approval", () => {

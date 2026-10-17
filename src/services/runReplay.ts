@@ -42,7 +42,13 @@ export interface ReplayFailure {
 }
 
 const CLOSED_DISPOSITIONS = new Set(["proceed", "clarify", "help", "refuse"]);
-const SHARED_EFFECTS = new Set(["shared_write", "destructive", "scheduled", "external_cost"]);
+const SHARED_EFFECTS = new Set([
+  "reversible_shared_write",
+  "shared_write",
+  "destructive",
+  "scheduled",
+  "external_cost",
+]);
 const TOOL_STORES: Record<string, string> = {
   save_note: "notes",
   remember_lesson: "agent-memory",
@@ -56,9 +62,15 @@ const TOOL_STORES: Record<string, string> = {
   lookup_org: "org",
   remember_org_preference: "org",
   remember_org_responsibility: "org",
+  open_pmo_board: "pmo-boards",
+  add_pmo_item: "pmo-boards",
+  update_pmo_item: "pmo-boards",
+  add_pmo_column: "pmo-boards",
+  close_pmo_board: "pmo-boards",
 };
 
 export function toolStore(name: string): string | undefined {
+  if (name.startsWith("smartsheet__")) return "smartsheet";
   return TOOL_STORES[name];
 }
 

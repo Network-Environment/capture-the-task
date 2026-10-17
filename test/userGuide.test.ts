@@ -14,7 +14,7 @@ describe("TaskBrain user guide", () => {
     const text = formatUserGuide("overview", full);
     assert.match(text, /capture-and-follow-through/i);
     assert.match(text, /Try saying:/);
-    assert.match(text, /last few hours of this private chat/i);
+    assert.match(text, /rolling 24 hours of this private chat/i);
     assert.match(text, /what you asked it to remember/i);
     assert.match(text, /Ask about a specific area/);
     assert.match(text, /What is limited right now/);

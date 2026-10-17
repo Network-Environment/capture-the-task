@@ -98,7 +98,7 @@ export function fallbackAck(
   if (kind === "reply") {
     return name ? `Hey ${name} — what can I do for you?` : "Hey — what can I do for you?";
   }
-  return name ? `Got it, ${name} — on it.` : WORKING_RESPONSE;
+  return WORKING_RESPONSE;
 }
 
 export function attachedAck(name?: string): string {
@@ -344,6 +344,11 @@ export async function composeAcknowledgement(
     firstName = firstNameFrom(ctx.displayNameHint);
   }
   const generate = deps.generate ?? defaultGenerate;
+  // Receipts must be neutral and deterministic. The final result carries the
+  // personalized substance and is the only message allowed to claim effects.
+  if (kind === "receipt") {
+    return { kind, text: fallbackAck(kind, social, firstName), firstName, social };
+  }
   try {
     const raw = await withTimeout(
       generate({ kind, social, name: firstName, text: ctx.text, channel: ctx.channel }),

@@ -1,6 +1,7 @@
 import { CardFactory, ConversationReference, TurnContext } from "botbuilder";
 import { getConversationRef } from "../services/conversations";
 import { getDeliveryAdapter, getDeliveryAppId } from "../channels/deliveryContext";
+import { channelPolicy } from "../channels/types";
 import type { OrgPerson } from "../org/types";
 import { defaultQueues } from "../org/prefs";
 import { maybeProposeSheetUpdate } from "../services/smartsheet";
@@ -296,6 +297,14 @@ async function smartsheetDestination(userId: string, work: WorkAssignment): Prom
     title: work.title,
     detail: work.detail,
     due: work.due,
+  }, {
+    explicit: true,
+    confidence: 1,
+    channel: channelPolicy("teams", {
+      scope: "private",
+      identity: "canonical",
+      allowActions: true,
+    }),
   });
   if (!parked) return { kind: "smartsheet", error: "no high-confidence catalog match" };
   return { kind: "smartsheet", extra: parked.slice(0, 240) };

@@ -57,8 +57,8 @@ describe("session window", () => {
     assert.deepEqual(applied.dropped, []);
   });
 
-  it("stamps the four-hour ttl on every session write", () => {
-    assert.equal(SESSION_TTL_SECONDS, 4 * 3600);
+  it("stamps the 24-hour ttl on every session write", () => {
+    assert.equal(SESSION_TTL_SECONDS, 24 * 3600);
     assert.equal(withSessionTtl({ id: "session" }).ttl, SESSION_TTL_SECONDS);
   });
 

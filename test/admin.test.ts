@@ -319,7 +319,7 @@ describe("admin portal", () => {
     assert.match(html, /smartsheet/);
     assert.match(html, /browser/);
     assert.match(html, />connected</);
-    assert.match(html, /search by name/);
+    assert.match(html, /2 alias\(es\)/);
     assert.match(html, /token empty/);
     assert.match(html, /Web search/);
     assert.match(html, /tavily/);

@@ -22,7 +22,7 @@ import {
 import { saveNote, recall, deleteNote } from "./services/brain";
 import { retainFromCapture } from "./memory/retain";
 import { recallMemory, recallPromptBlock } from "./memory/recall";
-import { getOpenQuestion, setPendingClarification, openQuestionExpired, isUndoCommand, getLastCapture, setLastCapture, getConversationContext, withExpiredChatNote, type PromptHistory, type SessionTurn } from "./services/session";
+import { getOpenQuestion, setPendingClarification, openQuestionExpired, isUndoCommand, getLastCapture, setLastCapture, getConversationContext, sessionScopeId, withExpiredChatNote, type PromptHistory, type SessionTurn } from "./services/session";
 import { recordConversationTurn } from "./services/sessionFold";
 import { logActivity } from "./services/activityLog";
 import { handleApprovalCommand } from "./services/approvals";
@@ -151,6 +151,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   const currentPolicy =
     input.policy ??
     channelPolicy(input.channel, { allowActions: input.allowActions ?? false });
+  const captureScopeId = sessionScopeId(input.conversationId, currentPolicy.scope);
   const approval = await handleApprovalCommand(
     userId,
     text,
@@ -169,7 +170,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   }
 
   if (isUndoCommand(text)) {
-    const capture = await getLastCapture(userId, input.conversationId);
+    const capture = await getLastCapture(userId, captureScopeId);
     if (!capture) {
       return {
         title: "Nothing to undo",
@@ -179,7 +180,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
       };
     }
     const removed = await deleteNote(userId, capture.id, capture.path);
-    await setLastCapture(userId, input.conversationId, undefined);
+    await setLastCapture(userId, captureScopeId, undefined);
     const body = removed
       ? `Removed **${capture.title}** from your brain. Microsoft To Do items are not reversed from chat.`
       : `I couldn’t find **${capture.title}** in the brain anymore, so there was nothing left to delete.`;
@@ -205,7 +206,11 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   const scope = currentPolicy.scope === "group" ? "group" : "private";
   const context = await getConversationContext(userId, input.conversationId, scope);
   const recent = context.turns;
-  const history: PromptHistory = { summary: context.summary, channel };
+  const history: PromptHistory = {
+    summary: context.summary,
+    channel,
+    references: context.references,
+  };
   const contextEmpty = recent.length === 0 && !context.summary?.trim();
   const remember = (
     role: "user" | "assistant",
@@ -561,12 +566,25 @@ async function executePlan(
 }
 
 function agentOutbound(ctx: ToolContext, result: string, doneTitle: string): Outbound {
+  const parked = ctx.pendingApprovalMessages?.at(-1);
+  const body = parked && !ctx.mutationReceipts?.length ? parked : result;
+  const approvalIds = body.match(/\bpa-[a-z0-9]+\b/gi) ?? [];
+  const invalidApproval = approvalIds.find(
+    (id) => !(ctx.pendingApprovals ?? []).some((valid) => valid.toLowerCase() === id.toLowerCase())
+  );
+  if (invalidApproval) {
+    const message =
+      "I couldn't prepare a valid approval for that change, so nothing was changed. Please ask me to prepare it again.";
+    return { title: "Not changed", body: message, tags: [], summaryLine: message };
+  }
+  const references = [...new Set(body.match(/\b(?:brd|itm|pa)-[a-z0-9-]+\b/gi) ?? [])];
   if (ctx.unmetReply) {
     return {
       title: UNMET_TITLE,
       body: ctx.unmetReply,
       tags: [],
       summaryLine: ctx.unmetReply.slice(0, 200),
+      references,
     };
   }
   if (ctx.askedQuestion) {
@@ -575,9 +593,24 @@ function agentOutbound(ctx: ToolContext, result: string, doneTitle: string): Out
       body: ctx.askedQuestion,
       tags: [],
       summaryLine: ctx.askedQuestion.slice(0, 200),
+      references,
     };
   }
-  return { title: doneTitle, body: result, tags: [], summaryLine: result.slice(0, 500) };
+  const title =
+    ctx.mutationReceipts?.length
+      ? doneTitle
+      : ctx.pendingApprovals?.length
+        ? "Approval needed"
+        : doneTitle === "Done"
+          ? "TaskBrain"
+          : doneTitle;
+  return {
+    title,
+    body,
+    tags: [],
+    summaryLine: body.slice(0, 500),
+    references,
+  };
 }
 
 async function executeIntent(
@@ -734,12 +767,16 @@ async function fileCapturedNote(
   const saved = JSON.parse(recorded) as { id: string; path: string };
   if (prior?.status !== "completed") {
     void retainFromCapture(userId, `${note.title}\n${note.body}`, saved.id, attribution);
-    await setLastCapture(userId, input.conversationId, {
+    await setLastCapture(
+      userId,
+      sessionScopeId(input.conversationId, input.policy?.scope ?? "private"),
+      {
       id: saved.id,
       path: saved.path,
       title: note.title,
       createdAt: new Date().toISOString(),
-    });
+      }
+    );
   }
   return saved;
 }
@@ -797,6 +834,10 @@ async function execute(
           title: r.title,
           detail: r.detail,
           due: r.due,
+        }, {
+          explicit: false,
+          confidence: 1,
+          channel: effectivePolicy,
         });
         if (proposed) line += proposed;
       }

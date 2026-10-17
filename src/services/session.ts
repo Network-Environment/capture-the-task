@@ -4,7 +4,7 @@
  * Private Teams and iMessage share one thread document per person: at most
  * MAX_TURNS structured turns, plus one rewritten summary of what fell off.
  * Group chats keep their own document and never read or write that thread.
- * Cosmos item TTL is 4 hours from the last write. Undo and open questions
+ * Cosmos item TTL is 24 hours from the last write. Undo and open questions
  * still expire after 15 minutes by timestamp. The summary is not a memory fact.
  */
 import { createHash } from "node:crypto";
@@ -16,8 +16,8 @@ function sessions() {
   return cosmosContainer("sessions");
 }
 
-export const MAX_TURNS = 10;
-export const SESSION_TTL_SECONDS = 4 * 3600;
+export const MAX_TURNS = 24;
+export const SESSION_TTL_SECONDS = 24 * 3600;
 export const TURN_CHAR_CAP = 1200;
 export const SUMMARY_CAP = 800;
 export const THREAD_SCOPE = "thread";
@@ -62,6 +62,8 @@ export interface SessionDoc {
   pendingClarification?: PendingClarification;
   lastCapture?: LastCapture;
   threadSummary?: string;
+  /** Durable ids needed to resolve follow-ups even after their turn is folded. */
+  activeReferences?: string[];
   ttl: number;
   _etag?: string;
 }
@@ -81,11 +83,13 @@ export interface AppendResult {
 export interface ConversationContext {
   summary?: string;
   turns: SessionTurn[];
+  references?: string[];
 }
 
 export interface PromptHistory {
   summary?: string;
   channel?: Channel;
+  references?: string[];
 }
 
 export function withSessionTtl<T extends object>(doc: T): T & { ttl: number } {
@@ -201,6 +205,7 @@ function storedDoc(
   conversationId: string | undefined,
   current: SessionDoc | undefined,
   patch: Partial<Pick<SessionDoc, "turns" | "pendingClarification" | "lastCapture" | "threadSummary">> & {
+    activeReferences?: string[];
     clearPending?: boolean;
     clearCapture?: boolean;
   }
@@ -222,6 +227,8 @@ function storedDoc(
         : current?.lastCapture,
     threadSummary:
       patch.threadSummary !== undefined ? patch.threadSummary : current?.threadSummary,
+    activeReferences:
+      patch.activeReferences !== undefined ? patch.activeReferences : current?.activeReferences,
   });
 }
 
@@ -264,10 +271,18 @@ export async function getConversationContext(
 ): Promise<ConversationContext> {
   if (scope === "group") {
     const chat = await readSession(userId, conversationId);
-    return { summary: chat?.threadSummary, turns: chat?.turns ?? [] };
+    return {
+      summary: chat?.threadSummary,
+      turns: chat?.turns ?? [],
+      references: chat?.activeReferences ?? [],
+    };
   }
   const thread = await readSession(userId, THREAD_SCOPE);
-  return { summary: thread?.threadSummary, turns: thread?.turns ?? [] };
+  return {
+    summary: thread?.threadSummary,
+    turns: thread?.turns ?? [],
+    references: thread?.activeReferences ?? [],
+  };
 }
 
 export async function appendTurn(
@@ -294,6 +309,13 @@ export async function appendTurn(
   let result: AppendResult = { dropped: [], storedConversationId: storeId };
   const ok = await replaceSession(userId, storeId, (current) => {
     const applied = applyTurn(current, turn);
+    const discovered = [
+      ...(detail.references ?? []),
+      ...(`${text}\n${detail.body ?? ""}`.match(/\b(?:brd|itm|pa)-[a-z0-9-]+\b/gi) ?? []),
+    ];
+    const activeReferences = [
+      ...new Set([...(current?.activeReferences ?? []), ...discovered]),
+    ].slice(-20);
     result = {
       dropped: applied.dropped,
       previousSummary: current?.threadSummary,
@@ -302,6 +324,7 @@ export async function appendTurn(
     return storedDoc(userId, storeId, current, {
       turns: applied.turns,
       threadSummary: current?.threadSummary,
+      activeReferences,
     });
   });
   if (!ok) return { dropped: [] };

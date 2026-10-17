@@ -13,7 +13,7 @@ const channelsConfig = loadConfig("channels");
 
 export type Channel = "teams" | "imessage";
 /** Nameless last-resort receipt when a personalized acknowledgement cannot be composed. */
-export const WORKING_RESPONSE = "Got it — I’m working on that.";
+export const WORKING_RESPONSE = "Received — I’ll follow up with the result.";
 
 interface ChannelsConfig {
   imessage: {

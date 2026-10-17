@@ -304,6 +304,25 @@ export function isMcpTool(name: string): boolean {
   return name.includes("__");
 }
 
+function validateMcpArgs(schema: Record<string, unknown>, args: Record<string, unknown>): string | undefined {
+  const required = Array.isArray(schema.required) ? schema.required.map(String) : [];
+  for (const key of required) {
+    if (args[key] === undefined || args[key] === null) return `missing required argument ${key}`;
+  }
+  const properties =
+    schema.properties && typeof schema.properties === "object"
+      ? schema.properties as Record<string, Record<string, unknown>>
+      : {};
+  for (const [key, value] of Object.entries(args)) {
+    const expected = properties[key]?.type;
+    if (expected === "integer" && (!Number.isInteger(value) || Number(value) <= 0)) {
+      return `${key} must be a positive integer`;
+    }
+    if (expected === "array" && !Array.isArray(value)) return `${key} must be an array`;
+  }
+  return undefined;
+}
+
 export async function callMcpTool(
   qualifiedName: string,
   args: Record<string, unknown>
@@ -313,12 +332,18 @@ export async function callMcpTool(
   const refs = await discoverMcpTools();
   const ref = refs.find((r) => r.server === server && r.name === toolName);
   if (!ref) return `Tool ${qualifiedName} not found.`;
+  const invalid = validateMcpArgs(ref.inputSchema, args);
+  if (invalid) return `INVALID_ARGUMENTS: ${invalid}.`;
 
   const result = await withTimeout(
     Promise.resolve(ref.client.callTool({ name: toolName, arguments: args })),
     DEFAULT_TIMEOUT_MS,
     server
   );
+  const structured = (result as { structuredContent?: unknown }).structuredContent;
+  if (structured && typeof structured === "object") {
+    return JSON.stringify(structured);
+  }
   const parts = Array.isArray(result.content) ? result.content : [];
   const text = parts
     .filter((c: { type: string }) => c.type === "text")

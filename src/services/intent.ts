@@ -16,6 +16,7 @@ export type IntentReason =
 export type OperationEffect =
   | "read"
   | "personal_write"
+  | "reversible_shared_write"
   | "shared_write"
   | "destructive"
   | "scheduled"
@@ -106,6 +107,11 @@ export function evaluateOperation(
     return auth.channel.allowPersonalWrites
       ? { decision: "execute", reason: "Explicit, reversible personal change." }
       : { decision: "deny", reason: "Personal changes are not enabled on this channel." };
+  }
+  if (operation.effect === "reversible_shared_write") {
+    return auth.channel.allowSharedWrites
+      ? { decision: "execute", reason: "Explicit, reversible TaskBrain board change." }
+      : { decision: "deny", reason: "Shared changes are not enabled on this channel." };
   }
   if (!auth.channel.allowSharedWrites) {
     return { decision: "deny", reason: "Shared or high-impact changes are not enabled on this channel." };

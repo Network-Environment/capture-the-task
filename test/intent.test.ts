@@ -134,6 +134,7 @@ describe("risk policy", () => {
   it("executes reads and explicit reversible personal writes", () => {
     assert.equal(decide("read", false), "execute");
     assert.equal(decide("personal_write"), "execute");
+    assert.equal(decide("reversible_shared_write"), "execute");
   });
 
   it("clarifies uncertain or inferred mutations", () => {
@@ -172,7 +173,7 @@ describe("risk policy", () => {
     assert.equal(operationMetadata("assign_work").effect, "personal_write");
     assert.equal(operationMetadata("remember_org_preference").effect, "shared_write");
     assert.equal(operationMetadata("create_graph_task").effect, "shared_write");
-    assert.equal(operationMetadata("open_pmo_board").effect, "shared_write");
+    assert.equal(operationMetadata("open_pmo_board").effect, "reversible_shared_write");
     assert.equal(operationMetadata("smartsheet__get_sheet_summary").effect, "read");
     assert.equal(operationMetadata("future__mutate_everything").effect, "shared_write");
   });

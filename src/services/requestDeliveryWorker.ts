@@ -81,7 +81,12 @@ async function deliverResult(
         botAppId,
         request.conversationRef.teamsRef as Partial<ConversationReference>,
         async (ctx: TurnContext) => {
-          await ctx.sendActivity({ attachments: [outboundCard(request.result!)] });
+          const result = request.result!;
+          if (/\bpa-[a-z0-9]+\b/i.test(result.body)) {
+            await ctx.sendActivity({ attachments: [outboundCard(result)] });
+          } else {
+            await ctx.sendActivity(toPlainText(result.title, result.body, result.tags));
+          }
         }
       );
       delivered = true;

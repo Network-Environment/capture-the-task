@@ -82,9 +82,9 @@ describe("pmo boards", () => {
     assert.match(text, /itm-1/);
   });
 
-  it("classifies board writes as shared and lists tools that refuse invented schema", () => {
-    assert.equal(operationMetadata("open_pmo_board").effect, "shared_write");
-    assert.equal(operationMetadata("add_pmo_item").effect, "shared_write");
+  it("classifies board writes as reversible shared changes and lists tools that refuse invented schema", () => {
+    assert.equal(operationMetadata("open_pmo_board").effect, "reversible_shared_write");
+    assert.equal(operationMetadata("add_pmo_item").effect, "reversible_shared_write");
     assert.equal(operationMetadata("list_pmo_board").effect, "read");
     const catalog = new Map(nativeToolCatalog().map((tool) => [tool.name, tool.description]));
     assert.match(catalog.get("open_pmo_board") ?? "", /ask one question/i);

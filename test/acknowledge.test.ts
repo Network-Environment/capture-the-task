@@ -72,7 +72,7 @@ describe("personalized acknowledgements", () => {
     );
     assert.equal(thrown.kind, "receipt");
     assert.equal(thrown.text, fallbackAck("receipt", undefined, "Adam"));
-    assert.equal(thrown.text, "Got it, Adam — on it.");
+    assert.equal(thrown.text, "Received — I’ll follow up with the result.");
     assert.doesNotMatch(thrown.text, /queue|request id/i);
 
     const greeting = await composeAcknowledgement(

@@ -34,8 +34,8 @@ describe("in-run prompt budget", () => {
     assert.match(String(fitted[3].content), /earlier tool evidence shortened/);
     assert.equal(fitted[4].content, approval);
     assert.equal(fitted[6].content, latest);
-    assert.equal(MAX_TURNS, 10);
+    assert.equal(MAX_TURNS, 24);
     assert.equal(SUMMARY_CAP, 800);
-    assert.equal(SESSION_TTL_SECONDS, 4 * 3600);
+    assert.equal(SESSION_TTL_SECONDS, 24 * 3600);
   });
 });

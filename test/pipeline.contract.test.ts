@@ -55,6 +55,13 @@ function memoryCosmos(): (name: string) => Container {
         docs.set(key, stored);
         return { resource: stored };
       },
+      async upsert(doc: Record<string, unknown>) {
+        const pk = String(doc.userId ?? doc.boardId ?? doc.day ?? doc.bucket ?? "");
+        const key = `${name}::${pk}::${String(doc.id ?? "")}`;
+        const stored = { ...doc, _etag: String(++etag) };
+        docs.set(key, stored);
+        return { resource: stored };
+      },
       query() {
         return { fetchAll: async () => ({ resources: [] }) };
       },
@@ -214,8 +221,28 @@ describe("processCapture response contract", () => {
       text,
     });
     assert.equal(profile, "pmo");
-    assert.equal(out.title, "Done");
+    assert.equal(out.title, "TaskBrain");
     assert.match(out.body, /Prepared the row change/);
+  });
+
+  it("routes TaskBrain cards away from Smartsheet and rejects invented approval ids", async () => {
+    const text = "On the HR-Talent Acquisition card add these roles.";
+    setInterpretIntentForTests(async () => actPlan(text));
+    let profile: string | undefined;
+    setRunAgentForTests(async (_ctx, _message, profileName) => {
+      profile = profileName;
+      return "Reply approve pa-1 and I will add them.";
+    });
+    const out = await processCapture({
+      userId: "user-board",
+      channel: "teams",
+      conversationId: "conv-board",
+      policy: channelPolicy("teams", { scope: "private", allowActions: true }),
+      text,
+    });
+    assert.equal(profile, undefined);
+    assert.equal(out.title, "Not changed");
+    assert.doesNotMatch(out.body, /\bpa-1\b/);
   });
 
   it("parks a shared mail send and guides an unsigned calendar read", async () => {
@@ -259,5 +286,23 @@ describe("processCapture response contract", () => {
     assert.match(unsigned, /sign in once in Teams/);
     assert.doesNotMatch(unsigned, /user not signed in to Graph/);
     assert.doesNotMatch(unsigned, /Outlook calendar lookup failed/);
+  });
+
+  it("executes an explicit private TaskBrain board create without approval", async () => {
+    const result = await dispatch(
+      {
+        userId: "4f323599-0df8-47f7-aa01-46dbb211894c",
+        channel: "teams",
+        authorization: {
+          explicit: true,
+          confidence: 1,
+          channel: channelPolicy("teams", { scope: "private", allowActions: true }),
+        },
+      },
+      "open_pmo_board",
+      { title: "Admin regression", kanban: true }
+    );
+    assert.match(result, /Opened board brd-/);
+    assert.doesNotMatch(result, /approve pa-/);
   });
 });

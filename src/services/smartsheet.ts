@@ -9,6 +9,7 @@ import { loadConfig } from "../config";
 import { overlapScore } from "../meetings/match";
 import { callMcpTool } from "../tools/mcpClient";
 import { parkAction } from "./approvals";
+import type { AuthorizationContext } from "./intent";
 
 export interface SheetCatalogEntry {
   alias: string;
@@ -47,11 +48,14 @@ export function catalogPromptBlock(): string {
   );
 }
 
-const PMO_RE =
-  /\b(smartsheet|pmo|risk register|project tracker|workspace|sheet id|update the row|add a row|status of)\b/i;
+const EPHEMERAL_BOARD_RE =
+  /\b(?:taskbrain|ephemeral|eph|internal|local)\s+(?:pmo\s+)?(?:board|card)\b|\b(?:open|create|add to|update|close|list)\s+(?:the\s+|an?\s+)?(?:pmo\s+)?(?:board|card)\b/i;
+const SMARTSHEET_RE =
+  /\b(smartsheet|smartsheet\.com|sheet id|sheet url|sheet permalink|risk register|project tracker|workspace|update the row|add a row)\b/i;
 
 export function isPmoRequest(text: string): boolean {
-  if (PMO_RE.test(text)) return true;
+  if (EPHEMERAL_BOARD_RE.test(text)) return false;
+  if (SMARTSHEET_RE.test(text)) return true;
   const lower = text.toLowerCase();
   return catalogSheets().some((s) => s.alias && lower.includes(s.alias.toLowerCase()));
 }
@@ -227,7 +231,58 @@ function cellText(cell: Record<string, unknown>): string {
   return String(cell.displayValue ?? cell.value ?? cell.title ?? "").trim();
 }
 
+/**
+ * Smartsheet MCP currently renders get_sheet_summary as a compact YAML-like
+ * table rather than JSON. Keep this parser deliberately narrow to that public
+ * contract and fall back to the JSON parser for older servers.
+ */
+function parseTextSheetSummary(
+  raw: string,
+  fallbackSheetId: string,
+  fallbackSheetName: string
+): SheetRowHit[] {
+  const sheetId = raw.match(/^sheet_id:\s*(\d+)/m)?.[1] ?? fallbackSheetId;
+  const sheetName = raw.match(/^sheet_name:\s*(.+)$/m)?.[1]?.trim() ?? fallbackSheetName;
+  const rowsStart = raw.search(/^rows\[\d+/m);
+  if (rowsStart < 0) return [];
+  const header = raw.slice(0, rowsStart);
+  const columns = new Map<number, string>();
+  const columnRe = /^\s*-\s+index:\s*(\d+)\r?\n\s+title:\s*(.+)$/gm;
+  let columnMatch: RegExpExecArray | null;
+  while ((columnMatch = columnRe.exec(header))) {
+    columns.set(Number(columnMatch[1]), columnMatch[2].trim());
+  }
+  const rowText = raw.slice(rowsStart);
+  const rowRe = /^\s*-\s+row_id:\s*(\d+)([\s\S]*?)(?=^\s*-\s+row_id:|$(?![\s\S]))/gm;
+  const hits: SheetRowHit[] = [];
+  let rowMatch: RegExpExecArray | null;
+  while ((rowMatch = rowRe.exec(rowText))) {
+    const cells: string[] = [];
+    let owner: string | undefined;
+    const cellRe = /^\s+(\d+)\t(.+)$/gm;
+    let cellMatch: RegExpExecArray | null;
+    while ((cellMatch = cellRe.exec(rowMatch[2]))) {
+      const index = Number(cellMatch[1]);
+      const value = cellMatch[2].trim();
+      if (!value) continue;
+      const title = columns.get(index) ?? `column ${index}`;
+      cells.push(`${title}: ${value}`);
+      if (columnNameLooksLike(title, ["owner", "assigned", "raci"])) owner = value;
+    }
+    hits.push({
+      sheetId,
+      sheetName,
+      rowId: rowMatch[1],
+      text: cells.join(" "),
+      owner,
+    });
+  }
+  return hits;
+}
+
 export function parseSheetForRows(raw: string, sheetId: string, sheetName: string): SheetRowHit[] {
+  const textRows = parseTextSheetSummary(raw, sheetId, sheetName);
+  if (textRows.length) return textRows;
   try {
     const parsed = JSON.parse(raw) as unknown;
     const root = asRecord(parsed) ?? {};
@@ -293,7 +348,8 @@ export function parseSheetForRows(raw: string, sheetId: string, sheetName: strin
  */
 export async function maybeProposeSheetUpdate(
   userId: string,
-  task: { title: string; detail?: string; due?: string }
+  task: { title: string; detail?: string; due?: string },
+  authorization: AuthorizationContext
 ): Promise<string | undefined> {
   if (!process.env.SMARTSHEET_API_TOKEN) return undefined;
   try {
@@ -311,10 +367,10 @@ export async function maybeProposeSheetUpdate(
       ),
     ].slice(0, 2);
 
-    const extraCatalog = catalogSheets()
+    const extraCatalog = [...new Set(catalogSheets()
       .map((s) => s.sheetId)
       .filter((id): id is string => !!id && !sheetIds.includes(id))
-      .slice(0, Math.max(0, 2 - sheetIds.length));
+    )].slice(0, Math.max(0, 2 - sheetIds.length));
     const toLoad = [...sheetIds, ...extraCatalog].slice(0, 2);
     if (!toLoad.length) return undefined;
 
@@ -338,7 +394,11 @@ export async function maybeProposeSheetUpdate(
       sheet_id: Number(best.row.sheetId) || best.row.sheetId,
       rows: [{ id: Number(best.row.rowId) || best.row.rowId, cells }],
     };
-    const id = await parkAction(userId, "smartsheet__update_rows", args);
+    const id = await parkAction(userId, "smartsheet__update_rows", args, {
+      effect: "shared_write",
+      reason: "This changes a live Smartsheet row.",
+      authorization,
+    });
     return (
       `\nProposed Smartsheet update (not applied): ${best.row.sheetName} row ${best.row.rowId}. ` +
       `Reply **approve ${id}** or **deny ${id}**.`

@@ -153,6 +153,12 @@ Rules:
 - For an act, an exact system id or current value that tools can safely discover first
   is not missing authorization. Proceed when the desired outcome and human target are
   clear; the downstream agent will read before proposing or executing the mutation.
+- "TaskBrain board", "ephemeral board", and a named "card" in that context mean the
+  native TaskBrain board system, never Smartsheet. Only explicit Smartsheet wording,
+  a Smartsheet URL, or a sheet id selects Smartsheet.
+- Preserve a resolved named board/card and owner in standalone across follow-ups.
+  "On that card" is an act on the most recent named TaskBrain board when recent turns
+  identify exactly one. A one-word name answers an active owner question.
 - The requester's own Outlook calendar can be searched. Creating, moving, or declining
   their own event is act; the downstream agent searches first and the write waits for
   approval. No one else's calendar is reachable. Do not turn a clear own-calendar change
@@ -212,15 +218,26 @@ Examples:
   TaskBrain check-in => act, explicit true; propose the matching check-in updates.
 - "Every Friday at 4 PM send me a digest of open risks" => act, explicit true,
   no ambiguity; timezone is US Central and delivery is the current conversation.
+- "Create an Admin card and add these tasks" => act, explicit true; the target is a
+  native TaskBrain board/card, not Smartsheet.
+- Recent turn names "HR-Talent Acquisition", then "on that card add these roles" =>
+  act, explicit true; standalone must name the HR-Talent Acquisition TaskBrain board.
+- "In Smartsheet, add these below administrative; sheet id 782519954788228" =>
+  act, explicit true; the target is the live Smartsheet sheet.
 - "If we cancelled the weekly digest, what would stop?" => read, explicit true;
   inspect the user's scheduled jobs without cancelling anything.
 Use empty strings/arrays for absent optional fields. Never write "none" as ambiguity.`;
 
 function recentBlock(recent: SessionTurn[], history: PromptHistory = {}, label: string): string | undefined {
   const preface = condensedBlock(history.summary);
+  const references = history.references?.length
+    ? `Active record references: ${history.references.join(", ")}`
+    : undefined;
   const lines = recent.map((turn) => renderTurnLine(turn, history.channel));
-  if (!preface && !lines.length) return undefined;
-  return [preface, lines.length ? `${label}\n${lines.join("\n")}` : ""].filter(Boolean).join("\n\n");
+  if (!preface && !references && !lines.length) return undefined;
+  return [preface, references, lines.length ? `${label}\n${lines.join("\n")}` : ""]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function recentMessages(
@@ -228,8 +245,12 @@ function recentMessages(
   history: PromptHistory = {}
 ): ChatCompletionMessageParam[] {
   const preface = condensedBlock(history.summary);
-  const messages: ChatCompletionMessageParam[] = preface
-    ? [{ role: "user", content: preface }]
+  const referenceBlock = history.references?.length
+    ? `Active record references: ${history.references.join(", ")}`
+    : undefined;
+  const contextBlock = [preface, referenceBlock].filter(Boolean).join("\n\n");
+  const messages: ChatCompletionMessageParam[] = contextBlock
+    ? [{ role: "user", content: contextBlock }]
     : [];
   for (const turn of recent) {
     messages.push({ role: turn.role, content: turnBody(turn, history.channel) });
@@ -545,10 +566,16 @@ export async function runAgent(
         detail: { phase: "complete", rounds: round + 1, durationMs: Date.now() - startedAt },
       });
       const answer = msg.content ?? "Done.";
+      const mutationAttempted =
+        Boolean(ctx.mutationReceipts?.length) || Boolean(ctx.pendingApprovals?.length);
       const verification = verifyResponse({
-        risk: "factual",
+        risk: mutationAttempted ? "mutation" : "factual",
         body: answer,
         sources: round > 0 ? ["tool-results"] : [],
+        toolReceipts: [
+          ...(ctx.mutationReceipts ?? []),
+          ...(ctx.pendingApprovals ?? []).map((id) => `pending approval ${id}`),
+        ],
       });
       if (verification.needed && !verification.supported) {
         void logActivity({
@@ -587,6 +614,15 @@ export async function runAgent(
           });
       const research =
         call.function.name === "web_search" || call.function.name === "read_public_page";
+      const resultClass = result.startsWith("NOT_ALLOWED:")
+        ? "denied"
+        : result.startsWith("INVALID_ARGUMENTS:")
+          ? "invalid_arguments"
+          : /\bpa-[a-z0-9]+\b/i.test(result)
+            ? "pending_approval"
+            : /failed|not found/i.test(result)
+              ? "failed"
+              : "success";
       void logActivity({
         type: "tool_call",
         userId: ctx.userId,
@@ -602,6 +638,14 @@ export async function runAgent(
           ...(toolStore(call.function.name) ? { store: toolStore(call.function.name) } : {}),
           round: round + 1,
           durationMs: Date.now() - toolStartedAt,
+          resultClass,
+          targetSystem: call.function.name.startsWith("smartsheet__")
+            ? "smartsheet"
+            : call.function.name.includes("pmo_")
+              ? "taskbrain_board"
+              : undefined,
+          sheetId: args.sheet_id ?? args.sheetId,
+          boardId: args.boardId ?? args.board,
           ok:
             !result.startsWith(`Tool ${call.function.name} failed`) &&
             !result.startsWith("NOT_ALLOWED:") &&
