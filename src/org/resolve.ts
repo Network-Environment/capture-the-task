@@ -42,6 +42,7 @@ export function resolvePerson(
       p.aliases.some((a) => normalizeOrgName(a) === name)
   );
   if (exact) return exact;
+  if (name.includes("@")) return undefined;
 
   const first = name.split(" ")[0] ?? "";
   if (first.length < 2) return undefined;
@@ -53,6 +54,29 @@ export function resolvePerson(
     );
   });
   return firstHits.length === 1 ? firstHits[0] : undefined;
+}
+
+const SELF_OWNER = /^(me|myself|mine|my account|my org account|assign to my org account)$/i;
+
+/** A personal card belongs to the signed-in person, never to a guessed mailbox. */
+export function personForOwner(
+  people: OrgPerson[],
+  owner: string | undefined,
+  requester: { userId?: string; displayName?: string; mail?: string }
+): OrgPerson | undefined {
+  const requested = owner?.trim() ?? "";
+  if (!requested) return undefined;
+  const self = () =>
+    resolvePerson(people, { ownerId: requester.userId }) ??
+    resolvePerson(people, { ownerName: requester.displayName }) ??
+    resolvePerson(people, { ownerName: requester.mail });
+  if (SELF_OWNER.test(requested)) return self();
+  return (
+    resolvePerson(people, { ownerId: requested, ownerName: requested }) ??
+    (requester.mail && normalizeOrgName(requested) === normalizeOrgName(requester.mail)
+      ? self()
+      : undefined)
+  );
 }
 
 export function searchOrgDirectory(dir: OrgDirectory, query: string): {

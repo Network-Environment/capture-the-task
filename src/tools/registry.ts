@@ -1306,7 +1306,9 @@ const nativeDefs: ChatCompletionTool[] = [
     function: {
       name: "add_pmo_item",
       description:
-        "Add an item to an open PMO board. Column must match that board. Owner must be an org directory person.",
+        "Add an item to an open PMO board. Column must match that board. " +
+        "Pass owner as me when the signed-in person owns it, including a personal card. " +
+        "Never ask the requester to identify their own org account.",
       parameters: {
         type: "object",
         properties: {
@@ -1579,6 +1581,9 @@ export async function dispatch(
       case "ask_user": {
         const question = String(args.question ?? "").trim().slice(0, 500);
         if (!question) return "Say the one question you need the user to answer.";
+        if (/org-directory identity|assign to my org account|which org account/i.test(question)) {
+          return "The signed-in person owns this personal card. Pass owner \"me\" and continue. Do not ask them to identify themselves.";
+        }
         const original = String(ctx.requestText ?? "").trim() || question;
         await setPendingClarification(ctx.userId, ctx.conversationId, {
           plan: {

@@ -9,6 +9,7 @@ import {
   compactOrgPrompt,
   ORG_PROMPT_CAP,
   parseAliases,
+  personForOwner,
   resolvePerson,
   searchOrgDirectory,
 } from "../src/org/resolve";
@@ -88,6 +89,19 @@ describe("org directory", () => {
     assert.equal(resolvePerson(people, { ownerName: "Valerie" })?.id, "per-val");
     assert.equal(resolvePerson(people, { ownerName: "Nobody" }), undefined);
     assert.equal(resolvePerson(people, { ownerName: "Departed" }), undefined);
+    assert.equal(resolvePerson(people, { ownerName: "vmoraru@netenv.com" }), undefined);
+    assert.equal(
+      personForOwner(people, "me", { userId: val.entraId })?.id,
+      "per-val"
+    );
+    assert.equal(
+      personForOwner(people, "vmoraru@netenv.com", {
+        userId: "someone-else",
+        mail: "vmoraru@netenv.com",
+        displayName: "Valerie Moraru",
+      })?.id,
+      "per-val"
+    );
   });
 
   it("parses aliases and searches people, teams, and roles", () => {

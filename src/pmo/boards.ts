@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { canViewMeetings, denyMeetings } from "../meetings/access";
 import { listOrgDirectory } from "../org/store";
-import { resolvePerson } from "../org/resolve";
+import { personForOwner } from "../org/resolve";
+import { graphAppJson } from "../work/graphApp";
 import { assignWork, completeWork } from "../work/assign";
 import { findWorkBySource } from "../work/store";
 import {
@@ -172,12 +173,45 @@ export async function listPmoBoardForUser(userId: string, idOrTitle: string): Pr
   return formatBoard(board, items, dir.people);
 }
 
-async function resolveOwner(owner?: string): Promise<{ id?: string; error?: string; entraId?: string; name?: string }> {
-  if (!owner?.trim()) return {};
+async function resolveOwner(
+  requesterUserId: string,
+  owner?: string
+): Promise<{ id?: string; error?: string; entraId?: string; name?: string }> {
   const dir = await listOrgDirectory();
-  const person = resolvePerson(dir.people, { ownerId: owner, ownerName: owner });
-  if (!person) return { error: `No org person matching "${owner}". Add them on /admin/org first.` };
+  const requester = { userId: requesterUserId };
+  let person = personForOwner(dir.people, owner, requester);
+  const needsSignedInProfile =
+    !person &&
+    (/^(me|myself|mine|my account|my org account|assign to my org account)$/i.test(owner?.trim() ?? "") ||
+      Boolean(owner?.includes("@")));
+  if (needsSignedInProfile) {
+    person = personForOwner(dir.people, owner, {
+      ...requester,
+      ...(await requesterIdentity(requesterUserId)),
+    });
+  }
+  if (!person) {
+    return owner?.trim()
+      ? { error: `No org person matching "${owner}".` }
+      : {};
+  }
   return { id: person.id, entraId: person.entraId, name: person.displayName };
+}
+
+async function requesterIdentity(
+  userId: string
+): Promise<{ displayName?: string; mail?: string }> {
+  try {
+    const profile = await graphAppJson<{ displayName?: string | null; mail?: string | null }>(
+      `/users/${encodeURIComponent(userId)}?$select=displayName,mail`
+    );
+    return {
+      displayName: profile.displayName?.trim() || undefined,
+      mail: profile.mail?.trim() || undefined,
+    };
+  } catch {
+    return {};
+  }
 }
 
 async function syncWork(
@@ -259,7 +293,7 @@ export async function addPmoItem(
   if (!title) return "An item title is required.";
   const column = findColumn(board, String(input.column ?? board.columns[0]?.id ?? ""));
   if (!column) return `Column must be one of: ${board.columns.map((c) => c.label).join(", ")}.`;
-  const owner = await resolveOwner(input.owner ? String(input.owner) : undefined);
+  const owner = await resolveOwner(userId, input.owner ? String(input.owner) : undefined);
   if (owner.error) return owner.error;
   const now = new Date().toISOString();
   const item: PmoItem = {
@@ -324,7 +358,7 @@ export async function updatePmoItem(
     if (!String(input.owner).trim()) {
       item.ownerPersonId = undefined;
     } else {
-      const owner = await resolveOwner(String(input.owner));
+      const owner = await resolveOwner(userId, String(input.owner));
       if (owner.error) return owner.error;
       item.ownerPersonId = owner.id;
     }
