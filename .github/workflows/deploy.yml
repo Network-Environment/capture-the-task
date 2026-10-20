@@ -208,22 +208,63 @@ jobs:
           cache: npm
       - name: Package and deploy meeting ingest Function
         run: |
+          test -n "${{ needs.infra.outputs.function-app-name }}"
           npm ci
           npm run build
           cp functions/meeting-ingest/host.json host.json
-          python - <<'PY'
-          import json
+          # config/ ships with the zip: src/config.ts resolves it from cwd, and
+          # router.ts reads model.routes.json at import time.
+          # Python writes the archive. The system zip lists every node_modules
+          # file (the log is truncated past the error) and returns 1 for
+          # warnings, which aborts the step before config-zip runs.
+          python3 - <<'PY'
+          import json, os, zipfile
+          from pathlib import Path
+
           json.dump({
             "name": "taskbrain-meeting-ingest",
             "version": "0.1.0",
             "main": "dist/meetings/timer.js",
             "engines": {"node": ">=22"}
           }, open("fn-package.json", "w"))
+          os.replace("fn-package.json", "package.json")
+
+          skip_prefixes = (
+            "node_modules/.cache/",
+            "node_modules/.bin/",
+            "node_modules/@azure/msal-browser/src/",
+          )
+          roots = ["host.json", "package.json", "dist", "config", "node_modules"]
+          skipped = []
+          count = 0
+          with zipfile.ZipFile("meeting-ingest.zip", "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+              for root in roots:
+                  base = Path(root)
+                  if not base.exists():
+                      raise SystemExit(f"missing {root}")
+                  paths = [base] if base.is_file() else base.rglob("*")
+                  for path in paths:
+                      if path.is_dir() and not path.is_symlink():
+                          continue
+                      rel = path.as_posix()
+                      if rel.endswith(".map") or any(rel.startswith(prefix) for prefix in skip_prefixes):
+                          continue
+                      if path.is_symlink() and not path.exists():
+                          skipped.append(rel)
+                          continue
+                      try:
+                          zf.write(path, rel)
+                      except OSError as exc:
+                          raise SystemExit(f"could not add {rel}: {exc}") from exc
+                      count += 1
+          size = os.path.getsize("meeting-ingest.zip")
+          print(f"meeting-ingest.zip files={count} bytes={size} skipped_links={len(skipped)}")
+          for rel in skipped[:20]:
+              print(f"skipped dangling symlink {rel}")
+          if count == 0 or size < 1000:
+              raise SystemExit("meeting ingest package is empty")
           PY
-          mv fn-package.json package.json
-          # config/ ships with the zip: src/config.ts resolves it from cwd, and
-          # router.ts reads model.routes.json at import time.
-          zip -r meeting-ingest.zip host.json package.json dist config node_modules -x "node_modules/.cache/*"
+          echo "uploading meeting ingest package"
           az functionapp deployment source config-zip \
             -g "$RESOURCE_GROUP" \
             -n "${{ needs.infra.outputs.function-app-name }}" \
