@@ -11,12 +11,20 @@ function hash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
 }
 
+const sources = new Map<string, () => string>();
+
+/** Inline prompts live in code. Register them so a prompt edit changes the behavior version. */
+export function registerBehaviorSource(name: string, source: () => string): void {
+  sources.set(name, source);
+}
+
 export function currentBehaviorManifest(): BehaviorManifest {
-  const files = {
+  const files: Record<string, string> = {
     agents: hash(loadConfig("agents")),
     routes: hash(loadConfig("model.routes")),
     skills: hash(loadConfig("skills")),
   };
+  for (const [name, source] of sources) files[name] = hash(source());
   const flags = { ...PRODUCTION_FLAG_DEFAULTS };
   const version = hash({ files, flags });
   return { version, files, flags };

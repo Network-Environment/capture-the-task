@@ -18,6 +18,16 @@ export interface IntentCheckpointResult {
   references?: string[];
 }
 
+export interface AgentRunCheckpoint {
+  intentId: string;
+  messages: Array<{
+    role: string;
+    content?: string | null;
+    tool_calls?: unknown;
+    tool_call_id?: string;
+  }>;
+}
+
 export interface RunCheckpoint {
   runId: string;
   generation: number;
@@ -25,6 +35,8 @@ export interface RunCheckpoint {
   mutations: MutationRecord[];
   intentResults?: Record<string, IntentCheckpointResult>;
   followUpText?: string;
+  /** Unfinished tool loop. A retry continues from these messages instead of starting over. */
+  agentRun?: AgentRunCheckpoint;
 }
 
 export interface MutationLedger {

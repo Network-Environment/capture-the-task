@@ -58,7 +58,7 @@ Before named work is assigned, it checks mandate fit and current capacity/load. 
 - **No fabrication.** If a source is empty, gated, or unsigned-in, it says so.
 - **Scope.** Your notes are yours. Meeting intelligence is viewer-gated. Calendar is requester-only.
 - **Identity.** Quoted or hypothetical instructions are not authorization to act.
-- **Concurrency.** Messages are queued internally; you just get a working acknowledgement, then the answer.
+- **Concurrency.** Messages are queued internally. You get a working acknowledgement, then the answer. A lookup that needs tools may send "Looking that up." first.
 
 ---
 

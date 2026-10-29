@@ -13,6 +13,8 @@ import {
 } from "../services/requestDeliveryWorker";
 import type { StoredRef } from "../services/conversations";
 import { createBotAdapter } from "./adapter";
+import { logActivity } from "../services/activityLog";
+import { acceptGraphNotification, verifyWebhook, type GraphNotification } from "../channels/webhook";
 
 const adapter = createBotAdapter();
 const bot = new TaskBrainBot();
@@ -59,6 +61,56 @@ server.get("/admin/:section", redirectToAdmin);
 
 server.post("/api/messages", async (req, res) => {
   await adapter.process(req, res, (context) => bot.run(context));
+});
+
+// Signed ingress for external events. Graph subscriptions use clientState;
+// every other source uses HMAC over `${timestamp}.${body}`.
+server.post("/api/hooks/:source", async (req, res) => {
+  const source = String(req.params.source ?? "");
+  const validation = (req.query as { validationToken?: string } | undefined)?.validationToken;
+  if (source === "graph" && validation) {
+    res.header("Content-Type", "text/plain");
+    res.send(200, validation);
+    return;
+  }
+  const raw = typeof (req as { rawBody?: string }).rawBody === "string"
+    ? (req as { rawBody: string }).rawBody
+    : JSON.stringify(req.body ?? {});
+  if (source === "graph") {
+    const notes = ((req.body as { value?: GraphNotification[] } | undefined)?.value) ?? [];
+    const reason = acceptGraphNotification(process.env.GRAPH_WEBHOOK_CLIENT_STATE, notes);
+    if (reason) {
+      res.send(401, { accepted: false });
+      return;
+    }
+    void logActivity({
+      type: "webhook",
+      origin: "system",
+      channel: "internal",
+      trigger: "graph",
+      detail: { count: notes.length },
+    });
+    res.send(202, { accepted: true });
+    return;
+  }
+  const reason = verifyWebhook({
+    secret: process.env.WEBHOOK_SECRET,
+    timestamp: req.header("x-taskbrain-timestamp"),
+    signature: req.header("x-taskbrain-signature"),
+    body: raw,
+  });
+  if (reason) {
+    res.send(reason === "webhook secret is not configured" ? 404 : 401, { accepted: false });
+    return;
+  }
+  void logActivity({
+    type: "webhook",
+    origin: "system",
+    channel: "internal",
+    trigger: source.slice(0, 40),
+    detail: { bytes: raw.length },
+  });
+  res.send(202, { accepted: true });
 });
 
 // Worker-only delivery bridge for scheduled jobs and alerts. Interactive

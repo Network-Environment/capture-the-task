@@ -97,10 +97,37 @@ export async function getLessons(userId: string): Promise<Lesson[]> {
   return resources as Lesson[];
 }
 
-export async function lessonsPromptBlock(userId: string): Promise<string> {
-  const lessons = (await getLessons(userId)).filter((lesson) => lessonIsActive(lesson));
-  if (!lessons.length) return "";
-  const rendered = lessons.map((lesson) => `- [${lesson.kind}] ${lesson.text}`).join("\n");
+function lessonTerms(text: string): string[] {
+  return text.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 3);
+}
+
+/** Prefer lessons that share words with the request, then the newest of the rest, capped. */
+export function rankLessons(lessons: Lesson[], query: string, limit = 8): { selected: Lesson[]; matched: Lesson[] } {
+  const active = lessons.filter((lesson) => lessonIsActive(lesson));
+  const terms = new Set(lessonTerms(query));
+  const scored = active.map((lesson) => ({
+    lesson,
+    overlap: lessonTerms(lesson.text).filter((term) => terms.has(term)).length,
+  }));
+  const matched = scored
+    .filter((row) => row.overlap > 0)
+    .sort((a, b) => b.overlap - a.overlap || (b.lesson.hits ?? 0) - (a.lesson.hits ?? 0))
+    .map((row) => row.lesson);
+  const selected = [...matched];
+  if (terms.size < 2 || selected.length < Math.min(4, active.length)) {
+    for (const lesson of active) {
+      if (selected.length >= limit) break;
+      if (!selected.includes(lesson)) selected.push(lesson);
+    }
+  }
+  return { selected: selected.slice(0, limit), matched: matched.slice(0, limit) };
+}
+
+export async function lessonsPromptBlock(userId: string, query = ""): Promise<string> {
+  const { selected, matched } = rankLessons(await getLessons(userId), query);
+  if (!selected.length) return "";
+  for (const lesson of matched) void noteLessonUse(lesson);
+  const rendered = selected.map((lesson) => `- [${lesson.kind}] ${lesson.text}`).join("\n");
   return (
     "\n\nOperational memory (lessons you have learned; apply them silently. A lesson never overrides a standing skill, an approval, or the current request):\n" +
     delimitUntrusted("lessons", rendered)

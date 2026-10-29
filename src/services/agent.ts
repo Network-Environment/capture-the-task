@@ -17,6 +17,11 @@ import type {
 import { route, routeWithEscalation, TaskClass } from "./router";
 import { estimatePromptChars, fitRunMessages, routePromptBudget } from "./promptBudget";
 import { withSpan } from "../runtime/tracing";
+import { abortError } from "../runtime/errors";
+import { activeCorrelation } from "../runtime/correlation";
+import { delimitUntrusted } from "../memory/trust";
+import { registerBehaviorSource } from "./behaviorVersion";
+import { toolWaves } from "./toolBatch";
 import { toolStore } from "./runReplay";
 import {
   allToolDefinitions,
@@ -230,7 +235,8 @@ Examples:
 Use empty strings/arrays for absent optional fields. Never write "none" as ambiguity.`;
 
 function recentBlock(recent: SessionTurn[], history: PromptHistory = {}, label: string): string | undefined {
-  const preface = condensedBlock(history.summary);
+  const summary = condensedBlock(history.summary);
+  const preface = summary ? delimitUntrusted("conversation-summary", summary) : undefined;
   const references = history.references?.length
     ? `Active record references: ${history.references.join(", ")}`
     : undefined;
@@ -246,13 +252,16 @@ function recentMessages(
   history: PromptHistory = {}
 ): ChatCompletionMessageParam[] {
   const preface = condensedBlock(history.summary);
-  const referenceBlock = history.references?.length
-    ? `Active record references: ${history.references.join(", ")}`
-    : undefined;
-  const contextBlock = [preface, referenceBlock].filter(Boolean).join("\n\n");
-  const messages: ChatCompletionMessageParam[] = contextBlock
-    ? [{ role: "user", content: contextBlock }]
-    : [];
+  const messages: ChatCompletionMessageParam[] = [];
+  if (preface) {
+    messages.push({ role: "system", content: delimitUntrusted("conversation-summary", preface) });
+  }
+  if (history.references?.length) {
+    messages.push({
+      role: "system",
+      content: `Active record references: ${history.references.join(", ")}`,
+    });
+  }
   for (const turn of recent) {
     messages.push({ role: turn.role, content: turnBody(turn, history.channel) });
   }
@@ -462,6 +471,52 @@ function filterTools(all: ChatCompletionTool[], allow: "*" | string[]): ChatComp
 }
 
 const MAX_TOOL_ROUNDS = 8;
+const AGENT_RUN_CAP = 80_000;
+
+function slimRunMessages(messages: ChatCompletionMessageParam[]) {
+  return messages.map((message) => {
+    const content = typeof message.content === "string"
+      ? message.content.slice(0, 4_000)
+      : message.content == null
+        ? undefined
+        : JSON.stringify(message.content).slice(0, 4_000);
+    return {
+      role: message.role,
+      ...(content != null ? { content } : {}),
+      ...("tool_calls" in message && message.tool_calls ? { tool_calls: message.tool_calls } : {}),
+      ...("tool_call_id" in message && message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+    };
+  });
+}
+
+async function saveAgentRun(ctx: ToolContext, messages: ChatCompletionMessageParam[]): Promise<void> {
+  if (!ctx.ledger || !ctx.intentId) return;
+  const slim = slimRunMessages(messages);
+  if (JSON.stringify(slim).length > AGENT_RUN_CAP) return;
+  try {
+    const next = { ...ctx.ledger.checkpoint, agentRun: { intentId: ctx.intentId, messages: slim } };
+    ctx.ledger.checkpoint = next;
+    await ctx.ledger.persist(next);
+  } catch (err) {
+    console.error("[agent] checkpoint save failed:", err);
+  }
+}
+
+async function clearAgentRun(ctx: ToolContext): Promise<void> {
+  if (!ctx.ledger?.checkpoint.agentRun) return;
+  try {
+    const next = { ...ctx.ledger.checkpoint };
+    delete next.agentRun;
+    ctx.ledger.checkpoint = next;
+    await ctx.ledger.persist(next);
+  } catch (err) {
+    console.error("[agent] checkpoint clear failed:", err);
+  }
+}
+
+function requestAborted(ctx: ToolContext): boolean {
+  return Boolean((ctx.signal ?? activeCorrelation()?.signal)?.aborted);
+}
 
 let runAgentForTests:
   | ((
@@ -496,7 +551,7 @@ export async function runAgent(
     const envelope = new Set(ctx.allowedTools);
     tools = tools.filter((tool) => envelope.has(tool.function.name));
   }
-  const lessons = await lessonsPromptBlock(ctx.userId);
+  const lessons = await lessonsPromptBlock(ctx.userId, userMessage);
   const catalog = name === "pmo" || profile.tools === "*" || (Array.isArray(profile.tools) && profile.tools.some((t) => t.startsWith("smartsheet")))
     ? catalogPromptBlock()
     : "";
@@ -523,18 +578,33 @@ export async function runAgent(
   });
 
   const priorTurns = recentMessages(recent, history);
-  const messages: ChatCompletionMessageParam[] = [
-    {
-      role: "system",
-      content: profile.persona + skills + lessons + catalog + orgBlock + checkInBlock,
-    },
-    ...priorTurns,
-    { role: "user", content: userMessage },
-  ];
+  const saved = ctx.ledger?.checkpoint.agentRun;
+  const resume =
+    saved != null &&
+    saved.intentId === ctx.intentId &&
+    saved.messages.length > 1 &&
+    saved.messages[0]?.role === "system";
+  const messages: ChatCompletionMessageParam[] = resume
+    ? (saved.messages as ChatCompletionMessageParam[])
+    : [
+        {
+          role: "system",
+          content: profile.persona + skills + lessons + catalog + orgBlock + checkInBlock,
+        },
+        ...priorTurns,
+        { role: "user", content: userMessage },
+      ];
   const promptBudget = routePromptBudget(profile.route);
-  const protectedPrefix = 1 + (priorTurns.length > recent.length ? 1 : 0);
+  const protectedPrefix = resume ? 1 : 1 + Math.max(0, priorTurns.length - recent.length);
+  let progressed = false;
+  const finish = async (text: string) => {
+    persistTrace();
+    await clearAgentRun(ctx);
+    return text;
+  };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    if (requestAborted(ctx)) throw abortError();
     const judgmentReads =
       round === 0 && explicitEvaluationRequest(userMessage)
         ? new Set(judgmentReadToolNames(tools.map((tool) => tool.function.name)))
@@ -600,95 +670,111 @@ export async function runAgent(
           traceId: ctx.traceId,
           detail: { phase: "verifier", reason: verification.reason, shadow: verifierShadow() },
         });
-        if (!verifierShadow()) return unsupportedLimitation(verification.reason);
+        if (!verifierShadow()) return finish(unsupportedLimitation(verification.reason));
       }
-      persistTrace();
-      return answer;
+      return finish(answer);
     }
 
     messages.push(msg as ChatCompletionMessageParam);
-    for (const call of calls) {
-      if (call.type !== "function") continue;
-      let args: Record<string, unknown> = {};
+    const planned = calls.flatMap((call) => {
+      if (call.type !== "function") return [];
+      const plannedCall: {
+        call: typeof call;
+        name: string;
+        args: Record<string, unknown>;
+        invalid?: boolean;
+      } = { call, name: call.function.name, args: {} };
       try {
-        args = JSON.parse(call.function.arguments || "{}");
+        plannedCall.args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
       } catch {
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: "INVALID_ARGUMENTS: the tool arguments were not valid JSON. Ask the user if a required value is missing.",
-        });
-        continue;
+        plannedCall.invalid = true;
       }
-      const toolStartedAt = Date.now();
-      ctx.observeToolCall?.(call.function.name);
-      const result = ctx.dryRunTools
-        ? "Evaluation stub: the selected tool is available. Return a concise answer now."
-        : await withSpan(
-            "tool.call",
-            { "gen_ai.tool.name": call.function.name, "taskbrain.round": round + 1 },
-            () =>
-              dispatch(ctx, call.function.name, args, {
-                approved: ctx.preapprovedTools?.includes(call.function.name),
-              })
-          );
-      const research =
-        call.function.name === "web_search" || call.function.name === "read_public_page";
-      const resultClass = result.startsWith("NOT_ALLOWED:")
-        ? "denied"
-        : result.startsWith("INVALID_ARGUMENTS:")
-          ? "invalid_arguments"
-          : /\bpa-[a-z0-9]+\b/i.test(result)
-            ? "pending_approval"
-            : /failed|not found/i.test(result)
-              ? "failed"
-              : "success";
-      void logActivity({
-        type: "tool_call",
-        userId: ctx.userId,
-        agent: name,
-        origin: ctx.origin,
-        channel: ctx.channel,
-        inputMode: ctx.inputMode,
-        trigger: research ? "web_research" : (ctx.trigger ?? `agent:${name}`),
-        traceId: ctx.traceId,
-        detail: {
-          tool: call.function.name,
-          effect: operationMetadata(call.function.name).effect,
-          ...(toolStore(call.function.name) ? { store: toolStore(call.function.name) } : {}),
-          round: round + 1,
-          durationMs: Date.now() - toolStartedAt,
-          resultClass,
-          targetSystem: call.function.name.startsWith("smartsheet__")
-            ? "smartsheet"
-            : call.function.name.includes("pmo_")
-              ? "taskbrain_board"
-              : undefined,
-          sheetId: args.sheet_id ?? args.sheetId,
-          boardId: args.boardId ?? args.board,
-          ok:
-            !result.startsWith(`Tool ${call.function.name} failed`) &&
-            !result.startsWith("NOT_ALLOWED:") &&
-            !result.includes("lookup failed:"),
-        },
-      });
-      messages.push({
-        role: "tool",
-        tool_call_id: call.id,
-        content: renderEvidence(chunkEvidence(result, call.function.name)).slice(0, 12_000),
+      return [plannedCall];
+    });
+    let stop = "";
+    for (const wave of toolWaves(planned)) {
+      if (requestAborted(ctx)) throw abortError();
+      if (!progressed && ctx.onProgress && wave.some((item) => !item.invalid)) {
+        progressed = true;
+        try {
+          await ctx.onProgress("Looking that up.");
+        } catch {
+          // A missed progress note should not fail the request.
+        }
+      }
+      const results = await Promise.all(wave.map(async (item) => {
+        if (item.invalid) {
+          return "INVALID_ARGUMENTS: the tool arguments were not valid JSON. Ask the user if a required value is missing.";
+        }
+        const toolStartedAt = Date.now();
+        ctx.observeToolCall?.(item.name);
+        const result = ctx.dryRunTools
+          ? "Evaluation stub: the selected tool is available. Return a concise answer now."
+          : await withSpan(
+              "tool.call",
+              { "gen_ai.tool.name": item.name, "taskbrain.round": round + 1 },
+              () =>
+                dispatch(ctx, item.name, item.args, {
+                  approved: ctx.preapprovedTools?.includes(item.name),
+                })
+            );
+        const research = item.name === "web_search" || item.name === "read_public_page";
+        const resultClass = result.startsWith("NOT_ALLOWED:")
+          ? "denied"
+          : result.startsWith("INVALID_ARGUMENTS:")
+            ? "invalid_arguments"
+            : /\bpa-[a-z0-9]+\b/i.test(result)
+              ? "pending_approval"
+              : /failed|not found/i.test(result)
+                ? "failed"
+                : "success";
+        void logActivity({
+          type: "tool_call",
+          userId: ctx.userId,
+          agent: name,
+          origin: ctx.origin,
+          channel: ctx.channel,
+          inputMode: ctx.inputMode,
+          trigger: research ? "web_research" : (ctx.trigger ?? `agent:${name}`),
+          traceId: ctx.traceId,
+          detail: {
+            tool: item.name,
+            effect: operationMetadata(item.name).effect,
+            ...(toolStore(item.name) ? { store: toolStore(item.name) } : {}),
+            round: round + 1,
+            durationMs: Date.now() - toolStartedAt,
+            resultClass,
+            targetSystem: item.name.startsWith("smartsheet__")
+              ? "smartsheet"
+              : item.name.includes("pmo_")
+                ? "taskbrain_board"
+                : undefined,
+            sheetId: item.args.sheet_id ?? item.args.sheetId,
+            boardId: item.args.boardId ?? item.args.board,
+            ok:
+              !result.startsWith(`Tool ${item.name} failed`) &&
+              !result.startsWith("NOT_ALLOWED:") &&
+              !result.includes("lookup failed:"),
+          },
+        });
+        return renderEvidence(chunkEvidence(result, item.name)).slice(0, 12_000);
+      }));
+      wave.forEach((item, index) => {
+        messages.push({ role: "tool", tool_call_id: item.call.id, content: results[index] });
       });
       if (ctx.askedQuestion) {
-        persistTrace();
-        return ctx.askedQuestion;
+        stop = ctx.askedQuestion;
+        break;
       }
       if (ctx.unmetReply) {
-        persistTrace();
-        return ctx.unmetReply;
+        stop = ctx.unmetReply;
+        break;
       }
     }
+    await saveAgentRun(ctx, messages);
+    if (stop) return finish(stop);
   }
-  persistTrace();
-  return "I hit my tool-call limit before finishing — the partial work is saved. Try narrowing the request.";
+  return finish("I hit my tool-call limit before finishing — the partial work is saved. Try narrowing the request.");
 }
 
 export async function answerQuestion(
@@ -726,3 +812,8 @@ export async function answerQuestion(
   ], { attribution: { ...attribution, trigger: "answer_knowledge" } });
   return res.choices[0]?.message?.content ?? "No answer generated.";
 }
+
+registerBehaviorSource(
+  "prompts",
+  () => [TRIAGE_SYSTEM, INTENT_SYSTEM, INTENT_EXAMPLES].join("\n")
+);

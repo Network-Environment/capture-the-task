@@ -112,6 +112,8 @@ import { formatUserGuide, USER_GUIDE_TOPICS } from "../services/userGuide";
 import { envFlag, PRODUCTION_FLAG_DEFAULTS } from "../config";
 import { setPendingClarification } from "../services/session";
 import { guardedMutation, isUnknownMutation, type MutationLedger } from "../services/runFence";
+import { activeCorrelation } from "../runtime/correlation";
+import { abortError } from "../runtime/errors";
 
 export interface ToolContext {
   userId: string;
@@ -152,6 +154,12 @@ export interface ToolContext {
   pendingApprovalMessages?: string[];
   /** Durable write ledger for this request or outcome. Reads ignore it. */
   ledger?: MutationLedger;
+  /** Set from the pipeline so a retry can resume this intent's tool loop. */
+  intentId?: string;
+  /** Deadline abort for this request. */
+  signal?: AbortSignal;
+  /** One short progress note back to the channel that asked. */
+  onProgress?: (text: string) => Promise<void> | void;
 }
 
 const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversible">> = {
@@ -1421,6 +1429,7 @@ export async function dispatch(
   options: { approved?: boolean } = {}
 ): Promise<string> {
   try {
+    if ((ctx.signal ?? activeCorrelation()?.signal)?.aborted) throw abortError();
     if (ctx.allowedTools && !ctx.allowedTools.includes(name)) {
       return presentToolResult(
         ctx,

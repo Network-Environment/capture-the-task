@@ -36,6 +36,7 @@ import { isUnknownMutation, sealPendingMutations, type MutationLedger } from "..
 import { withCorrelation } from "../runtime/correlation";
 
 const POLL_MS = 60_000;
+const JOBS_PER_TICK = Math.max(1, Number(process.env.ORCHESTRATOR_JOBS_PER_TICK ?? 3) || 1);
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5 * 60_000;
 const JOB_DEADLINE_MS = Number(process.env.REQUEST_DEADLINE_MS ?? 240_000);
@@ -59,16 +60,27 @@ export async function tick(adapter: CloudAdapter, botAppId: string): Promise<voi
   running = true;
   try {
     const due = await dueJobs();
-    if (due.length) {
-      const job = due[cursor % due.length];
-      cursor += 1;
+    const ordered = due.length
+      ? [...due.slice(cursor % due.length), ...due.slice(0, cursor % due.length)]
+      : [];
+    if (due.length) cursor += Math.min(JOBS_PER_TICK, due.length);
+    const runs: Promise<unknown>[] = [];
+    const seen = new Set<string>();
+    for (const job of ordered) {
+      if (runs.length >= JOBS_PER_TICK) break;
+      if (seen.has(job.userId)) continue;
+      seen.add(job.userId);
       const claimed = await claim(job);
-      if (claimed) {
-        await withCorrelation({ runId: claimed.id }, () =>
-          withDeadline(runJob(adapter, botAppId, claimed), JOB_DEADLINE_MS)
-        );
-      }
+      if (!claimed) continue;
+      const controller = new AbortController();
+      runs.push(
+        withCorrelation(
+          { runId: claimed.id, usage: { usd: 0 }, signal: controller.signal },
+          () => withDeadline(runJob(adapter, botAppId, claimed), JOB_DEADLINE_MS, controller)
+        ).catch((err) => console.error(`[orchestrator] job ${claimed.id} failed:`, err))
+      );
     }
+    await Promise.all(runs);
     await runOutcomes(adapter, botAppId);
     await maybeConsolidateObservations();
   } catch (err) {
@@ -133,11 +145,20 @@ async function runOutcomes(adapter: CloudAdapter, botAppId: string): Promise<voi
   for (const job of due) {
     const claimed = await claimOutcome(job);
     if (!claimed) continue;
-    await withCorrelation({ runId: claimed.id }, () => runOutcomeStep(adapter, botAppId, claimed));
+    const controller = new AbortController();
+    await withCorrelation(
+      { runId: claimed.id, usage: { usd: 0 }, signal: controller.signal },
+      () => runOutcomeStep(adapter, botAppId, claimed, controller)
+    );
   }
 }
 
-async function runOutcomeStep(adapter: CloudAdapter, botAppId: string, claimed: OutcomeJob): Promise<void> {
+async function runOutcomeStep(
+  adapter: CloudAdapter,
+  botAppId: string,
+  claimed: OutcomeJob,
+  controller: AbortController
+): Promise<void> {
   const step = claimed.steps[claimed.cursor] as OutcomeStep | undefined;
   if (!step) {
     await saveOutcome({ ...claimed, status: "done", enabled: false });
@@ -186,7 +207,9 @@ async function runOutcomeStep(adapter: CloudAdapter, botAppId: string, claimed: 
         },
         stepPrompt(claimed, step),
         step.profile
-      )
+      ),
+      undefined,
+      controller
     );
     const updated = applyStepResult({ ...current, checkpoint: ledger.checkpoint }, result);
     await saveOutcome(updated);

@@ -23,9 +23,12 @@ import {
 
 const POLL_MS = Number(process.env.DELIVERY_POLL_MS ?? 2_000);
 const SWEEP_MS = 15_000;
+const DELIVERY_CONCURRENCY = Math.max(1, Number(process.env.DELIVERY_CONCURRENCY ?? 3) || 1);
 let timer: ReturnType<typeof setInterval> | undefined;
 let sweepTimer: ReturnType<typeof setInterval> | undefined;
-let running = false;
+let claiming = false;
+let delivering = 0;
+const deliveringUsers = new Set<string>();
 let sweeping = false;
 
 export function startRequestDeliveryWorker(
@@ -51,17 +54,23 @@ export async function tickDelivery(
   adapter: CloudAdapter,
   botAppId: string
 ): Promise<void> {
-  if (running) return;
-  running = true;
+  if (claiming) return;
+  claiming = true;
   try {
-    const request = await nextUndeliveredResult();
-    if (request?.result) {
-      await deliverResult(adapter, botAppId, request);
+    while (delivering < DELIVERY_CONCURRENCY) {
+      const request = await nextUndeliveredResult(new Date(), [...deliveringUsers]);
+      if (!request?.result) break;
+      delivering += 1;
+      deliveringUsers.add(request.userId);
+      void deliverResult(adapter, botAppId, request).finally(() => {
+        delivering -= 1;
+        deliveringUsers.delete(request.userId);
+      });
     }
   } catch (err) {
     console.error("[delivery-worker] tick failed:", err);
   } finally {
-    running = false;
+    claiming = false;
   }
 }
 

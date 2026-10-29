@@ -9,6 +9,7 @@ export function classifyFailure(
   if (err instanceof Error && (err.name === "RequestDeadline" || err.name === "AbortError")) {
     return opts.mutating ? "unknown_outcome" : "deadline";
   }
+  if (err instanceof Error && err.message.includes("cost ceiling")) return "permanent";
   const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
   const status = Number(
     (err as { status?: number; statusCode?: number; code?: number }).status ??
@@ -30,4 +31,10 @@ export function classifyFailure(
 
 export function retryable(kind: FailureClass): boolean {
   return kind === "transient";
+}
+
+export function abortError(): Error {
+  const err = new Error("request aborted");
+  err.name = "AbortError";
+  return err;
 }

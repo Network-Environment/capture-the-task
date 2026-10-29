@@ -129,7 +129,7 @@ PIPELINE — processCapture()  (channel-agnostic)
         ├── approval command? ("approve pa-x" / "deny pa-x")
         │        └─► approvals.ts executes/discards the parked write. STOP.
         ├── undo command? ("undo" / "undo that" / "delete that")
-        │        └─► deletes the last brain note in this 15-min session. STOP.
+        │        └─► deletes the last brain note if it is still inside the 15-minute undo window. STOP.
         ├── audio bytes ──► Azure AI Speech fast transcription
         ▼
 QUALITY GATE  (no model)  — inboundQuality.ts
@@ -154,24 +154,32 @@ INTENT  (cheap model tier)  — agent.ts::interpretIntent
         ├── question   → brain.ts::recall (vector) → synthesis tier answer
         ├── action     → AGENT LOOP; PMO/Smartsheet wording uses the pmo profile
         │                (live MCP reads). Writes park for approve pa-x.
-        └── followup   → resolved against the private thread (10 turns / 4h, plus a summary)
+        └── followup   → resolved against the private thread (24 turns / 24h, plus one summary)
         ▼
 Outbound {title, body, tags} → adapter renders (Adaptive Card / plain text)
 
 AGENT LOOP — agent.ts::runAgent
    profile (config/agents.json): persona + tool allowlist + model route
-   + lessons from agent self-memory injected into system prompt
+   + up to 8 lessons chosen by overlap with this request (store cap is 40)
    tools = native (brain, scheduler, meetings/org, execution graph,
            web_search) + MCP tools (config-driven discovery)
-   ≤8 tool rounds; write-listed MCP tools PARK for human approval instead
-   of executing.
+   ≤8 tool rounds. Read-only tools returned together run in parallel.
+   Writes, ask_user, and note_unmet_request stay sequential.
+   Native arguments are validated against the tool schema before dispatch.
+   The transcript is checkpointed on the request after each round so a retry
+   of the same intent resumes. A deadline aborts the in-flight model call.
+   The first tool call sends "Looking that up." back to the asking channel.
+   promptBudget.ts fits the prompt to the route context window: older tool
+   evidence is shortened (record ids kept), then older turns are dropped.
+   The folded session summary is a system message inside an untrusted block.
+   Write-listed MCP tools PARK for human approval instead of executing.
 
 SCHEDULER — jobs-as-data
    schedule_job tool → Cosmos `jobs` doc (cron or one-off, prompt,
-   conversationRef) → orchestrator.ts polls every 60s → etag-claims each due
-   job → runs prompt through agent (digest profile) → proactive Teams message
-   → advances cron / disables one-off. Failures: 2 retries @5min → alert
-   owner + admin → recurring skips to next slot.
+   conversationRef) → orchestrator.ts polls every 60s → etag-claims up to 3
+   due jobs for different people → runs each prompt through the agent
+   (digest profile) → proactive message → advances cron / disables one-off.
+   Failures: 2 retries @5min → alert owner + admin → recurring skips to next slot.
 ```
 
 ### Component map
@@ -179,12 +187,14 @@ SCHEDULER — jobs-as-data
 | Path | Responsibility |
 |---|---|
 | `src/index.ts` | role switch only: `TASKBRAIN_ROLE` loads `runtime/admin`, `runtime/gateway`, or `runtime/worker` |
-| `src/runtime/gateway.ts` | gateway restify: `/api/messages`, Photon start, request delivery pump, `/internal/deliver`, `/healthz` |
+| `src/runtime/gateway.ts` | gateway restify: `/api/messages`, Photon start, request delivery pump, `/internal/deliver`, `/api/hooks/:source`, `/healthz` |
+| `src/runtime/correlation.ts` | per-request trace, run id, abort signal, and mutable cost counter |
+| `src/runtime/tracing.ts` | OpenTelemetry spans for model and tool calls when App Insights is configured |
 | `src/runtime/worker.ts` | worker restify `/healthz`; starts the request worker and the job orchestrator |
 | `src/runtime/admin.ts` | admin restify: `/admin`, meeting/org/board writes, graph and memory APIs, `/healthz` |
 | `src/services/requestQueue.ts` | Cosmos `agent-requests`: enqueue, claim, complete, delivery cursor |
-| `src/services/requestWorker.ts` | worker poller; the only runtime caller of `processCapture` |
-| `src/services/requestDeliveryWorker.ts` | gateway pump: stored result → Adaptive Card or iMessage text |
+| `src/services/requestWorker.ts` | worker poller, concurrency 3, deadline abort; the only runtime caller of `processCapture` |
+| `src/services/requestDeliveryWorker.ts` | gateway pump, concurrency 3: stored result → Adaptive Card or iMessage text |
 | `src/pipeline.ts` | **channel-agnostic intent gateway**, worker-only: dedup, transcription, context, interpretation, policy, execute → Outbound |
 | `src/bot.ts` | Teams adapter: 1:1 and @mentions; transcribes voice; enqueues; work-card actions stay inline |
 | `src/channels/teamsText.ts` | strip bot @mention markup; personal vs channel conversation |
@@ -193,12 +203,15 @@ SCHEDULER — jobs-as-data
 | `src/channels/types.ts` | channel policy, identity resolution, plain-text rendering |
 | `src/services/agent.ts` | structured intent interpretation (cheap tier + escalation), agent loop (profiles), question synthesis |
 | `src/services/intent.ts` | intent contracts, validation, ambiguity threshold, and deterministic operation policy |
-| `src/services/router.ts` | task-class → deployment mapping, escalation, **daily token budget guard**, per-call usage logging |
+| `src/services/router.ts` | task-class → deployment mapping, escalation, **daily token budget guard**, per-run cost ceiling, abort signal, per-call usage logging |
+| `src/services/promptBudget.ts` | shorten older tool evidence and drop older turns so one run fits the route context window |
+| `src/services/modelCost.ts` | list-price USD for the `cheap`, `standard`, and `embed` deployments |
+| `src/services/behaviorVersion.ts` | hash of agents, routes, skills, flags, and the inline triage/intent prompts |
 | `src/services/brain.ts` | user's second brain: embed, markdown → Blob, metadata+embedding → Cosmos (compensating delete), vector recall, undo delete |
 | `src/services/cosmos.ts` | lazy shared Cosmos client; containers constructed on first use |
-| `src/services/agentMemory.ts` | agent's own lessons: store, prompt injection, cap-40 consolidation |
+| `src/services/agentMemory.ts` | agent's own lessons: store cap 40, at most 8 ranked into the prompt, use counts |
 | `src/services/scheduler.ts` | job CRUD, cron next-run (cron-parser, `JOBS_TIMEZONE`), due-job query |
-| `src/jobs/orchestrator.ts` | 60s poller, etag claiming, retries, proactive delivery |
+| `src/jobs/orchestrator.ts` | 60s poller, up to 3 jobs per tick, etag claiming, retries, proactive delivery |
 | `src/services/transcription.ts` | Azure AI Speech fast transcription REST |
 | `src/services/graphTasks.ts` | Microsoft To Do via Graph (Bot Service OAuth connection) |
 | `src/services/session.ts` | private-thread turns, overflow summary, pending clarification, last capture for undo |
@@ -207,7 +220,7 @@ SCHEDULER — jobs-as-data
 | `src/services/approvals.ts` | immutable high-impact action previews, audited states, `approve/deny <id>` |
 | `src/services/conversations.ts` | per-user, per-channel references (`{user}:teams`, `{user}:imessage`, `{user}:latest`) |
 | `src/services/alerts.ts` | proactive alerts to users and admin |
-| `src/services/activityLog.ts` | event spine: captures, triage, tool/model calls (+tokens), job runs, errors |
+| `src/services/activityLog.ts` | event spine: captures, triage, tool/model calls (tokens, USD, trace id), webhooks, job runs, errors |
 | `src/admin/dashboard.ts` | sectioned `/admin` portal + authenticated execution graph JSON API |
 | `src/admin/markup.ts` | admin HTML shell, sidebar, shared CSS |
 | `src/admin/client/graph.ts` | bundled Cytoscape execution map, filters, editor, and proposal review |
@@ -216,6 +229,9 @@ SCHEDULER — jobs-as-data
 | `src/org/resolve.ts` | name/alias resolution, search, capped prompt snapshot |
 | `src/org/store.ts` | Cosmos org CRUD + `lookup_org` |
 | `src/tools/registry.ts` | unified tool definitions + dispatch (native + MCP + approval gate) |
+| `src/tools/validateArgs.ts` | native tool arguments checked against the declared JSON schema |
+| `src/channels/webhook.ts` | HMAC verification and Graph clientState check for `/api/hooks/:source` |
+| `src/services/connectorHealth.ts` | App Service probes for Graph application access and Plaud account config |
 | `src/services/smartsheet.ts` | PMO catalog prompt, PMO routing, inferred sheet match, write-approval copy |
 | `src/meetings/` | Teams meeting ingest worker: Graph delta, VTT parse, Foundry summary, Cosmos/Blob, Adam/Val recall |
 | `config/channels.json` | iMessage policy: enabled, allowActions, phone→userId identity map (= allowlist) |
@@ -227,6 +243,7 @@ SCHEDULER — jobs-as-data
 | `scripts/bootstrap.sh` | one-time Entra/M365 setup (idempotent) |
 | `scripts/backfill-graph.ts` | dry-run-by-default shared-source graph migration |
 | `.github/workflows/deploy.yml` | CI/CD via OIDC; builds images before Bicep retags App Service |
+| `.github/workflows/pr.yml` | pull-request build and `npm test`; does not deploy |
 | `.github/workflows/intent-eval.yml` | nightly live intent fixtures against production Foundry settings |
 | `teams-app/manifest.json` | Teams app package (needs color.png 192², outline.png 32²) |
 
@@ -235,12 +252,12 @@ SCHEDULER — jobs-as-data
 | Container | PK | TTL | Contents |
 |---|---|---|---|
 | `notes` | `/userId` | — | note metadata + 1536-dim embedding (diskANN, cosine). Canonical note body also lives as markdown in Blob `notes/{userId}/{yyyy-mm}/{id}.md` |
-| `sessions` | `/userId` | 4h | private thread turns plus one rewritten overflow summary; per-chat pending clarification and last capture. Item ttl is 14400s. Group chats stay on their own doc. |
+| `sessions` | `/userId` | 24h item / 4h container default | private thread: 24 turns plus one rewritten overflow summary. The app sets item ttl to 86400s. The container default of 14400s only applies to a document that omits `ttl`. Undo and open questions expire after 15 minutes by timestamp. Group chats stay on their own doc. |
 | `inbound-receipts` | `/channel` | 2d | hashed source event receipts preventing duplicate execution |
 | `agent-requests` | `/bucket` | 2d delivered / 7d pending or failed | durable FIFO for interactive Teams/iMessage requests; ETag claims, leases, retries, result delivery state |
 | `jobs` | `/userId` | — | scheduled jobs plus immutable read-only tool envelope and narrowly approved action tools |
-| `activity` | `/day` | 30d | event stream incl. model calls with token counts |
-| `agent-memory` | `/userId` | — | agent lessons (≤40/user, auto-consolidated) |
+| `activity` | `/day` | 30d | event stream. Model calls include token counts, `costUsd` when the deployment has a list price, and the request trace id |
+| `agent-memory` | `/userId` | — | agent lessons (≤40 stored; ≤8 ranked into a prompt). Matched lessons record a use |
 | `conversations` | `/userId` | — | per-channel references: Teams conversationRef or iMessage phone/space; `:latest` pointer |
 | `pending` | `/userId` | 1h pending / 7d terminal | parked high-impact action plans and audit state |
 | `meetings` | `/organizerId` | 90d | one compact summary + one 1536-dim embedding per meeting. No raw VTT. |
@@ -342,8 +359,9 @@ setting, do not mint a new token or re-run bootstrap.
 The **second brain** (`notes` + Blob) is the user's knowledge — retrieved on
 demand, never injected wholesale. **Agent self-memory** (`agent-memory`) is
 the agent's operational knowledge (preferences, aliases, tool quirks,
-self-observations) — injected into every agent prompt, hard-capped and
-consolidated so it cannot become context rot. The **org directory** (`org`)
+self-observations). The store holds 40. A turn receives at most 8, ranked by
+overlap with the request, inside an untrusted block. A match records a use.
+Consolidation proposes a review candidate and does not delete an approved lesson. The **org directory** (`org`)
 is the company structure: teams, people, reporting, and mandates (what
 someone *should* be doing), plus an operator-set **capacity** flag
 (`available` / `stretched` / `overloaded` / `unavailable`). Admins maintain
@@ -532,16 +550,19 @@ controlled. Activity stores the disposition and reason code for policy refusals,
 ### Context-rot policy (why the bot stays fast forever)
 
 The model never sees the whole Teams or iMessage thread. Per call it sees: system prompt
-(+ lessons for agent calls) + at most 10 structured turns on the private thread
+(+ up to 8 ranked lessons for agent calls) + at most 24 structured turns on the private thread
 (or that group chat's own doc) + one rewritten summary of turns that fell off
-the cap + the new message + explicitly retrieved notes. The summary expires
-with the session (4-hour TTL) and is not a memory fact. Undo and unanswered
+the cap + the new message + explicitly retrieved notes. The summary is placed
+in a system message inside an untrusted block, expires with the session (24-hour
+item TTL), and is not a memory fact. Inside one tool run, `promptBudget.ts`
+shortens older tool evidence (keeping record ids) and then drops older turns
+if the prompt still exceeds the route's context budget. Undo and unanswered
 questions still expire after 15 minutes. Stored outcomes and references make
 follow-ups useful without unbounded history. Memory lives in stores, not chat.
 
 ## 3. Configuration surfaces
 
-Three config files change behavior without code:
+These config files change behavior without code:
 
 - **`config/mcp.servers.json`** — integrations. Per server: `url` or `urlEnv`
   (live URL from an app setting), `authEnv`
@@ -563,14 +584,17 @@ Three config files change behavior without code:
 - **`config/smartsheet.json`** — PMO catalog: alias → optional `sheetId` /
   `workspaceId` + one-line purpose. Injected into agent prompts as names/ids
   only. Empty `sheets` is valid (search by name). Never put the API token here.
-  (`CHEAP_DEPLOYMENT`, `STANDARD_DEPLOYMENT`, `PREMIUM_DEPLOYMENT`) with max
-  tokens/temperature, plus the triage→agent escalation rule.
+- **`config/model.routes.json`** — task class → deployment env var
+  (`CHEAP_DEPLOYMENT`, `STANDARD_DEPLOYMENT`, `PREMIUM_DEPLOYMENT`), max
+  tokens, temperature, and the triage→agent escalation rule. Context-window
+  fitting reads `maxTokens` and optional `contextTokens` from the same file.
 
 ### Environment variables
 
-All are written to App Service settings by Bicep on every deploy. "Source"
-says where the value originates. For local runs, `.env` (gitignored,
-patched by bootstrap.sh) supplies the same names.
+Bicep writes the settings it owns on every deploy. A row whose source is a
+code default is optional: set it as an app setting to override, and a portal
+edit of that name survives the next deploy. For local runs, `.env`
+(gitignored, patched by bootstrap.sh) supplies the same names.
 
 | Var | Purpose | Source |
 |---|---|---|
@@ -602,15 +626,24 @@ patched by bootstrap.sh) supplies the same names.
 | `ADMIN_APP_ID` / `ADMIN_APP_SECRET` | App Service Easy Auth (TaskBrain Admin Entra app) | GitHub secrets (bootstrap / `scripts/setup-admin-sso.sh`) |
 | `ADMIN_AAD_OBJECT_ID` | admin alert recipient | GitHub secret (bootstrap = signed-in user) |
 | `DAILY_TOKEN_BUDGET` / `JOBS_TIMEZONE` | ops knobs | Bicep params (defaults 5,000,000 / America/Chicago) |
+| `RUN_COST_CEILING_USD` | stop one run after this much estimated model spend | code default `2`; optional app setting, not written by Bicep |
+| `REQUEST_CONCURRENCY` / `DELIVERY_CONCURRENCY` / `ORCHESTRATOR_JOBS_PER_TICK` | how many requests, deliveries, or due jobs run at once. Two items for the same person still run one after the other | code default `3` each; optional app settings, not written by Bicep |
+| `REQUEST_DEADLINE_MS` | abort one queued request or scheduled job | code default `240000` |
+| `WEBHOOK_SECRET` | HMAC secret for `POST /api/hooks/:source` other than Graph | optional app setting. Unset returns 404 |
+| `GRAPH_WEBHOOK_CLIENT_STATE` | expected `clientState` on Graph notifications to `/api/hooks/graph` | optional app setting. The endpoint does not create the subscription |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | telemetry | Bicep |
 | `CONFIG_DIR` | override config folder (tests/local only) | unset in prod |
 
-Model catalog note: Bicep params `cheapModelName/Version`, `standardModel*`,
-`embedModel*` default to `gpt-5-mini` / `gpt-5` (2025-08-07) /
-`text-embedding-3-small` (1). Verify availability in your region's Foundry
-catalog; Claude deployments are created in the Foundry portal today, then
-point `STANDARD_DEPLOYMENT`/`PREMIUM_DEPLOYMENT` at them via Bicep param or
-app setting.
+Model catalog note: Bicep params default to `gpt-4.1-mini` on the `cheap`
+deployment, `gpt-5-mini` on `standard`, and `text-embedding-3-small` on
+`embed`. `PREMIUM_DEPLOYMENT` points at `standard` until a larger deployment
+exists. List prices for those deployment names live in `src/services/modelCost.ts`;
+update them when a deployment is pointed at a different model. Verify
+availability in your region's Foundry catalog. Claude deployments are created
+in the Foundry portal, then `STANDARD_DEPLOYMENT` or `PREMIUM_DEPLOYMENT` is
+pointed at them via Bicep param or app setting. `config/model.routes.json`
+`fallbacks` switch task class only after the single Foundry circuit is
+already open. They are not a second region or a second provider.
 
 ## 4. Deploy runbook (exact order)
 
@@ -710,7 +743,13 @@ order-independent and re-runnable.
   messaged the bot at least once (conversation reference).
 - **Budget guard:** past `DAILY_TOKEN_BUDGET`, all non-triage calls run on
   the cheap tier until midnight UTC. Counter rebuilds from the activity log
-  every 5 min (restart/scale-out safe).
+  every 5 min (restart/scale-out safe). One run also stops past
+  `RUN_COST_CEILING_USD` (default $2). `model_call` events include `costUsd`
+  when the deployment has a list price.
+- **Integrations page:** on App Service, status includes a cached Graph
+  application probe and whether Plaud accounts are configured. Locally those
+  live probes stay off. Webhook readiness is whether `WEBHOOK_SECRET` or
+  `GRAPH_WEBHOOK_CLIENT_STATE` is set.
 - **Approvals:** parked writes expire in 1h. Approve/deny by replying
   `approve pa-xxxx` / `deny pa-xxxx` in the same chat.
 - **Job admin from chat:** "list my jobs", "cancel <name>" (agent tools).
@@ -793,12 +832,16 @@ logging already support it. Do not pay this tax early.
 
 ## 7. Invariants (agents: keep these true)
 
-1. Chat history never enters prompts beyond 10 structured turns on the private
+1. Chat history never enters prompts beyond 24 structured turns on the private
    thread (or the group chat's own document) plus one rewritten summary of
-   turns that fell off that cap. The summary expires with the session (4-hour
-   TTL) and is not a memory fact. Full channel threads are never ingested.
+   turns that fell off that cap. The summary expires with the session (24-hour
+   item TTL), is wrapped as untrusted, and is not a memory fact. Full channel
+   threads are never ingested. One run's prompt is also fit to the route
+   context window by `promptBudget.ts`.
 2. Every LLM call goes through `router.route()` — no direct client calls —
-   so budget, routing, and token logging stay complete.
+   so budget, the per-run cost ceiling, the abort signal, routing, and token
+   logging stay complete. Inline triage and intent prompts are part of the
+   behavior version.
 3. With unified policy enforcement enabled, shared, destructive, scheduled,
    costly, or broad operations—native or MCP—require a user-visible preview
    and explicit approval. During shadow rollout, existing MCP `confirmTools`
@@ -826,8 +869,11 @@ logging already support it. Do not pay this tax early.
     Group or weak-identity traffic cannot mutate; future channels must declare
     identity assurance, scope, write capabilities, and approval UX.
 13. Config is read only through `src/config.ts::loadConfig` (never imported
-    as a module — it lives outside `rootDir`). Every `process.env` read in
-    `src/` has a matching app setting written by `infra/main.bicep`.
+    as a module — it lives outside `rootDir`). Every required `process.env`
+    read in `src/` has a matching app setting written by `infra/main.bicep`.
+    Optional knobs with a code default (`RUN_COST_CEILING_USD`, the
+    concurrency caps, `REQUEST_DEADLINE_MS`, webhook secrets) are listed in
+    §3 and are not overwritten by Bicep.
 14. Public-web research is Tavily only: `web_search` and `read_public_page`.
     There is no browser, login, or Chromium container. Page text is not stored
     in the brain unless the user explicitly `save_note`s a summary.
@@ -859,6 +905,16 @@ logging already support it. Do not pay this tax early.
 - Weekly digest job: create via chat once deployed ("every Friday at 4pm
   summarize this week's captures, overdue meeting commitments, and open
   Smartsheet risks") as Adam or Val so `list_commitments` is allowed.
+- Graph change notifications can be received at `POST /api/hooks/graph`
+  (validation handshake plus `GRAPH_WEBHOOK_CLIENT_STATE`). Creating and
+  renewing the subscription, and turning a notification into agent work, is
+  not built. Other sources use `WEBHOOK_SECRET` and are logged only.
+- Deployment slots need Standard or higher. The plan SKU is B1, so there is
+  no staging slot.
+- Worker-to-gateway delivery still uses the static `DELIVERY_GATEWAY_TOKEN`.
+  It is not a Key Vault reference and not managed identity.
+- The answer verifier still defaults to shadow mode (`MODEL_VERIFIER_SHADOW`).
+  Flagged answers are logged and still sent until that flag is turned off.
 
 ## 9. Troubleshooting quick hits
 

@@ -36,6 +36,7 @@ import { renderModels, renderRecovery } from "./recoveryConsole";
 import { listOpenIncidents } from "../services/recoveryIncidents";
 import { nativeToolCatalog } from "../tools/registry";
 import { connectorCandidates } from "../services/connectorBacklog";
+import { liveConnectorProbes, type ConnectorProbe } from "../services/connectorHealth";
 import {
   mcpServerCatalog,
   mcpServerHealth,
@@ -220,7 +221,8 @@ async function renderSection(
       const health = await readHealth().catch(() => undefined);
       const which = tab === "catalog" ? "catalog" : tab === "access" ? "access" : "status";
       const access = which === "access" ? await loadChannelAccess() : undefined;
-      return renderIntegrations(signedIn, which, health, mcpServerSnapshot(), access);
+      const probes = which === "status" ? await liveConnectorProbes().catch(() => []) : [];
+      return renderIntegrations(signedIn, which, health, mcpServerSnapshot(), access, probes);
     }
     case "usage": {
       const [usage, events] = await Promise.all([usageBreakdown(), recentEvents(80)]);
@@ -534,7 +536,8 @@ export function renderIntegrations(
   tab: "status" | "catalog" | "access",
   health?: IngestHealthDoc,
   mcp: McpServerHealth[] = [],
-  access?: ChannelAccessView
+  access?: ChannelAccessView,
+  probes: ConnectorProbe[] = []
 ): string {
   const tabBar = tabs("/admin/integrations", [
     { id: "status", label: "Status" },
@@ -580,6 +583,18 @@ export function renderIntegrations(
         note: sheetAliases > 0 ? `${sheetAliases} alias(es)` : "no aliases; MCP search is enough",
       },
       { name: "Web search", label: process.env.WEB_SEARCH_API_KEY ? "ready" : "not ready", tone: process.env.WEB_SEARCH_API_KEY ? "ok" : "warn", note: "tavily" },
+      {
+        name: "Inbound webhook",
+        label: process.env.WEBHOOK_SECRET || process.env.GRAPH_WEBHOOK_CLIENT_STATE ? "ready" : "not configured",
+        tone: process.env.WEBHOOK_SECRET || process.env.GRAPH_WEBHOOK_CLIENT_STATE ? "ok" : "idle",
+        note: "POST /api/hooks/:source",
+      },
+      ...probes.map((probe) => ({
+        name: probe.name,
+        label: probe.status === "ready" ? "ready" : probe.status === "error" ? "error" : "not configured",
+        tone: (probe.status === "ready" ? "ok" : probe.status === "error" ? "err" : "idle") as Tone,
+        note: probe.note,
+      })),
     ];
     const statusRows = platform
       .map(

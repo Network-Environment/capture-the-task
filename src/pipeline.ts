@@ -48,6 +48,7 @@ import { claimInboundEvent, finishInboundEvent } from "./services/inboundReceipt
 import { assessInboundQuality, restrainShortReply } from "./services/inboundQuality";
 import { userHasPendingCheckIn } from "./org/checkins";
 import { envFlag, PRODUCTION_FLAG_DEFAULTS } from "./config";
+import { abortError } from "./runtime/errors";
 import {
   findMutation,
   guardedMutation,
@@ -87,6 +88,8 @@ export interface CaptureInput {
   signal?: AbortSignal;
   /** Present for queued requests and outcome steps. Direct calls leave it unset. */
   ledger?: MutationLedger;
+  /** Optional one-line progress note while tools are running. */
+  onProgress?: (text: string) => Promise<void> | void;
 }
 
 export interface Outbound {
@@ -541,7 +544,8 @@ async function executePlan(
       });
       continue;
     }
-    const out = await executeIntent(input, intent, recent, source, history);
+    if (input.signal?.aborted) throw abortError();
+    const out = await executeIntent(input, intent, recent, source, history, id);
     if (input.ledger) {
       const next = rememberIntent(input.ledger.checkpoint, id, {
         title: out.title,
@@ -618,7 +622,8 @@ async function executeIntent(
   intent: InterpretedIntent,
   recent: SessionTurn[],
   source: "text" | "voice",
-  history: PromptHistory
+  history: PromptHistory,
+  intentKey?: string
 ): Promise<Outbound> {
   const policy =
     input.policy ??
@@ -641,6 +646,9 @@ async function executeIntent(
         getGraphToken: input.getGraphToken,
         traceId: input.traceId,
         ledger: input.ledger,
+        intentId: intentKey,
+        signal: input.signal,
+        onProgress: input.onProgress,
     };
     const result = await runAgent(ctx, intent.standalone, undefined, recent, history);
     return agentOutbound(ctx, result, "TaskBrain");
@@ -720,6 +728,9 @@ async function executeIntent(
         getGraphToken: input.getGraphToken,
         traceId: input.traceId,
         ledger: input.ledger,
+        intentId: intentKey,
+        signal: input.signal,
+        onProgress: input.onProgress,
     };
     const result = await runAgent(
       ctx,
@@ -944,6 +955,8 @@ async function execute(
           getGraphToken: input.getGraphToken,
           traceId: input.traceId,
           ledger: input.ledger,
+          signal: input.signal,
+          onProgress: input.onProgress,
       };
       const result = await runAgent(ctx, text, agentProfileFor("action", text), recent, history);
       return agentOutbound(ctx, result, "Done");

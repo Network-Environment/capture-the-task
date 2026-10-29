@@ -173,13 +173,15 @@ export async function enqueueAgentRequest(
 }
 
 export async function claimNextAgentRequest(
-  now = new Date()
+  now = new Date(),
+  busyUserIds: string[] = []
 ): Promise<QueuedAgentRequest | undefined> {
   const nowIso = now.toISOString();
   const { resources } = await requests()
     .items.query<QueuedAgentRequest>({
       query: `SELECT TOP 5 * FROM c
         WHERE c.bucket = @bucket
+          AND NOT ARRAY_CONTAINS(@busy, c.userId)
           AND (
             (c.status = "queued" AND c.availableAt <= @now)
             OR (c.status = "processing" AND c.leaseUntil < @now)
@@ -188,11 +190,13 @@ export async function claimNextAgentRequest(
       parameters: [
         { name: "@bucket", value: BUCKET },
         { name: "@now", value: nowIso },
+        { name: "@busy", value: busyUserIds },
       ],
     })
     .fetchAll();
 
   for (const candidate of resources) {
+    if (busyUserIds.includes(candidate.userId)) continue;
     if (candidate.attempts >= MAX_ATTEMPTS) {
       await markAgentRequestFailed(candidate, "Request lease expired after maximum attempts.");
       continue;
@@ -225,12 +229,15 @@ export async function claimNextAgentRequest(
 export async function beginRequestRun(request: QueuedAgentRequest): Promise<QueuedAgentRequest> {
   const generation = (request.generation ?? 0) + 1;
   const runId = `${request.id}:${generation}`;
+  const previous = request.checkpoint;
   const checkpoint = {
-    runId: request.checkpoint?.runId ?? runId,
+    runId: previous?.runId ?? runId,
     generation,
-    completedIntents: request.checkpoint?.completedIntents ?? [],
-    mutations: request.checkpoint?.mutations ?? [],
-    intentResults: request.checkpoint?.intentResults,
+    completedIntents: previous?.completedIntents ?? [],
+    mutations: previous?.mutations ?? [],
+    intentResults: previous?.intentResults,
+    followUpText: previous?.followUpText,
+    agentRun: previous?.agentRun,
   };
   await replaceRequest(request, { activeRunId: runId, generation, checkpoint });
   return { ...request, activeRunId: runId, generation, checkpoint };
@@ -272,12 +279,14 @@ export async function completeAgentRequest(
 }
 
 export async function nextUndeliveredResult(
-  now = new Date()
+  now = new Date(),
+  busyUserIds: string[] = []
 ): Promise<QueuedAgentRequest | undefined> {
   const { resources } = await requests()
     .items.query<QueuedAgentRequest>({
       query: `SELECT TOP 5 * FROM c
         WHERE c.bucket = @bucket
+          AND NOT ARRAY_CONTAINS(@busy, c.userId)
           AND c.status IN ("completed", "failed", "quarantined")
           AND IS_DEFINED(c.result)
           AND NOT IS_DEFINED(c.deliveredAt)
@@ -291,10 +300,12 @@ export async function nextUndeliveredResult(
       parameters: [
         { name: "@bucket", value: BUCKET },
         { name: "@now", value: now.toISOString() },
+        { name: "@busy", value: busyUserIds },
       ],
     })
     .fetchAll();
   for (const candidate of resources) {
+    if (busyUserIds.includes(candidate.userId)) continue;
     const claimed = {
       ...candidate,
       deliveryAttempts: (candidate.deliveryAttempts ?? 0) + 1,

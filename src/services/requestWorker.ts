@@ -3,6 +3,7 @@ import {
   type ConversationReference,
   type TurnContext,
 } from "botbuilder";
+import { deliver } from "../channels/deliver";
 import { processCapture, type Outbound } from "../pipeline";
 import { createTodoTask, getGraphUserToken, graphAccessForUser } from "./graphTasks";
 import { logActivity } from "./activityLog";
@@ -34,15 +35,19 @@ const POLL_MS = Number(process.env.REQUEST_POLL_MS ?? 5_000);
 const START_DELAY_MS = Number(process.env.REQUEST_WORKER_START_DELAY_MS ?? 45_000);
 const REQUEST_DEADLINE_MS = Number(process.env.REQUEST_DEADLINE_MS ?? 240_000);
 
+const REQUEST_CONCURRENCY = Math.max(1, Number(process.env.REQUEST_CONCURRENCY ?? 3) || 1);
 let timer: ReturnType<typeof setInterval> | undefined;
 let startTimer: ReturnType<typeof setTimeout> | undefined;
-let running = false;
+let claiming = false;
+let inflight = 0;
+let busySince = 0;
+const inflightUsers = new Set<string>();
 let lastTickAt = Date.now();
 
 export function requestWorkerHealthy(now = Date.now()): boolean {
   if (startTimer) return true;
   if (!timer) return false;
-  if (running && now - lastTickAt > REQUEST_DEADLINE_MS + 30_000) return false;
+  if (inflight > 0 && busySince && now - busySince > REQUEST_DEADLINE_MS + 30_000) return false;
   return now - lastTickAt < POLL_MS * 4 + REQUEST_DEADLINE_MS;
 }
 
@@ -73,9 +78,12 @@ class RequestDeadline extends Error {
   }
 }
 
-function withDeadline<T>(work: Promise<T>, ms: number, id: string): Promise<T> {
+function withDeadline<T>(work: Promise<T>, ms: number, id: string, controller?: AbortController): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new RequestDeadline(id, ms)), ms);
+    const t = setTimeout(() => {
+      controller?.abort();
+      reject(new RequestDeadline(id, ms));
+    }, ms);
     work.then(
       (v) => { clearTimeout(t); resolve(v); },
       (e) => { clearTimeout(t); reject(e); }
@@ -91,7 +99,7 @@ export function startRequestWorker(adapter: CloudAdapter, botAppId: string): voi
     void tick(adapter, botAppId);
   }, START_DELAY_MS);
   console.log(
-    `[request-worker] starting in ${START_DELAY_MS}ms, then polling every ${POLL_MS}ms, concurrency=1`
+    `[request-worker] starting in ${START_DELAY_MS}ms, then polling every ${POLL_MS}ms, concurrency=${REQUEST_CONCURRENCY}`
   );
 }
 
@@ -106,18 +114,28 @@ export async function tick(
   adapter: CloudAdapter,
   botAppId: string
 ): Promise<void> {
-  if (running) return;
-  running = true;
+  if (claiming) return;
+  claiming = true;
   lastTickAt = Date.now();
   beat("request-worker", POLL_MS * 4 + REQUEST_DEADLINE_MS);
   try {
-    const request = await claimNextAgentRequest();
     await reportStaleQueue();
-    if (request) await processRequest(adapter, botAppId, request);
+    while (inflight < REQUEST_CONCURRENCY) {
+      const request = await claimNextAgentRequest(new Date(), [...inflightUsers]);
+      if (!request) break;
+      if (inflight === 0) busySince = Date.now();
+      inflight += 1;
+      inflightUsers.add(request.userId);
+      void processRequest(adapter, botAppId, request).finally(() => {
+        inflight -= 1;
+        if (inflight === 0) busySince = 0;
+        inflightUsers.delete(request.userId);
+      });
+    }
   } catch (err) {
     console.error("[request-worker] tick failed:", err);
   } finally {
-    running = false;
+    claiming = false;
   }
 }
 
@@ -152,7 +170,13 @@ async function processRequest(
     };
     const run = (item: QueuedAgentRequest) =>
       withCorrelation(
-        { traceId: item.activeRunId ?? item.id, requestId: item.id, runId: item.activeRunId },
+        {
+          traceId: item.activeRunId ?? item.id,
+          requestId: item.id,
+          runId: item.activeRunId,
+          usage: { usd: 0 },
+          signal: controller.signal,
+        },
         () => runOnce(item)
       );
     const runOnce = async (item: QueuedAgentRequest) => {
@@ -171,20 +195,23 @@ async function processRequest(
         runId: item.activeRunId,
         signal: controller.signal,
         ledger,
+        onProgress: async (text) => {
+          await deliver(item.userId, text, item.conversationRef);
+        },
       });
     };
-    let out = await withDeadline(run(current), REQUEST_DEADLINE_MS, request.id);
+    let out = await withDeadline(run(current), REQUEST_DEADLINE_MS, request.id, controller);
     const latest = await getAgentRequest(request.id);
     if (latest?.activeRunId && latest.activeRunId !== current.activeRunId) throw new RunFencedError(current.activeRunId ?? request.id);
     if (latest && !latest.checkpoint?.mutations.length && latest.text !== current.text) {
-      out = await withDeadline(run(latest), REQUEST_DEADLINE_MS, request.id);
+      out = await withDeadline(run(latest), REQUEST_DEADLINE_MS, request.id, controller);
     } else if (latest && latest.text !== current.text) {
       out = {
         ...out,
         body: `${out.body}\n\nI also kept the follow-up you sent while this was running.`,
       };
     } else if (latest && shouldRerunAfterDetail(out.title, current.text, latest.text)) {
-      out = await withDeadline(run(latest), REQUEST_DEADLINE_MS, request.id);
+      out = await withDeadline(run(latest), REQUEST_DEADLINE_MS, request.id, controller);
     }
     controller.abort();
     await completeAgentRequest(latest ?? current, out);
@@ -272,6 +299,9 @@ async function processTeamsRequest(
         runId: request.activeRunId,
         signal,
         ledger,
+        onProgress: async (text) => {
+          await ctx.sendActivity(text);
+        },
       });
     }
   );

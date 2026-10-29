@@ -34,7 +34,8 @@ export type ActivityType =
   | "error"
   | "recovery"
   | "feedback"
-  | "model_assessment";
+  | "model_assessment"
+  | "webhook";
 
 export type ActivityOrigin =
   | "user_message"

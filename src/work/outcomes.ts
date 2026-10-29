@@ -232,9 +232,16 @@ export async function saveOutcome(job: OutcomeJob): Promise<OutcomeJob> {
   return resource ?? rest;
 }
 
-export function withDeadline<T>(work: Promise<T>, ms = OUTCOME_STEP_DEADLINE_MS): Promise<T> {
+export function withDeadline<T>(
+  work: Promise<T>,
+  ms = OUTCOME_STEP_DEADLINE_MS,
+  controller?: AbortController
+): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`step exceeded its ${ms}ms deadline`)), ms);
+    const timer = setTimeout(() => {
+      controller?.abort();
+      reject(new Error(`step exceeded its ${ms}ms deadline`));
+    }, ms);
     work.then(
       (value) => {
         clearTimeout(timer);

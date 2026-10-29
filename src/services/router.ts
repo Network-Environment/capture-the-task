@@ -23,6 +23,9 @@ import { circuitAllows, circuitFailure, circuitSuccess, CircuitOpenError } from 
 import { classifyFailure } from "../runtime/errors";
 import { currentBehaviorManifest } from "./behaviorVersion";
 import { withSpan } from "../runtime/tracing";
+import { activeCorrelation } from "../runtime/correlation";
+import { abortError } from "../runtime/errors";
+import { addRunCost, estimateUsd } from "./modelCost";
 
 export type TaskClass = "triage" | "ack" | "agent" | "synthesis" | "digest";
 
@@ -106,6 +109,7 @@ export interface RouteOptions {
   attribution?: Partial<ActivityAttribution>;
   purpose?: "clarification" | "policy" | "mutation" | "recovery" | "verification" | "synthesis";
   allowFallback?: boolean;
+  signal?: AbortSignal;
 }
 
 /**
@@ -186,14 +190,19 @@ async function routeOnce(
   };
 
   if (!circuitAllows("foundry")) throw new CircuitOpenError("foundry");
+  const signal = opts.signal ?? activeCorrelation()?.signal;
   let caps = capabilitiesFor(s.model);
   let res;
   for (let attempt = 0; ; attempt++) {
     try {
-      res = await modelClient().chat.completions.create({
-        ...body,
-        ...chatSamplingParams(caps, s.maxTokens, s.temperature),
-      });
+      if (signal?.aborted) throw abortError();
+      res = await modelClient().chat.completions.create(
+        {
+          ...body,
+          ...chatSamplingParams(caps, s.maxTokens, s.temperature),
+        },
+        { signal }
+      );
       circuitSuccess("foundry");
       break;
     } catch (err) {
@@ -222,7 +231,12 @@ async function routeOnce(
   }
   capabilities.set(s.model, caps);
 
-  todayTokens += (res.usage?.prompt_tokens ?? 0) + (res.usage?.completion_tokens ?? 0);
+  const inputTokens = res.usage?.prompt_tokens ?? 0;
+  const outputTokens = res.usage?.completion_tokens ?? 0;
+  todayTokens += inputTokens + outputTokens;
+  const costUsd = estimateUsd(s.model, inputTokens, outputTokens) ?? estimateUsd(res.model ?? "", inputTokens, outputTokens);
+  const usage = activeCorrelation()?.usage;
+  const overCeiling = addRunCost(usage, costUsd);
   void logActivity({
     type: "model_call",
     origin: opts.attribution?.origin,
@@ -235,10 +249,12 @@ async function routeOnce(
       model: s.model,
       behaviorVersion: currentBehaviorManifest().version,
       purpose: opts.purpose,
-      inputTokens: res.usage?.prompt_tokens ?? 0,
-      outputTokens: res.usage?.completion_tokens ?? 0,
+      inputTokens,
+      outputTokens,
+      ...(costUsd != null ? { costUsd: Number(costUsd.toFixed(6)) } : {}),
     },
   });
+  if (overCeiling) throw new Error(`run cost ceiling exceeded ($${usage?.usd.toFixed(3)})`);
   return res;
 }
 
