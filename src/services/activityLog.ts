@@ -5,6 +5,7 @@
  * dashboard reads this; nothing else in the system depends on it, so logging
  * failures never break the pipeline.
  */
+import { activeCorrelation } from "../runtime/correlation";
 import { redactUnknown } from "../runtime/redact";
 import { cosmosContainer } from "./cosmos";
 import { currentBehaviorManifest } from "./behaviorVersion";
@@ -100,7 +101,15 @@ export function normalizeAttribution(
   return { origin, channel, inputMode, trigger, ...(traceId ? { traceId } : {}) };
 }
 
-export async function logActivity(e: ActivityEvent): Promise<void> {
+export async function logActivity(event: ActivityEvent): Promise<void> {
+  const correlation = activeCorrelation();
+  const e: ActivityEvent = {
+    ...event,
+    traceId: event.traceId ?? correlation?.traceId,
+    requestId: event.requestId ?? correlation?.requestId,
+    runId: event.runId ?? correlation?.runId,
+    incidentId: event.incidentId ?? correlation?.incidentId,
+  };
   try {
     const day = new Date().toISOString().slice(0, 10);
     const attribution = normalizeAttribution(e);

@@ -33,6 +33,7 @@ import {
   type OutcomeStep,
 } from "../work/outcomes";
 import { isUnknownMutation, sealPendingMutations, type MutationLedger } from "../services/runFence";
+import { withCorrelation } from "../runtime/correlation";
 
 const POLL_MS = 60_000;
 const MAX_RETRIES = 3;
@@ -62,7 +63,11 @@ export async function tick(adapter: CloudAdapter, botAppId: string): Promise<voi
       const job = due[cursor % due.length];
       cursor += 1;
       const claimed = await claim(job);
-      if (claimed) await withDeadline(runJob(adapter, botAppId, claimed), JOB_DEADLINE_MS);
+      if (claimed) {
+        await withCorrelation({ runId: claimed.id }, () =>
+          withDeadline(runJob(adapter, botAppId, claimed), JOB_DEADLINE_MS)
+        );
+      }
     }
     await runOutcomes(adapter, botAppId);
     await maybeConsolidateObservations();
@@ -128,94 +133,98 @@ async function runOutcomes(adapter: CloudAdapter, botAppId: string): Promise<voi
   for (const job of due) {
     const claimed = await claimOutcome(job);
     if (!claimed) continue;
-    const step = claimed.steps[claimed.cursor] as OutcomeStep | undefined;
-    if (!step) {
-      await saveOutcome({ ...claimed, status: "done", enabled: false });
-      continue;
-    }
-    let current = claimed;
-    const ledger: MutationLedger = {
-      checkpoint: claimed.checkpoint ?? {
-        runId: claimed.id,
-        generation: claimed.cursor,
-        completedIntents: [],
-        mutations: [],
-      },
-      persist: async (next) => {
-        current = await saveOutcome({ ...current, checkpoint: next });
-        ledger.checkpoint = current.checkpoint ?? next;
-      },
-    };
-    try {
-      const getGraphToken = await graphTokenFor(
-        adapter,
-        botAppId,
-        claimed.conversationRef,
-        claimed.userId
-      );
-      const result = await withDeadline(
-        runAgent(
-          {
-            userId: claimed.userId,
-            conversationRef: claimed.conversationRef,
-            origin: "scheduled_job",
-            channel: "internal",
-            trigger: `outcome:${claimed.name}`,
-            allowedTools: step.allowedTools,
-            getGraphToken,
-            ledger,
-            authorization: {
-              explicit: true,
-              confidence: 1,
-              channel: channelPolicy("teams", {
-                scope: "private",
-                identity: "canonical",
-                allowActions: false,
-              }),
-            },
+    await withCorrelation({ runId: claimed.id }, () => runOutcomeStep(adapter, botAppId, claimed));
+  }
+}
+
+async function runOutcomeStep(adapter: CloudAdapter, botAppId: string, claimed: OutcomeJob): Promise<void> {
+  const step = claimed.steps[claimed.cursor] as OutcomeStep | undefined;
+  if (!step) {
+    await saveOutcome({ ...claimed, status: "done", enabled: false });
+    return;
+  }
+  let current = claimed;
+  const ledger: MutationLedger = {
+    checkpoint: claimed.checkpoint ?? {
+      runId: claimed.id,
+      generation: claimed.cursor,
+      completedIntents: [],
+      mutations: [],
+    },
+    persist: async (next) => {
+      current = await saveOutcome({ ...current, checkpoint: next });
+      ledger.checkpoint = current.checkpoint ?? next;
+    },
+  };
+  try {
+    const getGraphToken = await graphTokenFor(
+      adapter,
+      botAppId,
+      claimed.conversationRef,
+      claimed.userId
+    );
+    const result = await withDeadline(
+      runAgent(
+        {
+          userId: claimed.userId,
+          conversationRef: claimed.conversationRef,
+          origin: "scheduled_job",
+          channel: "internal",
+          trigger: `outcome:${claimed.name}`,
+          allowedTools: step.allowedTools,
+          getGraphToken,
+          ledger,
+          authorization: {
+            explicit: true,
+            confidence: 1,
+            channel: channelPolicy("teams", {
+              scope: "private",
+              identity: "canonical",
+              allowActions: false,
+            }),
           },
-          stepPrompt(claimed, step),
-          step.profile
-        )
-      );
-      const updated = applyStepResult({ ...current, checkpoint: ledger.checkpoint }, result);
-      await saveOutcome(updated);
-      const prefer = teamsPrefer(claimed.conversationRef);
-      await deliver(
-        claimed.userId,
-        `Outcome **${claimed.name}** — step ${claimed.cursor + 1}: ${updated.status}\n\n${result.slice(0, 1200)}`,
-        prefer,
-        { recordTurn: true }
-      );
-      void logActivity({
-        type: "job_run",
-        userId: claimed.userId,
-        origin: "scheduled_job",
-        channel: "internal",
-        trigger: `outcome:${claimed.name}`,
-        detail: { job: claimed.name, status: updated.status, step: claimed.cursor },
-      });
-    } catch (err) {
-      const message = (err as Error).message;
-      const sealed = sealPendingMutations(ledger.checkpoint);
-      const base = { ...current, checkpoint: sealed };
-      const interrupted = isUnknownMutation(err) || sealed.mutations.some((row) => row.status === "unknown");
-      const updated = interrupted
-        ? { ...base, status: "failed" as const, enabled: false, progress: message.slice(0, 500) }
-        : applyStepError(base, message);
-      await saveOutcome(updated);
-      if (updated.status === "failed") {
-        await alertUser(claimed.userId, `Outcome "${claimed.name}" stopped: ${message.slice(0, 200)}`);
-      }
-      void logActivity({
-        type: "job_run",
-        userId: claimed.userId,
-        origin: "scheduled_job",
-        channel: "internal",
-        trigger: `outcome:${claimed.name}`,
-        detail: { job: claimed.name, status: updated.status, message },
-      });
+        },
+        stepPrompt(claimed, step),
+        step.profile
+      )
+    );
+    const updated = applyStepResult({ ...current, checkpoint: ledger.checkpoint }, result);
+    await saveOutcome(updated);
+    const prefer = teamsPrefer(claimed.conversationRef);
+    await deliver(
+      claimed.userId,
+      `Outcome **${claimed.name}** — step ${claimed.cursor + 1}: ${updated.status}\n\n${result.slice(0, 1200)}`,
+      prefer,
+      { recordTurn: true }
+    );
+    void logActivity({
+      type: "job_run",
+      userId: claimed.userId,
+      origin: "scheduled_job",
+      channel: "internal",
+      trigger: `outcome:${claimed.name}`,
+      detail: { job: claimed.name, status: updated.status, step: claimed.cursor },
+    });
+  } catch (err) {
+    const message = (err as Error).message;
+    const sealed = sealPendingMutations(ledger.checkpoint);
+    const base = { ...current, checkpoint: sealed };
+    const interrupted = isUnknownMutation(err) || sealed.mutations.some((row) => row.status === "unknown");
+    const updated = interrupted
+      ? { ...base, status: "failed" as const, enabled: false, progress: message.slice(0, 500) }
+      : applyStepError(base, message);
+    await saveOutcome(updated);
+    if (updated.status === "failed") {
+      await alertUser(claimed.userId, `Outcome "${claimed.name}" stopped: ${message.slice(0, 200)}`);
     }
+    void logActivity({
+      type: "job_run",
+      userId: claimed.userId,
+      origin: "scheduled_job",
+      channel: "internal",
+      trigger: `outcome:${claimed.name}`,
+      detail: { job: claimed.name, status: updated.status, message },
+    });
   }
 }
 

@@ -15,7 +15,8 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
 import { route, routeWithEscalation, TaskClass } from "./router";
-import { fitRunMessages, routePromptBudget } from "./promptBudget";
+import { estimatePromptChars, fitRunMessages, routePromptBudget } from "./promptBudget";
+import { withSpan } from "../runtime/tracing";
 import { toolStore } from "./runReplay";
 import {
   allToolDefinitions,
@@ -521,14 +522,17 @@ export async function runAgent(
     },
   });
 
+  const priorTurns = recentMessages(recent, history);
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
       content: profile.persona + skills + lessons + catalog + orgBlock + checkInBlock,
     },
-    ...recentMessages(recent, history),
+    ...priorTurns,
     { role: "user", content: userMessage },
   ];
+  const promptBudget = routePromptBudget(profile.route);
+  const protectedPrefix = 1 + (priorTurns.length > recent.length ? 1 : 0);
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const judgmentReads =
@@ -538,7 +542,18 @@ export async function runAgent(
     const roundTools = judgmentReads?.size
       ? tools.filter((tool) => judgmentReads.has(tool.function.name))
       : tools;
-    const res = await route(profile.route, fitRunMessages(messages, routePromptBudget(profile.route)), {
+    const fitted = fitRunMessages(messages, promptBudget, { protectedPrefix });
+    const promptChars = estimatePromptChars(fitted);
+    if (promptChars > promptBudget) {
+      void logActivity({
+        type: "agent_turn",
+        userId: ctx.userId,
+        agent: name,
+        traceId: ctx.traceId,
+        detail: { phase: "prompt_over_budget", round: round + 1, promptChars, budgetChars: promptBudget },
+      });
+    }
+    const res = await route(profile.route, fitted, {
       tools: roundTools,
       toolChoice: judgmentReads?.size ? "required" : undefined,
       attribution: {
@@ -609,9 +624,14 @@ export async function runAgent(
       ctx.observeToolCall?.(call.function.name);
       const result = ctx.dryRunTools
         ? "Evaluation stub: the selected tool is available. Return a concise answer now."
-        : await dispatch(ctx, call.function.name, args, {
-            approved: ctx.preapprovedTools?.includes(call.function.name),
-          });
+        : await withSpan(
+            "tool.call",
+            { "gen_ai.tool.name": call.function.name, "taskbrain.round": round + 1 },
+            () =>
+              dispatch(ctx, call.function.name, args, {
+                approved: ctx.preapprovedTools?.includes(call.function.name),
+              })
+          );
       const research =
         call.function.name === "web_search" || call.function.name === "read_public_page";
       const resultClass = result.startsWith("NOT_ALLOWED:")

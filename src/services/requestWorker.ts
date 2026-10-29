@@ -7,6 +7,7 @@ import { processCapture, type Outbound } from "../pipeline";
 import { createTodoTask, getGraphUserToken, graphAccessForUser } from "./graphTasks";
 import { logActivity } from "./activityLog";
 import { alertAdmin } from "./alerts";
+import { withCorrelation } from "../runtime/correlation";
 import { classifyFailure } from "../runtime/errors";
 import { beat } from "../runtime/health";
 import {
@@ -149,7 +150,12 @@ async function processRequest(
         await saveRequestCheckpoint(current.id, next);
       },
     };
-    const run = async (item: QueuedAgentRequest) => {
+    const run = (item: QueuedAgentRequest) =>
+      withCorrelation(
+        { traceId: item.activeRunId ?? item.id, requestId: item.id, runId: item.activeRunId },
+        () => runOnce(item)
+      );
+    const runOnce = async (item: QueuedAgentRequest) => {
       if (item.channel === "teams") return processTeamsRequest(adapter, botAppId, item, controller.signal, ledger);
       const graph = await graphAccessForUser(adapter, botAppId, item.userId);
       return processCapture({

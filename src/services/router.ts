@@ -6,6 +6,7 @@
  */
 import { AzureOpenAI } from "openai";
 import type {
+  ChatCompletion,
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
@@ -21,6 +22,7 @@ import { alertAdmin } from "./alerts";
 import { circuitAllows, circuitFailure, circuitSuccess, CircuitOpenError } from "../runtime/circuits";
 import { classifyFailure } from "../runtime/errors";
 import { currentBehaviorManifest } from "./behaviorVersion";
+import { withSpan } from "../runtime/tracing";
 
 export type TaskClass = "triage" | "ack" | "agent" | "synthesis" | "digest";
 
@@ -156,7 +158,23 @@ export async function route(
   task: TaskClass,
   messages: ChatCompletionMessageParam[],
   opts: RouteOptions = {}
-) {
+): Promise<ChatCompletion> {
+  return withSpan("llm.chat", { "gen_ai.operation.name": "chat", "taskbrain.task": task }, async (span) => {
+    const res = await routeOnce(task, messages, opts);
+    span.setAttributes({
+      "gen_ai.response.model": res.model ?? "",
+      "gen_ai.usage.input_tokens": res.usage?.prompt_tokens ?? 0,
+      "gen_ai.usage.output_tokens": res.usage?.completion_tokens ?? 0,
+    });
+    return res;
+  });
+}
+
+async function routeOnce(
+  task: TaskClass,
+  messages: ChatCompletionMessageParam[],
+  opts: RouteOptions
+): Promise<ChatCompletion> {
   const s = budgetGuard(task, spec(task), opts.purpose);
   const body = {
     model: s.model,
@@ -211,6 +229,7 @@ export async function route(
     channel: opts.attribution?.channel,
     inputMode: opts.attribution?.inputMode,
     trigger: opts.attribution?.trigger ?? task,
+    traceId: opts.attribution?.traceId,
     detail: {
       task,
       model: s.model,

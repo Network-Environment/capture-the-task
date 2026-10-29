@@ -21,6 +21,10 @@ export function currentCorrelation(): Correlation {
   );
 }
 
+export function activeCorrelation(): Correlation | undefined {
+  return store.getStore();
+}
+
 export function withCorrelation<T>(patch: Partial<Correlation>, fn: () => T): T {
   const next = { ...currentCorrelation(), ...patch, traceId: patch.traceId ?? currentCorrelation().traceId };
   return store.run(next, fn);

@@ -9,6 +9,7 @@ import { saveNote, recall } from "../services/brain";
 import { scheduleJob, listJobs, cancelJob } from "../services/scheduler";
 import { rememberLesson, LessonKind } from "../services/agentMemory";
 import { mcpToolDefinitions, isMcpTool, callMcpTool } from "./mcpClient";
+import { validateToolArgs } from "./validateArgs";
 import { requiresApproval, parkAction, type PendingAction } from "../services/approvals";
 import { approvalMessage } from "../services/smartsheet";
 import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
@@ -1434,6 +1435,11 @@ export async function dispatch(
         ...args,
         allowedTools: await scheduledReadToolEnvelope(),
       };
+    }
+    if (!isMcpTool(name)) {
+      const definition = nativeDefs.find((tool) => tool.function.name === name);
+      const invalid = definition ? validateToolArgs(definition.function.parameters, args) : undefined;
+      if (invalid) return `INVALID_ARGUMENTS: ${invalid}.`;
     }
     const operation = operationMetadata(name);
     if (name === "retain_memory" && String(args.bank ?? "user") === "org") {
