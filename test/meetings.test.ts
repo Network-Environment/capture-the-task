@@ -7,6 +7,7 @@ import {
   sliceOrganizers,
   withinBackfillWindow,
 } from "../src/meetings/ingest";
+import { formatMeetingActions, isGenericActionAsk, pickMeetingForActions, pickTranscriptForActions } from "../src/meetings/actions";
 import { applyMatches, orgLessonTexts, overlapScore, ownerKey } from "../src/meetings/match";
 import { parseMeetingSummary } from "../src/meetings/summarize";
 import { capSummary, capTranscript, isTooShort, MAX_SUMMARY_CHARS, MAX_TRANSCRIPT_CHARS, parseVtt } from "../src/meetings/vtt";
@@ -16,7 +17,7 @@ import {
   transcriptAvailabilityId,
   transcriptSelectionKey,
 } from "../src/meetings/store";
-import type { CommitmentDoc, MeetingSummary } from "../src/meetings/types";
+import type { CommitmentDoc, MeetingDoc, MeetingSummary, TranscriptAvailabilityDoc } from "../src/meetings/types";
 
 const ADAM = "bceb24c5-ef85-4301-9ab2-073805d535aa";
 const VAL = "4f323599-0df8-47f7-aa01-46dbb211894c";
@@ -260,5 +261,93 @@ describe("authorization", () => {
     assert.equal(canViewMeetings(ADAM), true);
     syncMeetingViewersFromDirectory({ people: [], roles: [] });
     assert.equal(canViewMeetings(extra), false);
+  });
+});
+
+function meetingDoc(over: Partial<MeetingDoc> = {}): MeetingDoc {
+  return {
+    id: "m1",
+    organizerId: "org",
+    transcriptId: "tx",
+    title: "Standup",
+    categories: [],
+    summary: "",
+    decisions: [],
+    actions: [],
+    risks: [],
+    openQuestions: [],
+    attendees: [],
+    path: "2026-10/m1.md",
+    createdAt: "2026-10-01T00:00:00Z",
+    embedding: [],
+    ...over,
+  };
+}
+
+function transcriptDoc(over: Partial<TranscriptAvailabilityDoc> = {}): TranscriptAvailabilityDoc {
+  return {
+    id: "avail-1",
+    organizerId: "org",
+    transcriptId: "tx",
+    discoveredAt: "2026-10-01T00:00:00Z",
+    updatedAt: "2026-10-01T00:00:00Z",
+    status: "available",
+    ...over,
+  };
+}
+
+describe("meeting action answers", () => {
+  it("prints owner and due, and leaves a missing date blank", () => {
+    const text = formatMeetingActions(
+      meetingDoc({
+        title: "Commissioning sync",
+        startAt: "2026-10-30T15:00:00Z",
+        actions: [
+          { text: "Send the warranty packet", ownerName: "Valerie", due: "2026-11-05" },
+          { text: "Confirm the window", ownerName: "Adam" },
+          { text: "Update the register", ownerName: "unassigned" },
+        ],
+      })
+    );
+    assert.match(text, /Send the warranty packet \| Valerie \| 2026-11-05/);
+    assert.match(text, /Confirm the window \| Adam \| No date was said/);
+    assert.match(text, /Update the register \| Unassigned \| No date was said/);
+  });
+
+  it("uses the closest meeting name, and the newest meeting for a generic ask", () => {
+    const meetings = [
+      meetingDoc({
+        id: "old",
+        title: "Snack planning",
+        createdAt: "2026-10-01T00:00:00Z",
+        actions: [{ text: "Buy snacks", ownerName: "Val" }],
+      }),
+      meetingDoc({
+        id: "new",
+        title: "Generator commissioning",
+        createdAt: "2026-10-30T00:00:00Z",
+        actions: [{ text: "File the window", ownerName: "Adam", due: "Friday" }],
+      }),
+    ];
+    assert.equal(isGenericActionAsk("what are the action items and due dates"), true);
+    assert.equal(isGenericActionAsk("action items from the commissioning meeting"), false);
+    assert.equal(pickMeetingForActions("what are the action items and due dates", meetings)?.id, "new");
+    assert.equal(pickMeetingForActions("commissioning", meetings)?.id, "new");
+    assert.equal(pickMeetingForActions("unrelated moon landing", meetings), undefined);
+  });
+
+  it("picks a discovered transcript only when the name is close", () => {
+    const docs = [
+      transcriptDoc({ id: "a", titleHint: "Office snacks", createdDateTime: "2026-10-30T00:00:00Z" }),
+      transcriptDoc({
+        id: "b",
+        titleHint: "Commissioning sync",
+        createdDateTime: "2026-10-29T00:00:00Z",
+        status: "available",
+      }),
+    ];
+    assert.equal(pickTranscriptForActions("commissioning", docs)?.id, "b");
+    assert.equal(pickTranscriptForActions("what are the action items", docs)?.id, "a");
+    assert.equal(pickTranscriptForActions("moon landing", docs), undefined);
   });
 });

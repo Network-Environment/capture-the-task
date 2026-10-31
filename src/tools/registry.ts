@@ -11,8 +11,8 @@ import { rememberLesson, LessonKind } from "../services/agentMemory";
 import { mcpToolDefinitions, isMcpTool, callMcpTool } from "./mcpClient";
 import { validateToolArgs } from "./validateArgs";
 import { requiresApproval, parkAction, type PendingAction } from "../services/approvals";
-import { approvalMessage } from "../services/smartsheet";
-import { recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
+import { approvalMessage, parkSheetUpdate, resolveSheetUpdate } from "../services/smartsheet";
+import { answerMeetingActions, recallMeetings, listFollowThrough, markCommitmentDone } from "../meetings/recall";
 import {
   assessAssignment,
   findAtRiskWork,
@@ -189,6 +189,8 @@ const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversib
   list_outcomes: { effect: "read", reversible: true },
   save_skill: { effect: "personal_write", reversible: true },
   recall_meetings: { effect: "read", reversible: true },
+  meeting_actions: { effect: "read", reversible: true },
+  propose_smartsheet_update: { effect: "personal_write", reversible: true },
   list_commitments: { effect: "read", reversible: true },
   complete_commitment: { effect: "shared_write", reversible: true },
   lookup_org: { effect: "read", reversible: true },
@@ -239,6 +241,7 @@ const scheduledNativeReads = new Set([
   "read_public_page",
   "list_outcomes",
   "recall_meetings",
+  "meeting_actions",
   "list_commitments",
   "lookup_org",
   "list_workload",
@@ -502,13 +505,58 @@ const nativeDefs: ChatCompletionTool[] = [
       name: "recall_meetings",
       description:
         "Search stored Teams/Plaud transcript summaries (last 90 days) for meeting content: " +
-        "what was discussed, decided, or assigned. This is not a complete calendar and should not " +
-        "be the only source for whether or when a meeting occurred.",
+        "what was discussed, decided, or assigned. For action items, owners, and due dates, use meeting_actions. " +
+        "This is not a complete calendar and should not be the only source for whether or when a meeting occurred.",
       parameters: {
         type: "object",
         properties: {
           query: { type: "string" },
           k: { type: "number" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "meeting_actions",
+      description:
+        "Answer action items, owners, and due dates from a meeting when the user asks. " +
+        "Uses the stored summary, or summarizes a discovered transcript first. " +
+        "A date that was never said stays blank. Does not send a card. " +
+        "Pass the user's words; an exact meeting title is not required.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Meeting name or a generic ask such as action items and due dates",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "propose_smartsheet_update",
+      description:
+        "Look up live Smartsheet sheets and park an update for the closest sheet, row, and column. " +
+        "Use the user's words for the project and the change. Do not ask for the official project name, " +
+        "sheet id, or column title. Do not call smartsheet__update_rows yourself. " +
+        "Nothing is written until the user approves.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Loose project or row words from the user" },
+          sheet: { type: "string", description: "Loose sheet name, only if the user named one" },
+          status: { type: "string", description: "New status in their words, such as done or open" },
+          due: { type: "string", description: "New date, ISO when they named one" },
+          note: { type: "string", description: "Note text to write" },
+          column: { type: "string", description: "Loose column name when they named a field" },
+          value: { type: "string", description: "Value for that column" },
         },
         required: ["query"],
       },
@@ -1682,6 +1730,24 @@ export async function dispatch(
           Number(args.k ?? 6),
           ctx
         );
+      case "meeting_actions":
+        return await answerMeetingActions(ctx.userId, String(args.query ?? ""), ctx);
+      case "propose_smartsheet_update": {
+        const choice = await resolveSheetUpdate({
+          query: String(args.query ?? ""),
+          sheet: args.sheet ? String(args.sheet) : undefined,
+          status: args.status ? String(args.status) : undefined,
+          due: args.due ? String(args.due) : undefined,
+          note: args.note ? String(args.note) : undefined,
+          column: args.column ? String(args.column) : undefined,
+          value: args.value ? String(args.value) : undefined,
+        });
+        if (!choice.ok) return choice.reason;
+        const parked = await parkSheetUpdate(ctx.userId, choice, authorization);
+        ctx.pendingApprovals = [...(ctx.pendingApprovals ?? []), parked.id];
+        ctx.pendingApprovalMessages = [...(ctx.pendingApprovalMessages ?? []), parked.message];
+        return parked.message;
+      }
       case "search_my_calendar": {
         if (!ctx.getGraphToken) {
           return presentToolResult(ctx, CALENDAR_UNAVAILABLE);
@@ -2182,8 +2248,11 @@ export async function dispatch(
     }
     };
     if (operation.effect === "read") return perform();
+    const pendingBefore = ctx.pendingApprovals?.length ?? 0;
     const result = await guardedMutation(ctx.ledger, name, args, operation.effect, perform);
+    const parkedWrite = (ctx.pendingApprovals?.length ?? 0) > pendingBefore;
     if (
+      !parkedWrite &&
       !result.startsWith("NOT_ALLOWED:") &&
       !result.startsWith("INVALID_ARGUMENTS:") &&
       !result.startsWith(`Tool ${name} failed`) &&

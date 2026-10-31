@@ -124,10 +124,10 @@ function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideC
       }
       return block(
         "Meeting memory",
-        "For designated meeting viewers I can search stored Teams/Plaud summaries (about 90 days): decisions, discussion, and who committed to what. Use Outlook for “when,” summaries for “what happened.” Open commitments can be listed and marked done.",
+        "For designated meeting viewers I can search stored Teams/Plaud summaries (about 90 days): decisions, discussion, and who committed to what. Ask for the action items and due dates from a meeting and I answer from the summary, or summarize a discovered transcript first. I do not send a card when a meeting ends. Use Outlook for “when,” summaries for “what happened.” Open commitments can be listed and marked done.",
         [
           "What did we decide about commissioning last week?",
-          "What is still open from the risk review?",
+          "What are the action items and due dates from the commissioning meeting?",
         ],
         "Summaries are not a complete calendar, and I do not keep raw transcripts."
       );
@@ -173,9 +173,10 @@ function formatTopic(topic: Exclude<UserGuideTopic, "overview">, ctx: UserGuideC
     case "pmo":
       return block(
         "PMO / Smartsheet",
-        "Search sheets, read status and risks, and propose row changes. For a named working list I can open a TaskBrain PMO board. Writes park until you approve. I will not invent sheet IDs.",
+        "Search sheets, read status and risks, and propose row changes. Name the project and the change in ordinary words. I look up the sheets and use the closest row and column. The approval shows those names before anything is written. For a named working list I can open a TaskBrain PMO board. Writes park until you approve. I will not invent sheet IDs.",
         [
           "What’s open on the commissioning risk register?",
+          "Mark commissioning done and push the date to Friday.",
           "Open a normal kanban called Launch.",
         ],
         "A board is for a named effort; a single obligation uses assign work instead. Smartsheet changes use the organization’s connection, not your personal Smartsheet login."
@@ -253,7 +254,7 @@ function availableAreas(
     areas.push({
       topic: "meetings",
       label: "Meeting memory",
-      blurb: "search stored meeting summaries and open commitments",
+      blurb: "ask for action items and due dates from a meeting",
     });
   }
   areas.push(
@@ -281,7 +282,7 @@ function availableAreas(
     {
       topic: "pmo",
       label: "PMO / Smartsheet",
-      blurb: "read sheets and risks; propose changes for your approval",
+      blurb: "closest sheet, row, and column, then an approval before anything is written",
     },
     {
       topic: "schedule",

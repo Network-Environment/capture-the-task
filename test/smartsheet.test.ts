@@ -4,13 +4,18 @@ import { test } from "node:test";
 import { requiresApproval } from "../src/services/approvals";
 import {
   agentProfileFor,
+  chooseSheetUpdate,
+  columnWriteValue,
   formatWriteApproval,
   inferCellUpdates,
   isPmoRequest,
+  looseSearchQuery,
   parseSearchHits,
   parseSheetForRows,
   pickBestRow,
+  pickColumn,
   approvalMessage,
+  type SheetColumn,
 } from "../src/services/smartsheet";
 
 test("PMO wording is an action profile, greetings are not", () => {
@@ -138,4 +143,102 @@ test("parked Smartsheet writes are human-readable; search does not need approval
   assert.match(msg, /Update row/);
   assert.match(msg, /row 10/);
   assert.match(approvalMessage("pa-abc", "smartsheet__update_rows", { sheetId: "123", rows: [] }), /approve pa-abc/);
+  const named = formatWriteApproval("smartsheet__update_rows", {
+    sheet_id: "123",
+    rows: [{ id: 10, cells: [{ columnId: 2, value: "Complete" }] }],
+    _display: {
+      sheetName: "Task to Capture 2026",
+      rowLabel: "Generator commissioning",
+      changes: [
+        { column: "Status", value: "Complete" },
+        { column: "Finish", value: "2026-11-06" },
+      ],
+    },
+  });
+  assert.match(named, /Task to Capture 2026/);
+  assert.match(named, /Generator commissioning/);
+  assert.match(named, /Status: Complete/);
+  assert.match(named, /Finish: 2026-11-06/);
+  assert.doesNotMatch(named, /col 2/);
+});
+
+test("closest row wins and an unrelated phrase does not", () => {
+  const rows = [
+    {
+      sheetId: "1",
+      sheetName: "Task to Capture 2026",
+      rowId: "10",
+      text: "Initiative: Generator commissioning - Phase 2",
+      primaryText: "Generator commissioning - Phase 2",
+    },
+    {
+      sheetId: "1",
+      sheetName: "Task to Capture 2026",
+      rowId: "11",
+      text: "Initiative: Office snacks",
+      primaryText: "Office snacks",
+    },
+  ];
+  assert.equal(pickBestRow("commissioning", rows)?.row.rowId, "10");
+  assert.equal(pickBestRow("unrelated moon landing", rows), undefined);
+  assert.equal(looseSearchQuery('"the commissioning row"'), "commissioning");
+});
+
+test("everyday words map to the closest column and dropdown value", () => {
+  const columns: SheetColumn[] = [
+    { id: 1, title: "Start", options: [] },
+    { id: 2, title: "Finish", options: [] },
+    { id: 3, title: "Status", options: ["Open", "Complete"] },
+    { id: 4, title: "Pending review", options: [] },
+  ];
+  assert.equal(pickColumn("done", columns)?.column.title, "Status");
+  assert.equal(pickColumn("push the date", columns)?.column.title, "Finish");
+  assert.equal(columnWriteValue("done", columns[2]), "Complete");
+  const choice = chooseSheetUpdate(
+    "commissioning",
+    [
+      {
+        sheetId: "9",
+        sheetName: "Task to Capture 2026",
+        rowId: "10",
+        text: "Generator commissioning - Phase 2",
+        primaryText: "Generator commissioning - Phase 2",
+      },
+    ],
+    columns,
+    { status: "done", due: "2026-11-06" }
+  );
+  assert.equal(choice.ok, true);
+  if (!choice.ok) return;
+  assert.deepEqual(choice.cells, [
+    { columnId: 3, value: "Complete" },
+    { columnId: 2, value: "2026-11-06" },
+  ]);
+  assert.equal(choice.display.changes[0]?.column, "Status");
+  assert.equal(choice.display.changes[1]?.column, "Finish");
+});
+
+test("live summary column ids are kept for a later update", () => {
+  const summary = `sheet_id: 99
+sheet_name: Risks
+available_columns[2]:
+  - index: 0
+    id: 501
+    title: Initiative
+    type: TEXTNUMBER
+  - index: 1
+    id: 502
+    title: Status
+    type: PICKLIST
+    options: Open, Complete
+rows[1]:
+  - row_id: 77
+    cells[2]{column_index value}:
+      0\tCommissioning
+      1\tOpen
+`;
+  const rows = parseSheetForRows(summary, "fallback", "fallback");
+  assert.equal(rows[0]?.primaryText, "Commissioning");
+  assert.equal(rows[0]?.statusColumnId, 502);
+  assert.deepEqual(rows[0]?.columns?.[1]?.options, ["Open", "Complete"]);
 });

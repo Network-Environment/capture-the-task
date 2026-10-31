@@ -275,6 +275,57 @@ export async function getCommitment(id: string, ownerKey: string): Promise<Commi
   }
 }
 
+export async function findMeetingByTranscript(transcriptId: string): Promise<MeetingDoc | undefined> {
+  const { resources } = await meetingsCol().items
+    .query<MeetingDoc>({
+      query: "SELECT TOP 1 * FROM c WHERE c.transcriptId = @id",
+      parameters: [{ name: "@id", value: transcriptId }],
+    })
+    .fetchAll();
+  return resources[0];
+}
+
+export async function recentMeetingsWithActions(limit = 8): Promise<MeetingDoc[]> {
+  const { resources } = await meetingsCol().items
+    .query<MeetingDoc>({
+      query:
+        "SELECT TOP @n c.id, c.title, c.organizerName, c.organizerId, c.startAt, c.createdAt, c.summary, c.actions, c.transcriptId FROM c ORDER BY c.createdAt DESC",
+      parameters: [{ name: "@n", value: limit }],
+    })
+    .fetchAll();
+  return resources;
+}
+
+export async function claimTranscript(
+  doc: TranscriptAvailabilityDoc,
+  requestedBy: string
+): Promise<TranscriptAvailabilityDoc | undefined> {
+  if (doc.status === "summarized" || doc.status === "skipped_short") return undefined;
+  if (doc.status === "processing") {
+    const processingAt = Date.parse(doc.processingAt ?? "");
+    const fresh = Number.isFinite(processingAt) && processingAt >= Date.now() - 15 * 60_000;
+    if (fresh) return undefined;
+  }
+  const now = new Date().toISOString();
+  const next: TranscriptAvailabilityDoc = {
+    ...doc,
+    status: "processing",
+    processingAt: now,
+    updatedAt: now,
+    requestedBy,
+    requestedAt: doc.requestedAt ?? now,
+    error: undefined,
+  };
+  try {
+    await availabilityCol().item(doc.id, doc.organizerId).replace(next, {
+      accessCondition: { type: "IfMatch", condition: doc._etag ?? "" },
+    });
+    return next;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function searchMeetings(queryEmbedding: number[], k = 8): Promise<MeetingDoc[]> {
   const { resources } = await meetingsCol().items
     .query({

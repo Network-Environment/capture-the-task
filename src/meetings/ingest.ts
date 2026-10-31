@@ -85,7 +85,12 @@ export function mergeDiscoveryItems(
 
 export async function processAvailableTranscript(
   item: TranscriptAvailabilityDoc
-): Promise<{ status: "summarized" | "skipped_short" | "duplicate"; matched: number }> {
+): Promise<{
+  status: "summarized" | "skipped_short" | "duplicate";
+  matched: number;
+  title?: string;
+  actions?: MeetingDoc["actions"];
+}> {
   if (await meetingExists(item.transcriptId)) {
     await setTranscriptAvailabilityStatus(item, "summarized", {
       completedAt: new Date().toISOString(),
@@ -232,7 +237,7 @@ export async function processAvailableTranscript(
     },
   });
 
-  return { status: "summarized", matched };
+  return { status: "summarized", matched, title: summary.title, actions: summary.actions };
 }
 
 export async function processQueuedTranscripts(

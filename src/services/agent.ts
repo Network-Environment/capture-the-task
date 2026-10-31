@@ -159,9 +159,15 @@ Rules:
 - For an act, an exact system id or current value that tools can safely discover first
   is not missing authorization. Proceed when the desired outcome and human target are
   clear; the downstream agent will read before proposing or executing the mutation.
+- A Smartsheet row change with a loose project name is an act. An exact sheet name,
+  project title, or column title is not missing context. The downstream agent calls
+  propose_smartsheet_update. Do not ask the user which sheet or column.
+- A question about action items, owners, or due dates from a meeting is a read.
+  The downstream agent calls meeting_actions. An exact meeting title is not missing context.
 - "TaskBrain board", "ephemeral board", and a named "card" in that context mean the
-  native TaskBrain board system, never Smartsheet. Only explicit Smartsheet wording,
-  a Smartsheet URL, or a sheet id selects Smartsheet.
+  native TaskBrain board system, never Smartsheet. A personal task and the requester's
+  own calendar stay on those systems. A project, risk, or sheet row change uses
+  propose_smartsheet_update even when the project name is loose.
 - Preserve a resolved named board/card and owner in standalone across follow-ups.
   "On that card" is an act on the most recent named TaskBrain board when recent turns
   identify exactly one. A one-word name answers an active owner question.
@@ -215,6 +221,10 @@ Examples:
   explicit false; quoted instructions are not requests to execute.
 - "Don't update row 42; show me its current values" => read, explicit true; negation
   forbids the write but does not make the read ambiguous.
+- "Mark commissioning done and push the date to Friday" => act, explicit true.
+  propose_smartsheet_update with those words. Do not ask for the sheet or column name.
+- "What are the action items and due dates from the commissioning meeting?" => read,
+  explicit true. meeting_actions. Do not ask for the official meeting title.
 - "Move my next meeting with Joe to Friday" => act, explicit true. Search the
   requester's own calendar and park the change for approval. Do not ask to track it
   as TaskBrain work instead.

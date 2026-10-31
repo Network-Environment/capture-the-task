@@ -332,11 +332,12 @@ export async function callMcpTool(
   const refs = await discoverMcpTools();
   const ref = refs.find((r) => r.server === server && r.name === toolName);
   if (!ref) return `Tool ${qualifiedName} not found.`;
-  const invalid = validateMcpArgs(ref.inputSchema, args);
+  const mcpArgs = Object.fromEntries(Object.entries(args).filter(([key]) => !key.startsWith("_")));
+  const invalid = validateMcpArgs(ref.inputSchema, mcpArgs);
   if (invalid) return `INVALID_ARGUMENTS: ${invalid}.`;
 
   const result = await withTimeout(
-    Promise.resolve(ref.client.callTool({ name: toolName, arguments: args })),
+    Promise.resolve(ref.client.callTool({ name: toolName, arguments: mcpArgs })),
     DEFAULT_TIMEOUT_MS,
     server
   );
