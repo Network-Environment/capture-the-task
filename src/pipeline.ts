@@ -17,12 +17,21 @@ import {
   respondConversationally,
   runAgent,
   interpretIntent,
+  EMPTY_REPLY_FALLBACK,
   TriageResult,
 } from "./services/agent";
-import { saveNote, recall, deleteNote } from "./services/brain";
+import { saveNote, recall, deleteNote, appendToNote } from "./services/brain";
 import { retainFromCapture } from "./memory/retain";
 import { recallMemory, recallPromptBlock } from "./memory/recall";
-import { getOpenQuestion, setPendingClarification, openQuestionExpired, isUndoCommand, getLastCapture, setLastCapture, getConversationContext, sessionScopeId, withExpiredChatNote, type PromptHistory, type SessionTurn } from "./services/session";
+import { getOpenQuestion, setPendingClarification, openQuestionExpired, isUndoCommand, getLastCapture, setLastCapture, getOpenIdea, setOpenIdea, getConversationContext, sessionScopeId, hadEarlierThread, messageDependsOnEarlierChat, withExpiredChatNote, type PromptHistory, type SessionTurn } from "./services/session";
+import {
+  continueWithoutAnotherQuestion,
+  ideaTitleFrom,
+  isIdeaSeed,
+  oneQuestion,
+  shouldAppendToOpenIdea,
+  wantsResearch,
+} from "./services/ideaCapture";
 import { recordConversationTurn } from "./services/sessionFold";
 import { logActivity } from "./services/activityLog";
 import { handleApprovalCommand } from "./services/approvals";
@@ -90,6 +99,8 @@ export interface CaptureInput {
   ledger?: MutationLedger;
   /** Optional one-line progress note while tools are running. */
   onProgress?: (text: string) => Promise<void> | void;
+  /** Set once this conversation has already asked the user something. */
+  questionAlreadyAsked?: boolean;
 }
 
 export interface Outbound {
@@ -102,8 +113,19 @@ export interface Outbound {
   references?: string[];
 }
 
+/** A blank body must not be delivered. SMS would show the title alone. */
+export function ensureDeliverable(out: Outbound): Outbound {
+  if (out.body?.trim()) return out;
+  return {
+    ...out,
+    title: out.title?.trim() || "TaskBrain",
+    body: EMPTY_REPLY_FALLBACK,
+    summaryLine: EMPTY_REPLY_FALLBACK.slice(0, 200),
+  };
+}
+
 export async function processCapture(input: CaptureInput): Promise<Outbound> {
-  if (!input.eventId) return processCaptureCore(input);
+  if (!input.eventId) return ensureDeliverable(await processCaptureCore(input));
   if (!(await claimInboundEvent(input.channel, input.eventId, input.userId))) {
     return {
       title: "Already received",
@@ -113,7 +135,7 @@ export async function processCapture(input: CaptureInput): Promise<Outbound> {
     };
   }
   try {
-    const out = await processCaptureCore(input);
+    const out = ensureDeliverable(await processCaptureCore(input));
     await finishInboundEvent(input.channel, input.eventId, "completed");
     return out;
   } catch (err) {
@@ -184,6 +206,8 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     }
     const removed = await deleteNote(userId, capture.id, capture.path);
     await setLastCapture(userId, captureScopeId, undefined);
+    const open = await getOpenIdea(userId, captureScopeId);
+    if (open?.id === capture.id) await setOpenIdea(userId, captureScopeId, undefined);
     const body = removed
       ? `Removed **${capture.title}** from your brain. Microsoft To Do items are not reversed from chat.`
       : `I couldn’t find **${capture.title}** in the brain anymore, so there was nothing left to delete.`;
@@ -215,6 +239,30 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     references: context.references,
   };
   const contextEmpty = recent.length === 0 && !context.summary?.trim();
+  const dependsOnEarlier = messageDependsOnEarlierChat(text);
+  const earlierChat = {
+    contextEmpty,
+    dependsOnEarlier,
+    hadEarlierThread: contextEmpty && dependsOnEarlier ? await hadEarlierThread(userId) : false,
+  };
+  let ideaLine = "";
+  let ideaRef: string | undefined;
+  const withIdea = (out: Outbound): Outbound => {
+    const body = out.body?.trim() ? out.body : EMPTY_REPLY_FALLBACK;
+    if (!ideaLine) {
+      return body === out.body
+        ? out
+        : { ...out, body, summaryLine: body.slice(0, 200) };
+    }
+    const references = [...new Set([...(out.references ?? []), ...(ideaRef ? [ideaRef] : [])])];
+    const combined = `${ideaLine}\n\n${body}`.trim();
+    return {
+      ...out,
+      body: combined,
+      summaryLine: out.summaryLine?.trim() ? out.summaryLine : combined.slice(0, 200),
+      references: references.length ? references : undefined,
+    };
+  };
   const remember = (
     role: "user" | "assistant",
     line: string,
@@ -260,7 +308,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
     const response = withExpiredChatNote(
       quality.response ??
         "I’m not sure what outcome you want. What would you like me to do with that?",
-      contextEmpty && quality.disposition === "clarify"
+      { ...earlierChat, contextEmpty: earlierChat.contextEmpty && quality.disposition === "clarify" }
     );
     await remember("user", text, { intent: `quality_${quality.disposition}` });
     await remember("assistant", response, {
@@ -374,6 +422,46 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   }
 
   if (enabled && !shadow && plan) {
+    const askedAlready =
+      Boolean(pending) ||
+      recent.some(
+        (turn) =>
+          turn.role === "assistant" &&
+          (turn.outcome === "waiting_for_clarification" || turn.intent === "clarify")
+      );
+    if (askedAlready && plan.disposition === "clarify") {
+      const continued = continueWithoutAnotherQuestion(
+        pending?.originalText ?? text,
+        pending?.question,
+        text
+      );
+      plan = {
+        disposition: "proceed",
+        reason: "understood",
+        confidence: 0.9,
+        assumptions: ["A question was already asked, so this turn continues without another one."],
+        continuesPending: true,
+        intents: [
+          {
+            kind: continued.kind,
+            standalone: continued.standalone,
+            confidence: 0.9,
+            explicit: true,
+          },
+        ],
+      };
+    }
+    if (plan.disposition === "proceed") {
+      plan = {
+        ...plan,
+        intents: plan.intents.map((intent) =>
+          intent.kind === "respond" && wantsResearch(`${text}\n${intent.standalone}`)
+            ? { ...intent, kind: "read" as const }
+            : intent
+        ),
+      };
+    }
+    input.questionAlreadyAsked = askedAlready;
     await remember("user", text, {
       intent: plan.intents.map((i) => i.kind).join(","),
     });
@@ -386,7 +474,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
           (plan.disposition === "refuse"
             ? "I can’t help with that request, but I can help with a safe alternative."
             : "I can help capture tasks and ideas, recall notes, or work with enabled systems."),
-        contextEmpty
+        earlierChat
       );
       await remember("assistant", response, {
         intent: plan.disposition,
@@ -407,6 +495,23 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
         summaryLine: response.slice(0, 200),
       };
     }
+    if (plan.disposition === "proceed" || plan.disposition === "clarify") {
+      try {
+        const kept = await retainConversationIdea(
+          input,
+          text,
+          source,
+          plan,
+          askedAlready
+        );
+        if (kept) {
+          ideaLine = kept.line;
+          ideaRef = kept.id;
+        }
+      } catch (err) {
+        console.error("[idea] capture failed:", err);
+      }
+    }
     if (
       planNeedsClarification(plan) &&
       envFlag(
@@ -415,11 +520,13 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
       )
     ) {
       const question = withExpiredChatNote(
-        plan.clarification ??
-          plan.intents.find((i) => i.question)?.question ??
-          plan.intents.find((i) => i.ambiguity)?.ambiguity ??
-          "What would you like me to do with that?",
-        contextEmpty
+        oneQuestion(
+          plan.clarification ??
+            plan.intents.find((i) => i.question)?.question ??
+            plan.intents.find((i) => i.ambiguity)?.ambiguity ??
+            "What would you like me to do with that?"
+        ),
+        earlierChat
       );
       await setPendingClarification(userId, input.conversationId, {
         plan,
@@ -428,10 +535,16 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
         question,
         createdAt: new Date().toISOString(),
       });
-      await remember("assistant", question, {
+      const out = withIdea({
+        title: "Need one detail",
+        body: question,
+        tags: [],
+        summaryLine: question.slice(0, 200),
+      });
+      await remember("assistant", out.summaryLine, {
         intent: "clarify",
         outcome: "waiting_for_clarification",
-        body: question,
+        body: out.body,
       });
       void logActivity({
         type: "clarification",
@@ -442,10 +555,10 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
           reason: plan.intents.find((i) => i.ambiguity)?.ambiguity ?? "low_confidence",
         },
       });
-      return { title: "Need one detail", body: question, tags: [], summaryLine: question };
+      return out;
     }
     if (pending) await setPendingClarification(userId, input.conversationId, undefined);
-    const out = await executePlan(input, plan, recent, source, history);
+    const out = withIdea(await executePlan(input, plan, recent, source, history));
     await remember("assistant", out.summaryLine, {
       intent: plan.intents.map((i) => i.kind).join(","),
       outcome: out.summaryLine,
@@ -480,7 +593,7 @@ async function processCaptureCore(input: CaptureInput): Promise<Outbound> {
   ) {
     const body = withExpiredChatNote(
       "I didn’t take that as a request to do something. Say what you want done, or ask me what I can do.",
-      contextEmpty
+      earlierChat
     );
     await remember("assistant", body, {
       intent: "clarify",
@@ -649,6 +762,7 @@ async function executeIntent(
         intentId: intentKey,
         signal: input.signal,
         onProgress: input.onProgress,
+        questionAlreadyAsked: input.questionAlreadyAsked,
     };
     const result = await runAgent(ctx, intent.standalone, undefined, recent, history);
     return agentOutbound(ctx, result, "TaskBrain");
@@ -731,6 +845,7 @@ async function executeIntent(
         intentId: intentKey,
         signal: input.signal,
         onProgress: input.onProgress,
+        questionAlreadyAsked: input.questionAlreadyAsked,
     };
     const result = await runAgent(
       ctx,
@@ -747,6 +862,50 @@ async function executeIntent(
     tags: [],
     summaryLine: "Waiting for clarification",
   };
+}
+
+async function retainConversationIdea(
+  input: CaptureInput,
+  text: string,
+  source: "text" | "voice",
+  plan: IntentPlan,
+  answeringQuestion: boolean
+): Promise<{ line: string; id?: string } | undefined> {
+  const policy =
+    input.policy ?? channelPolicy(input.channel, { allowActions: input.allowActions ?? false });
+  if (policy.scope === "group") return undefined;
+  if (plan.intents.some((intent) => intent.kind === "capture")) return undefined;
+  const scopeId = sessionScopeId(input.conversationId, policy.scope);
+  const open = await getOpenIdea(input.userId, scopeId);
+  const attribution = {
+    origin: "user_message" as const,
+    channel: input.channel,
+    inputMode: source,
+    traceId: input.traceId,
+  };
+  if (open && shouldAppendToOpenIdea(text, open, answeringQuestion)) {
+    const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+    const ok = await appendToNote(
+      input.userId,
+      open.id,
+      open.path,
+      `Update ${stamp}: ${text.trim()}`,
+      attribution
+    );
+    if (ok) {
+      await setOpenIdea(input.userId, scopeId, { ...open, updatedAt: new Date().toISOString() });
+      return { line: `I added that to **${open.title}**.`, id: open.id };
+    }
+  }
+  if (!isIdeaSeed(text)) return undefined;
+  const title = ideaTitleFrom(text);
+  const saved = await fileCapturedNote(
+    input,
+    input.userId,
+    { kind: "idea", title, body: text.trim(), tags: ["idea"], source },
+    attribution
+  );
+  return { line: `I filed this as an idea: **${title}**.`, id: saved.id };
 }
 
 async function fileCapturedNote(
@@ -778,16 +937,21 @@ async function fileCapturedNote(
   const saved = JSON.parse(recorded) as { id: string; path: string };
   if (prior?.status !== "completed") {
     void retainFromCapture(userId, `${note.title}\n${note.body}`, saved.id, attribution);
-    await setLastCapture(
-      userId,
-      sessionScopeId(input.conversationId, input.policy?.scope ?? "private"),
-      {
+    const scopeId = sessionScopeId(input.conversationId, input.policy?.scope ?? "private");
+    await setLastCapture(userId, scopeId, {
       id: saved.id,
       path: saved.path,
       title: note.title,
       createdAt: new Date().toISOString(),
-      }
-    );
+    });
+    if (note.kind === "idea") {
+      await setOpenIdea(userId, scopeId, {
+        id: saved.id,
+        path: saved.path,
+        title: note.title,
+        updatedAt: new Date().toISOString(),
+      });
+    }
   }
   return saved;
 }

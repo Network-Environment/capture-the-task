@@ -160,6 +160,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** One short progress note back to the channel that asked. */
   onProgress?: (text: string) => Promise<void> | void;
+  /** A question was already asked in this conversation. Do not ask another. */
+  questionAlreadyAsked?: boolean;
 }
 
 const nativeEffects: Record<string, Pick<OperationMetadata, "effect" | "reversible">> = {
@@ -279,7 +281,8 @@ export async function scheduledReadToolEnvelope(): Promise<string[]> {
 /** Read tools for a live user turn. Scheduled jobs stay on the envelope above. */
 export async function interactiveReadToolEnvelope(): Promise<string[]> {
   const reads = await scheduledReadToolEnvelope();
-  return reads.includes("note_unmet_request") ? reads : [...reads, "note_unmet_request"];
+  const extras = ["note_unmet_request", "web_search"].filter((tool) => !reads.includes(tool));
+  return [...reads, ...extras];
 }
 
 const scheduledActionTools = new Set(["send_followthrough_briefings"]);

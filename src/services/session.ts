@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import type { Channel } from "../channels/types";
 import type { IntentPlan } from "./intent";
+import type { OpenIdea } from "./ideaCapture";
 import { cosmosContainer } from "./cosmos";
 
 function sessions() {
@@ -27,6 +28,14 @@ export const CONDENSED_PREFIX =
 
 export const EXPIRED_CHAT_NOTE =
   "The earlier part of this chat has expired. Anything you asked me to save is still there — name it and I can look it up.";
+
+export const NO_EARLIER_CHAT_NOTE =
+  "I don’t have an earlier chat to continue from. Say it as a full thought and I’ll take it from there.";
+
+const EARLIER_CHAT_REF =
+  /\b(?:earlier|last time|we (?:just )?discussed|you asked|as i said|follow[- ]?up|the (?:one|thing|idea) we|about that|continue from)\b/i;
+const SHORT_CONTINUATION =
+  /^(?:yes|no|ok|okay|sure|yep|nope|do that|go ahead|the (?:first|second|third) one|option \d)\b/i;
 
 export interface SessionTurn {
   role: "user" | "assistant";
@@ -64,6 +73,10 @@ export interface SessionDoc {
   threadSummary?: string;
   /** Durable ids needed to resolve follow-ups even after their turn is folded. */
   activeReferences?: string[];
+  /** Idea this private thread is still building. Not an undo target. */
+  openIdea?: OpenIdea;
+  /** Set on the long-lived thread-activity marker, not on the turn window. */
+  lastActivityAt?: string;
   ttl: number;
   _etag?: string;
 }
@@ -155,10 +168,27 @@ export function condensedBlock(summary?: string): string | undefined {
   return `${CONDENSED_PREFIX}\n${trimmed}`;
 }
 
-export function withExpiredChatNote(response: string, contextEmpty: boolean): string {
-  if (!contextEmpty) return response;
-  if (response.includes("earlier part of this chat has expired")) return response;
-  return `${response}\n\n${EXPIRED_CHAT_NOTE}`;
+/**
+ * A bare "that" inside a new idea ("office space that has storage") is not
+ * a reference to an earlier chat. Only an explicit back-reference, or a
+ * short continuation such as "yes", depends on the thread.
+ */
+export function messageDependsOnEarlierChat(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (SHORT_CONTINUATION.test(trimmed) && trimmed.length <= 80) return true;
+  if (trimmed.length > 500) return false;
+  return EARLIER_CHAT_REF.test(trimmed);
+}
+
+export function withExpiredChatNote(
+  response: string,
+  situation: { contextEmpty: boolean; dependsOnEarlier: boolean; hadEarlierThread: boolean }
+): string {
+  if (!situation.contextEmpty || !situation.dependsOnEarlier) return response;
+  const note = situation.hadEarlierThread ? EXPIRED_CHAT_NOTE : NO_EARLIER_CHAT_NOTE;
+  if (response.includes(note)) return response;
+  return `${response}\n\n${note}`;
 }
 
 /**
@@ -204,10 +234,13 @@ function storedDoc(
   userId: string,
   conversationId: string | undefined,
   current: SessionDoc | undefined,
-  patch: Partial<Pick<SessionDoc, "turns" | "pendingClarification" | "lastCapture" | "threadSummary">> & {
+  patch: Partial<
+    Pick<SessionDoc, "turns" | "pendingClarification" | "lastCapture" | "threadSummary" | "openIdea">
+  > & {
     activeReferences?: string[];
     clearPending?: boolean;
     clearCapture?: boolean;
+    clearOpenIdea?: boolean;
   }
 ): SessionDoc {
   return withSessionTtl({
@@ -229,6 +262,11 @@ function storedDoc(
       patch.threadSummary !== undefined ? patch.threadSummary : current?.threadSummary,
     activeReferences:
       patch.activeReferences !== undefined ? patch.activeReferences : current?.activeReferences,
+    openIdea: patch.clearOpenIdea
+      ? undefined
+      : patch.openIdea !== undefined
+        ? patch.openIdea
+        : current?.openIdea,
   });
 }
 
@@ -426,4 +464,54 @@ export async function setPendingClarification(
     );
   await write(conversationId);
   if (conversationId !== OPEN_QUESTION_SCOPE) await write(OPEN_QUESTION_SCOPE);
+}
+
+export async function getOpenIdea(
+  userId: string,
+  conversationId?: string
+): Promise<OpenIdea | undefined> {
+  return (await readSession(userId, conversationId))?.openIdea;
+}
+
+export async function setOpenIdea(
+  userId: string,
+  conversationId: string | undefined,
+  openIdea?: OpenIdea
+): Promise<void> {
+  await replaceSession(userId, conversationId, (current) =>
+    storedDoc(userId, conversationId, current, {
+      openIdea,
+      clearOpenIdea: openIdea === undefined,
+    })
+  );
+}
+
+/** Outlives the 24-hour turn window so a later message can tell expiry from a first chat. */
+const THREAD_ACTIVITY_SCOPE = "thread-activity";
+const THREAD_ACTIVITY_TTL_SECONDS = 30 * 24 * 3600;
+
+export async function hadEarlierThread(userId: string): Promise<boolean> {
+  try {
+    const { resource } = await sessions()
+      .item(sessionId(userId, THREAD_ACTIVITY_SCOPE), userId)
+      .read<SessionDoc>();
+    return Boolean(resource?.lastActivityAt);
+  } catch {
+    return false;
+  }
+}
+
+export async function markThreadActivity(userId: string): Promise<void> {
+  try {
+    await sessions().items.upsert({
+      id: sessionId(userId, THREAD_ACTIVITY_SCOPE),
+      userId,
+      conversationId: THREAD_ACTIVITY_SCOPE,
+      turns: [],
+      lastActivityAt: new Date().toISOString(),
+      ttl: THREAD_ACTIVITY_TTL_SECONDS,
+    });
+  } catch (err) {
+    console.error("[session] thread activity failed:", err);
+  }
 }

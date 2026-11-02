@@ -14,12 +14,52 @@ import {
   turnBody,
   withSessionTtl,
   isUndoCommand,
+  messageDependsOnEarlierChat,
+  withExpiredChatNote,
+  EXPIRED_CHAT_NOTE,
+  NO_EARLIER_CHAT_NOTE,
   type SessionTurn,
 } from "../src/services/session";
 
 function turn(role: "user" | "assistant", text: string, extra: Partial<SessionTurn> = {}): SessionTurn {
   return { role, text, at: "2026-10-02T15:00:00.000Z", ...extra };
 }
+
+describe("earlier chat note", () => {
+  const idea =
+    "We would like to further establish and grow the business in Texas for APEX. We need office space that has storage.";
+
+  it("does not treat a new idea as a reference to an expired chat", () => {
+    assert.equal(messageDependsOnEarlierChat(idea), false);
+    const noted = withExpiredChatNote("Should I look statewide?", {
+      contextEmpty: true,
+      dependsOnEarlier: messageDependsOnEarlierChat(idea),
+      hadEarlierThread: true,
+    });
+    assert.equal(noted, "Should I look statewide?");
+  });
+
+  it("names expiry only when a previous thread existed", () => {
+    const followUp = "follow up on that idea";
+    assert.equal(messageDependsOnEarlierChat(followUp), true);
+    assert.match(
+      withExpiredChatNote("Which idea?", {
+        contextEmpty: true,
+        dependsOnEarlier: true,
+        hadEarlierThread: true,
+      }),
+      new RegExp(EXPIRED_CHAT_NOTE)
+    );
+    assert.match(
+      withExpiredChatNote("Which idea?", {
+        contextEmpty: true,
+        dependsOnEarlier: true,
+        hadEarlierThread: false,
+      }),
+      new RegExp(NO_EARLIER_CHAT_NOTE)
+    );
+  });
+});
 
 describe("undo command", () => {
   it("matches explicit undo phrasing only", () => {

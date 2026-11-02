@@ -55,6 +55,23 @@ export function setSaveNoteForTests(
   saveNoteForTests = fn;
 }
 
+let appendToNoteForTests:
+  | ((userId: string, id: string, addition: string) => Promise<boolean>)
+  | undefined;
+
+export function setAppendToNoteForTests(
+  fn: NonNullable<typeof appendToNoteForTests> | undefined
+): void {
+  appendToNoteForTests = fn;
+}
+
+/** Keep the start and the latest additions when a running idea gets long. */
+export function mergeNoteBody(existing: string, addition: string, max = 16_000): string {
+  const combined = `${existing.trim()}\n\n${addition.trim()}`.trim();
+  if (combined.length <= max) return combined;
+  return `${combined.slice(0, 4_000).trim()}\n\n…\n\n${combined.slice(-10_000).trim()}`;
+}
+
 export async function saveNote(
   userId: string,
   n: NoteInput,
@@ -97,6 +114,54 @@ export async function saveNote(
   }
 
   return { id, path };
+}
+
+interface StoredNote extends NoteInput {
+  id: string;
+  userId: string;
+  path: string;
+  createdAt: string;
+  embedding?: number[];
+}
+
+/** Add a later turn to an idea already filed in this conversation. */
+export async function appendToNote(
+  userId: string,
+  id: string,
+  _path: string,
+  addition: string,
+  attribution: Partial<ActivityAttribution> = {}
+): Promise<boolean> {
+  if (appendToNoteForTests) return appendToNoteForTests(userId, id, addition);
+  let resource: StoredNote | undefined;
+  try {
+    const read = await notes().item(id, userId).read<StoredNote>();
+    resource = read.resource;
+  } catch {
+    return false;
+  }
+  if (!resource?.path || !addition.trim()) return false;
+  const body = mergeNoteBody(resource.body ?? "", addition);
+  const note: NoteInput = {
+    kind: resource.kind,
+    title: resource.title,
+    body,
+    tags: resource.tags ?? [],
+    links: resource.links,
+    source: resource.source,
+  };
+  const md = renderMarkdown(note, new Date(resource.createdAt ?? Date.now()));
+  const vector = await embed(`${note.title}\n${body}`, { ...attribution, trigger: "note_index" });
+  await notesBlob().getBlockBlobClient(resource.path).upload(md, Buffer.byteLength(md), {
+    blobHTTPHeaders: { blobContentType: "text/markdown" },
+  });
+  await notes().item(id, userId).replace({
+    ...resource,
+    body,
+    embedding: vector,
+    updatedAt: new Date().toISOString(),
+  });
+  return true;
 }
 
 export async function deleteNote(userId: string, id: string, path: string): Promise<boolean> {

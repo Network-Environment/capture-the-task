@@ -4,7 +4,7 @@ import { after, before, describe, it } from "node:test";
 import type { Container } from "@azure/cosmos";
 import { channelPolicy } from "../src/channels/types";
 import { setInterpretIntentForTests, setRunAgentForTests } from "../src/services/agent";
-import { setSaveNoteForTests } from "../src/services/brain";
+import { setAppendToNoteForTests, setSaveNoteForTests } from "../src/services/brain";
 import { useCosmosContainerForTests } from "../src/services/cosmos";
 import { GRAPH_NOT_SIGNED_IN } from "../src/services/graphTasks";
 import type { IntentPlan } from "../src/services/intent";
@@ -119,6 +119,7 @@ describe("processCapture response contract", () => {
   after(() => {
     useCosmosContainerForTests(undefined);
     setSaveNoteForTests(undefined);
+    setAppendToNoteForTests(undefined);
     setInterpretIntentForTests(undefined);
     setRunAgentForTests(undefined);
   });
@@ -304,5 +305,98 @@ describe("processCapture response contract", () => {
     );
     assert.match(result, /Opened board brd-/);
     assert.doesNotMatch(result, /approve pa-/);
+  });
+
+  it("files a new idea, asks once, then continues without an empty reply", async () => {
+    const userId = "user-idea";
+    const conversationId = "conv-idea";
+    const policy = channelPolicy("imessage", { scope: "private", allowActions: true });
+    const firstText =
+      "We would like to further establish and grow the business in Texas for APEX. We need office space that has storage for trucks.";
+    const saved: string[] = [];
+    const appended: string[] = [];
+    setSaveNoteForTests(async (_user, note) => {
+      saved.push(note.kind);
+      return { id: "idea-apex", path: "user/idea-apex.md" };
+    });
+    setAppendToNoteForTests(async (_user, id) => {
+      appended.push(id);
+      return true;
+    });
+    setInterpretIntentForTests(async () => ({
+      disposition: "clarify",
+      reason: "insufficient_context",
+      confidence: 0.8,
+      assumptions: [],
+      clarification: "Should I run a statewide market scan? Also, what is your deadline and budget?",
+      intents: [
+        {
+          kind: "clarify",
+          standalone: firstText,
+          confidence: 0.8,
+          explicit: false,
+          question: "Should I run a statewide market scan? Also, what is your deadline and budget?",
+        },
+      ],
+    }));
+    const first = await processCapture({
+      userId,
+      channel: "imessage",
+      conversationId,
+      policy,
+      text: firstText,
+    });
+    assert.deepEqual(saved, ["idea"]);
+    assert.match(first.body, /filed this as an idea/i);
+    assert.match(first.body, /statewide market scan/i);
+    assert.doesNotMatch(first.body, /deadline/i);
+    assert.doesNotMatch(first.body, /expired/i);
+
+    let researched = false;
+    setRunAgentForTests(async () => {
+      researched = true;
+      return "Here is the outline, assuming data centers first.";
+    });
+    const secondText = "Focus first on building the business plan and all of the considerations";
+    const second = await processCapture({
+      userId,
+      channel: "imessage",
+      conversationId,
+      policy,
+      text: secondText,
+    });
+    assert.equal(researched, true);
+    assert.deepEqual(appended, ["idea-apex"]);
+    assert.match(second.body, /added that/i);
+    assert.match(second.body, /outline/);
+    assert.doesNotMatch(second.body, /deadline|which sections/i);
+
+    setInterpretIntentForTests(async () => ({
+      disposition: "proceed",
+      reason: "understood",
+      confidence: 0.95,
+      assumptions: [],
+      intents: [
+        {
+          kind: "respond",
+          standalone: "You tell me what areas are in most demand",
+          confidence: 0.95,
+          explicit: true,
+        },
+      ],
+    }));
+    setRunAgentForTests(async () => "");
+    const third = await processCapture({
+      userId,
+      channel: "imessage",
+      conversationId,
+      policy,
+      text: "You tell me what areas are in most demand for generator service around data centers",
+    });
+    assert.match(third.body, /didn.t get that answer out/i);
+    assert.match(third.body, /added that/i);
+    assert.notEqual(third.body.trim(), "TaskBrain");
+    setSaveNoteForTests(async () => ({ id: "note-1", path: "user/note-1.md" }));
+    setAppendToNoteForTests(undefined);
   });
 });

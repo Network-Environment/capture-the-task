@@ -43,6 +43,7 @@ interface RouteSpec {
   deployment: string; // env var NAME holding the deployment
   maxTokens: number;
   temperature: number;
+  reasoningEffort?: "low" | "medium" | "high";
 }
 
 function spec(task: TaskClass): RouteSpec & { model: string } {
@@ -110,6 +111,10 @@ export interface RouteOptions {
   purpose?: "clarification" | "policy" | "mutation" | "recovery" | "verification" | "synthesis";
   allowFallback?: boolean;
   signal?: AbortSignal;
+  /** One recovery already spent on an empty or token-capped completion. */
+  recoveredTruncation?: boolean;
+  /** Raise the route cap for that recovery. */
+  tokenFloor?: number;
 }
 
 /**
@@ -122,6 +127,8 @@ export interface RouteOptions {
 export interface ChatCapabilities {
   completionParam: "max_tokens" | "max_completion_tokens";
   allowTemperature: boolean;
+  /** Unset until a deployment rejects reasoning_effort. */
+  allowReasoningEffort?: boolean;
 }
 
 const capabilities = new Map<string, ChatCapabilities>();
@@ -133,14 +140,37 @@ function capabilitiesFor(model: string): ChatCapabilities {
 export function chatSamplingParams(
   caps: ChatCapabilities,
   maxTokens: number,
-  temperature: number
-): { max_tokens?: number; max_completion_tokens?: number; temperature?: number } {
+  temperature: number,
+  reasoningEffort?: RouteSpec["reasoningEffort"]
+): {
+  max_tokens?: number;
+  max_completion_tokens?: number;
+  temperature?: number;
+  reasoning_effort?: RouteSpec["reasoningEffort"];
+} {
   return {
     ...(caps.completionParam === "max_tokens"
       ? { max_tokens: maxTokens }
       : { max_completion_tokens: maxTokens }),
     ...(caps.allowTemperature ? { temperature } : {}),
+    ...(reasoningEffort && caps.allowReasoningEffort !== false
+      ? { reasoning_effort: reasoningEffort }
+      : {}),
   };
+}
+
+export const COMPLETION_TOKEN_CEILING = 16_000;
+
+/** A tool call is a real completion. Empty text, or a cap hit, is not. */
+export function completionProblem(choice: {
+  finish_reason?: string | null;
+  message?: { content?: string | null; tool_calls?: readonly unknown[] | null };
+} | undefined): "empty" | "length" | undefined {
+  if (choice?.message?.tool_calls?.length) return undefined;
+  const text = choice?.message?.content?.trim() ?? "";
+  if (choice?.finish_reason === "length") return "length";
+  if (!text) return "empty";
+  return undefined;
 }
 
 /** Returns adjusted capabilities when the error is an unsupported-parameter 400. */
@@ -154,6 +184,13 @@ export function capabilitiesFromError(
   }
   if (m.includes("'temperature'") && m.includes("unsupported") && caps.allowTemperature) {
     return { ...caps, allowTemperature: false };
+  }
+  if (
+    m.includes("reasoning_effort") &&
+    (m.includes("unsupported") || m.includes("not supported") || m.includes("unknown")) &&
+    caps.allowReasoningEffort !== false
+  ) {
+    return { ...caps, allowReasoningEffort: false };
   }
   return undefined;
 }
@@ -199,7 +236,12 @@ async function routeOnce(
       res = await modelClient().chat.completions.create(
         {
           ...body,
-          ...chatSamplingParams(caps, s.maxTokens, s.temperature),
+          ...chatSamplingParams(
+            caps,
+            Math.min(COMPLETION_TOKEN_CEILING, Math.max(s.maxTokens, opts.tokenFloor ?? 0)),
+            s.temperature,
+            s.reasoningEffort
+          ),
         },
         { signal }
       );
@@ -231,6 +273,8 @@ async function routeOnce(
   }
   capabilities.set(s.model, caps);
 
+  const choice = res.choices[0];
+  const problem = opts.recoveredTruncation ? undefined : completionProblem(choice);
   const inputTokens = res.usage?.prompt_tokens ?? 0;
   const outputTokens = res.usage?.completion_tokens ?? 0;
   todayTokens += inputTokens + outputTokens;
@@ -251,10 +295,27 @@ async function routeOnce(
       purpose: opts.purpose,
       inputTokens,
       outputTokens,
+      finishReason: choice?.finish_reason ?? "",
+      ...(problem ? { unusable: problem } : {}),
       ...(costUsd != null ? { costUsd: Number(costUsd.toFixed(6)) } : {}),
     },
   });
   if (overCeiling) throw new Error(`run cost ceiling exceeded ($${usage?.usd.toFixed(3)})`);
+  if (!problem) return res;
+  const fallback = (compatibleFallback(task, routesConfig as { fallbacks?: Record<string, string> }) ??
+    task) as TaskClass;
+  try {
+    const recovered = await route(fallback, messages, {
+      ...opts,
+      recoveredTruncation: true,
+      tokenFloor: Math.min(COMPLETION_TOKEN_CEILING, Math.max(s.maxTokens, opts.tokenFloor ?? 0) * 2),
+    });
+    const recoveredText = recovered.choices[0]?.message?.content?.trim().length ?? 0;
+    const originalText = choice?.message?.content?.trim().length ?? 0;
+    if (!completionProblem(recovered.choices[0]) || recoveredText > originalText) return recovered;
+  } catch (err) {
+    console.error("[router] truncated completion recovery failed:", err);
+  }
   return res;
 }
 

@@ -189,7 +189,10 @@ describe("risk policy", () => {
     const scheduled = await scheduledReadToolEnvelope();
     assert.ok(scheduled.includes("explain_taskbrain"));
     assert.equal(scheduled.includes("note_unmet_request"), false);
-    assert.ok((await interactiveReadToolEnvelope()).includes("note_unmet_request"));
+    const interactive = await interactiveReadToolEnvelope();
+    assert.ok(interactive.includes("note_unmet_request"));
+    assert.ok(interactive.includes("web_search"));
+    assert.equal(scheduled.includes("web_search"), false);
   });
 
   it("enforces scheduled tool envelopes at dispatch", async () => {

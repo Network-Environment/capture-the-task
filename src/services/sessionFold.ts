@@ -11,6 +11,7 @@ import {
   appendTurn,
   commitThreadSummary,
   fallbackSummary,
+  markThreadActivity,
   type AppendResult,
   type SessionTurn,
 } from "./session";
@@ -85,6 +86,7 @@ export async function recordConversationTurn(input: {
   references?: string[];
   body?: string;
 }): Promise<void> {
+  if (input.role === "assistant" && !input.text.trim() && !(input.body ?? "").trim()) return;
   try {
     const result = await appendTurn(input.userId, input.role, input.text, input.conversationId, {
       scope: input.scope,
@@ -95,6 +97,7 @@ export async function recordConversationTurn(input: {
       body: input.body,
     });
     await foldIfNeeded(input.userId, result);
+    if (input.scope === "private") await markThreadActivity(input.userId);
   } catch (err) {
     console.error("[session] record failed:", err);
   }

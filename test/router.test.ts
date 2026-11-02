@@ -1,7 +1,13 @@
 import "./setup";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { budgetExceeded, capabilitiesFromError, chatSamplingParams, type ChatCapabilities } from "../src/services/router";
+import {
+  budgetExceeded,
+  capabilitiesFromError,
+  chatSamplingParams,
+  completionProblem,
+  type ChatCapabilities,
+} from "../src/services/router";
 
 const legacy: ChatCapabilities = { completionParam: "max_tokens", allowTemperature: true };
 
@@ -37,6 +43,27 @@ test("a temperature rejection drops temperature but keeps the token param", () =
 
 test("unrelated errors do not change capabilities", () => {
   assert.equal(capabilitiesFromError(legacy, "429 rate limit exceeded"), undefined);
+});
+
+test("reasoning effort is sent until a deployment rejects it", () => {
+  const params = chatSamplingParams(legacy, 8000, 0, "low");
+  assert.equal(params.reasoning_effort, "low");
+  const rejected = capabilitiesFromError(
+    legacy,
+    "400 Unsupported parameter: 'reasoning_effort' is not supported with this model."
+  );
+  assert.equal(rejected?.allowReasoningEffort, false);
+  assert.equal(chatSamplingParams(rejected!, 8000, 0, "low").reasoning_effort, undefined);
+});
+
+test("an empty completion is unusable and a tool call is not", () => {
+  assert.equal(completionProblem({ finish_reason: "stop", message: { content: "" } }), "empty");
+  assert.equal(completionProblem({ finish_reason: "length", message: { content: "" } }), "length");
+  assert.equal(
+    completionProblem({ finish_reason: "tool_calls", message: { content: "", tool_calls: [{}] } }),
+    undefined
+  );
+  assert.equal(completionProblem({ finish_reason: "stop", message: { content: "Filed." } }), undefined);
 });
 
 test("a corrupt token counter does not trip the daily budget", () => {
