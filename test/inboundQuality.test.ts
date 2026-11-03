@@ -89,6 +89,61 @@ describe("inbound message quality", () => {
     assert.equal(result.reason, "repeated_unresolved");
   });
 
+  it("accepts the same words again once they were answered or the attempt failed", () => {
+    const text = "We would like to grow the business in Texas for APEX.";
+    const recent: SessionTurn[] = [
+      { role: "user", text, at: "2026-11-02T19:55:36Z", intent: "quality_clarify" },
+      {
+        role: "assistant",
+        text: "I received that again, but I still can’t tell what outcome you want.",
+        at: "2026-11-02T19:55:36Z",
+        intent: "quality_clarify",
+        outcome: "waiting_for_clarification",
+      },
+      { role: "user", text, at: "2026-11-02T19:55:40Z", intent: "read" },
+      {
+        role: "assistant",
+        text: "I understand: you want a business plan for APEX in Texas.",
+        at: "2026-11-02T19:56:23Z",
+        intent: "read",
+        outcome: "answered",
+      },
+    ];
+    assert.equal(assessInboundQuality(text, recent).disposition, "proceed");
+
+    const failed: SessionTurn[] = [
+      { role: "user", text, at: "2026-11-02T19:55:36Z" },
+      {
+        role: "assistant",
+        text: "What should I do with that?",
+        at: "2026-11-02T19:55:37Z",
+        outcome: "waiting_for_clarification",
+      },
+      {
+        role: "assistant",
+        text: "That attempt failed before the reply went out. Send it again and I will run it.",
+        at: "2026-11-02T19:56:24Z",
+        intent: "request_failed",
+        outcome: "failed",
+      },
+    ];
+    assert.equal(assessInboundQuality(text, failed).disposition, "proceed");
+  });
+
+  it("does not trap someone who already got the repeat warning", () => {
+    const recent: SessionTurn[] = [
+      { role: "user", text: "budget forecast", at: "2026-09-12T12:00:00Z" },
+      {
+        role: "assistant",
+        text: "I received that again, but I still can’t tell what outcome you want.",
+        at: "2026-09-12T12:00:01Z",
+        intent: "quality_clarify",
+        outcome: "waiting_for_clarification",
+      },
+    ];
+    assert.equal(assessInboundQuality("budget forecast", recent).disposition, "proceed");
+  });
+
   it("allows short answers while a clarification is pending", () => {
     assert.equal(assessInboundQuality("idea", [], true).disposition, "proceed");
     assert.equal(assessInboundQuality("yes", [], true).disposition, "proceed");

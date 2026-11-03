@@ -25,6 +25,7 @@ import {
 } from "./requestQueue";
 import { openIncident } from "./recoveryIncidents";
 import { RunFencedError, isUnknownMutation, sealPendingMutations, type MutationLedger } from "./runFence";
+import { recordConversationTurn } from "./sessionFold";
 
 const POLL_MS = Number(process.env.REQUEST_POLL_MS ?? 5_000);
 /**
@@ -201,10 +202,12 @@ async function processRequest(
       });
     };
     let out = await withDeadline(run(current), REQUEST_DEADLINE_MS, request.id, controller);
-    const latest = await getAgentRequest(request.id);
+    let latest = await getAgentRequest(request.id);
     if (latest?.activeRunId && latest.activeRunId !== current.activeRunId) throw new RunFencedError(current.activeRunId ?? request.id);
+    let reran = false;
     if (latest && !latest.checkpoint?.mutations.length && latest.text !== current.text) {
       out = await withDeadline(run(latest), REQUEST_DEADLINE_MS, request.id, controller);
+      reran = true;
     } else if (latest && latest.text !== current.text) {
       out = {
         ...out,
@@ -212,7 +215,9 @@ async function processRequest(
       };
     } else if (latest && shouldRerunAfterDetail(out.title, current.text, latest.text)) {
       out = await withDeadline(run(latest), REQUEST_DEADLINE_MS, request.id, controller);
+      reran = true;
     }
+    if (reran) latest = (await getAgentRequest(request.id)) ?? latest;
     controller.abort();
     await completeAgentRequest(latest ?? current, out);
     void logActivity({
@@ -250,6 +255,7 @@ async function processRequest(
     } else {
       retrying = await retryAgentRequest(failed, message);
     }
+    if (!retrying) await rememberFailedAttempt(request);
     console.error(
       `[request-worker] ${request.id} ${retrying ? "retrying" : "failed"}:`,
       err
@@ -267,6 +273,23 @@ async function processRequest(
       },
     });
   }
+}
+
+const FAILED_ATTEMPT_NOTE =
+  "That attempt failed before the reply went out. Send it again and I will run it.";
+
+async function rememberFailedAttempt(request: QueuedAgentRequest): Promise<void> {
+  await recordConversationTurn({
+    userId: request.userId,
+    role: "assistant",
+    text: FAILED_ATTEMPT_NOTE,
+    body: FAILED_ATTEMPT_NOTE,
+    conversationId: request.conversationId,
+    scope: request.policy?.scope === "group" ? "group" : "private",
+    channel: request.channel,
+    intent: "request_failed",
+    outcome: "failed",
+  });
 }
 
 async function processTeamsRequest(

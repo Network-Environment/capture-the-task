@@ -111,21 +111,35 @@ function refusal(text: string): InboundQualityResult | undefined {
   return undefined;
 }
 
+function isClarificationWait(turn: SessionTurn): boolean {
+  return (
+    turn.role === "assistant" &&
+    (turn.outcome === "waiting_for_clarification" || turn.intent === "quality_clarify")
+  );
+}
+
+/**
+ * The same words are unresolved only when the latest copy is still waiting
+ * on a real question. A later answer, a failed attempt, or a second copy
+ * after the repeat warning is a new try, not a refusal to answer.
+ */
 function repeatsUnresolved(text: string, recent: SessionTurn[]): boolean {
   const target = normalized(text);
-  return recent.some(
-    (turn, index) =>
-      turn.role === "user" &&
-      normalized(turn.text) === target &&
-      recent
-        .slice(index + 1)
-        .some(
-          (later) =>
-            later.role === "assistant" &&
-            (later.outcome === "waiting_for_clarification" ||
-              later.intent === "quality_clarify")
-        )
+  let last = -1;
+  for (let index = 0; index < recent.length; index++) {
+    if (recent[index].role === "user" && normalized(recent[index].text) === target) last = index;
+  }
+  if (last < 0) return false;
+  const replies = recent.slice(last + 1).filter((turn) => turn.role === "assistant");
+  if (!replies.length) return false;
+  const answered = replies.some(
+    (turn) => !isClarificationWait(turn) && turn.outcome !== "failed"
   );
+  if (answered) return false;
+  const latest = replies[replies.length - 1];
+  if (!isClarificationWait(latest) || latest.outcome === "failed") return false;
+  const saidAgain = `${latest.body ?? ""}\n${latest.text}`;
+  return !/i received that again/i.test(saidAgain);
 }
 
 export function assessInboundQuality(

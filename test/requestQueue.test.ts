@@ -2,6 +2,7 @@ import "./setup";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  isPreconditionConflict,
   queuedRequestIsStale,
   requestId,
   retryDelayMs,
@@ -58,6 +59,18 @@ describe("durable request queue", () => {
       ),
       false
     );
+  });
+
+  it("recognizes a Cosmos etag miss from either field", () => {
+    assert.equal(isPreconditionConflict({ code: 412 }), true);
+    assert.equal(isPreconditionConflict({ statusCode: 412 }), true);
+    assert.equal(
+      isPreconditionConflict({
+        message: "Operation cannot be performed because one of the specified precondition is not met.",
+      }),
+      true
+    );
+    assert.equal(isPreconditionConflict({ code: 409 }), false);
   });
 
   it("backs retries off and caps the delay", () => {

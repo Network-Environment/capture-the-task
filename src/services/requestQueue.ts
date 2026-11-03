@@ -67,6 +67,14 @@ export function retryDelayMs(attempts: number): number {
   return Math.min(5 * 60_000, 30_000 * 2 ** Math.max(0, attempts - 1));
 }
 
+/** Cosmos reports an etag miss as 412, on code or statusCode, with this message. */
+export function isPreconditionConflict(err: unknown): boolean {
+  const candidate = err as { code?: number | string; statusCode?: number; message?: string };
+  const code = Number(candidate.code ?? candidate.statusCode);
+  if (code === 412) return true;
+  return /precondition is not met/i.test(candidate.message ?? "");
+}
+
 export function quarantineEnforced(): boolean {
   return envFlag("RECOVERY_ENFORCE_QUARANTINE", false);
 }
@@ -125,7 +133,7 @@ export async function attachToInFlight(
       disposition: "attached",
     };
   } catch (err) {
-    if ((err as { code?: number }).code !== 412) throw err;
+    if (!isPreconditionConflict(err)) throw err;
     return undefined;
   }
 }
@@ -220,7 +228,7 @@ export async function claimNextAgentRequest(
         });
       return (resource as unknown as QueuedAgentRequest | undefined) ?? claimed;
     } catch (err) {
-      if ((err as { code?: number }).code !== 412) throw err;
+      if (!isPreconditionConflict(err)) throw err;
     }
   }
   return undefined;
@@ -254,7 +262,7 @@ export async function saveRequestCheckpoint(
       await replaceRequest(current, { checkpoint });
       return;
     } catch (err) {
-      if ((err as { code?: number }).code !== 412) throw err;
+      if (!isPreconditionConflict(err)) throw err;
     }
   }
   throw new Error(`could not checkpoint request ${id}`);
@@ -264,7 +272,7 @@ export async function completeAgentRequest(
   request: QueuedAgentRequest,
   result: Outbound
 ): Promise<void> {
-  await replaceRequest(request, {
+  const patch: Partial<QueuedAgentRequest> = {
     status: "completed",
     finishedAt: new Date().toISOString(),
     leaseUntil: undefined,
@@ -275,7 +283,19 @@ export async function completeAgentRequest(
     deliveryStatus: "pending",
     nextDeliveryAt: new Date().toISOString(),
     ttl: 604800,
-  });
+  };
+  let current = request;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await replaceRequest(current, patch);
+      return;
+    } catch (err) {
+      if (!isPreconditionConflict(err) || attempt === 2) throw err;
+      const fresh = await getAgentRequest(request.id);
+      if (!fresh) throw err;
+      current = fresh;
+    }
+  }
 }
 
 export async function nextUndeliveredResult(
@@ -326,7 +346,7 @@ export async function nextUndeliveredResult(
         });
       return (resource as unknown as QueuedAgentRequest | undefined) ?? claimed;
     } catch (err) {
-      if ((err as { code?: number }).code !== 412) throw err;
+      if (!isPreconditionConflict(err)) throw err;
     }
   }
   return undefined;
