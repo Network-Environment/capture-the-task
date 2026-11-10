@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import {
   FALLBACK_ALTERNATIVE,
   GROUP_CHAT_GAP,
+  SEARCH_CAP_CONTINUATION,
   UNMET_TITLE,
   capabilityGapOutbound,
   GRAPH_SIGN_IN_REQUIRED,
@@ -46,6 +47,29 @@ describe("capability gaps", () => {
       assert.equal(seen[0].request, "Move the Friday meeting with Joe");
       assert.equal(seen[0].channel, "teams");
       assert.doesNotMatch(result, /note_unmet_request|search_my_calendar/);
+    } finally {
+      stop();
+    }
+  });
+
+  it("does not record a used-up web search as a missing capability", async () => {
+    resetCapabilityGapNotes();
+    const seen: Record<string, unknown>[] = [];
+    const stop = subscribeCapabilityGaps((detail) => seen.push(detail));
+    try {
+      const ctx = {
+        userId: "u1",
+        requestText: "What do Louisiana and Alabama require for nursing home generators?",
+        traceId: "web-cap-1",
+      };
+      const result = await dispatch(ctx, "note_unmet_request", {
+        capability: "research recent state regulations",
+        limit: "My public web search quota for this conversation has been reached.",
+        alternative: "outline likely rules from known precedents",
+      });
+      assert.equal(result, SEARCH_CAP_CONTINUATION);
+      assert.equal(ctx.unmetReply, undefined);
+      assert.equal(seen.length, 0);
     } finally {
       stop();
     }

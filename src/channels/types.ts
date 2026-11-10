@@ -93,12 +93,45 @@ export function phoneForUser(userId: string): string | undefined {
   return Object.entries(cfg.imessage.identities).find(([, u]) => u === userId)?.[0];
 }
 
-/** Strip markdown-ish formatting for channels that render plain text. */
+/**
+ * Plain text for SMS/iMessage: no emphasis, code, or link syntax.
+ * Tables become one line per row, headers become plain lines, and bullets
+ * become "•" so the structure survives without markdown.
+ */
 export function toPlainText(title: string, body: string, tags: string[]): string {
-  const clean = body
-    .replace(/\*\*(.+?)\*\*/g, "$1")
+  return renderChatText(title, body, tags, { keepEmphasis: false });
+}
+
+/**
+ * Teams text messages render basic markdown (bold, links), so keep those.
+ * Tables and headers still do not render, so flatten them the same way.
+ */
+export function toTeamsText(title: string, body: string, tags: string[]): string {
+  return renderChatText(title, body, tags, { keepEmphasis: true });
+}
+
+function renderChatText(
+  title: string,
+  body: string,
+  tags: string[],
+  options: { keepEmphasis: boolean }
+): string {
+  let clean = body
+    .replace(/^\s*\|?\s*:?-{3,}[-:|\s]*$/gm, "") // table separator rows and rules
+    .replace(/^\s*\|(.+)\|\s*$/gm, (_m, row: string) =>
+      row
+        .split("|")
+        .map((cell) => cell.trim())
+        .filter(Boolean)
+        .join(" — ")
+    )
+    .replace(/^\s*#{1,6}\s+(.+)$/gm, "$1") // markdown headers
+    .replace(/^(\s*)[-*]\s+/gm, "$1• ") // bullets
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1 ($2)") // links keep their URL
+    .replace(/\[\[(.+?)\]\]/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
-    .replace(/\[\[(.+?)\]\]/g, "$1");
+    .replace(/\n{3,}/g, "\n\n");
+  if (!options.keepEmphasis) clean = clean.replace(/\*\*(.+?)\*\*/g, "$1");
   const tagLine = tags.length ? `\n${tags.map((t) => `#${t}`).join(" ")}` : "";
   return `${title}\n${clean}${tagLine}`.trim();
 }

@@ -67,6 +67,21 @@ export function subscribeCapabilityGaps(
   return () => gapListeners.delete(listener);
 }
 
+/**
+ * A used-up web search is a per-message cap, not a missing product capability.
+ * Recording it would title the reply "Not something I can do" and teach the
+ * next message to skip the web.
+ */
+export function isPerMessageSearchCap(gap: CapabilityGapInput): boolean {
+  const text = `${gap.capability}\n${gap.limit}\n${gap.alternative ?? ""}`;
+  return /search (quota|cap)|quota for this (conversation|turn|message)|cap (for|on) this (turn|message)|searches? (already )?used/i.test(
+    text
+  );
+}
+
+export const SEARCH_CAP_CONTINUATION =
+  "This message already used its web searches. That resets on the next message. Answer from the hits you have. Say what those hits confirm and what you could not confirm. Do not invent statute text, deadlines, or prices, and do not record this as something you cannot do.";
+
 export function composeUnmetReply(gap: CapabilityGapInput): string {
   const capability = gap.capability.trim().replace(/^to\s+/i, "").replace(/\.+$/g, "");
   const limitRaw = gap.limit.trim();

@@ -45,10 +45,15 @@ describe("web research guards", () => {
     assert.equal(clampSearchCount(2), 5);
   });
 
-  it("enforces per-turn search and page-read caps", () => {
+  it("allows three searches per message, then says the cap resets", () => {
     const ctx = { research: { searches: 0, pageReads: 0 } };
     assert.equal(consumeSearchBudget(ctx), undefined);
-    assert.match(consumeSearchBudget(ctx) ?? "", /cap/);
+    assert.equal(consumeSearchBudget(ctx), undefined);
+    assert.equal(consumeSearchBudget(ctx), undefined);
+    const capped = consumeSearchBudget(ctx) ?? "";
+    assert.match(capped, /cap/);
+    assert.match(capped, /next message/);
+    assert.match(capped, /could not confirm/);
     assert.equal(consumePageReadBudget(ctx), undefined);
     consumePageReadBudget(ctx);
     consumePageReadBudget(ctx);

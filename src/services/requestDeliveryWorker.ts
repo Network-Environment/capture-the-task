@@ -7,7 +7,7 @@ import { recordAckTurn } from "../channels/acceptInbound";
 import { missedAckMessage } from "../channels/acknowledge";
 import { deliver } from "../channels/deliver";
 import { outboundCard } from "../channels/teamsCard";
-import { toPlainText } from "../channels/types";
+import { toPlainText, toTeamsText } from "../channels/types";
 import {
   claimDuePendingAck,
   completeAckReceipt,
@@ -94,7 +94,7 @@ async function deliverResult(
           if (/\bpa-[a-z0-9]+\b/i.test(result.body)) {
             await ctx.sendActivity({ attachments: [outboundCard(result)] });
           } else {
-            await ctx.sendActivity(toPlainText(result.title, result.body, result.tags));
+            await ctx.sendActivity(toTeamsText(result.title, result.body, result.tags));
           }
         }
       );

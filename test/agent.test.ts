@@ -1,9 +1,23 @@
 import "./setup";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeTriageResult } from "../src/services/agent";
+import { channelStyleBlock, normalizeTriageResult } from "../src/services/agent";
 import { WORKING_RESPONSE } from "../src/channels/types";
 import { loadConfig } from "../src/config";
+
+test("reply style is channel-specific and offers the email follow-up", () => {
+  const sms = channelStyleBlock("imessage");
+  const teams = channelStyleBlock("teams");
+  assert.match(sms, /plain-text/);
+  assert.match(sms, /no markdown/);
+  assert.match(teams, /Teams chat/);
+  assert.match(teams, /•/);
+  for (const block of [sms, teams]) {
+    assert.match(block, /email me this/);
+    assert.match(block, /Never invent one/);
+  }
+  assert.equal(channelStyleBlock(undefined), "");
+});
 
 test("casual conversation is a non-persistent triage kind", () => {
   assert.deepEqual(

@@ -41,7 +41,9 @@ import {
   GRAPH_SIGN_IN_REQUIRED,
   GRAPH_WRITES_OFF,
   MAIL_UNAVAILABLE,
+  SEARCH_CAP_CONTINUATION,
   isGraphSignInFailure,
+  isPerMessageSearchCap,
   classifyCapabilityBoundary,
   recordCapabilityGap,
 } from "../services/capabilityGap";
@@ -329,7 +331,7 @@ const nativeDefs: ChatCompletionTool[] = [
         "capability is a short verb phrase such as \"move the Friday meeting\". " +
         "limit is one sentence the user can read, such as \"I can only read your calendar.\" " +
         "alternative is a verb phrase for something the available tools can actually do. " +
-        "Do not call this for a missing detail (use ask_user), a policy refusal, or a question about what TaskBrain can do.",
+        "Do not call this for a missing detail (use ask_user), a policy refusal, a question about what TaskBrain can do, or a web search cap. A search cap resets on the next message; answer from the hits you have.",
       parameters: {
         type: "object",
         properties: {
@@ -902,7 +904,9 @@ const nativeDefs: ChatCompletionTool[] = [
       name: "web_search",
       description:
         "Search the public web through Tavily. Returns titles, URLs, and short snippets only. " +
-        "Use this first for 'what's the latest on X'. Do not use for Smartsheet, org directory, or meetings — those have their own tools. " +
+        "Use this first for 'what's the latest on X'. Up to 3 searches per message; the cap resets on the next message. " +
+        "If a later search says the cap is used, answer from the hits you have. " +
+        "Do not use for Smartsheet, org directory, or meetings — those have their own tools. " +
         "To read a named public URL, call read_public_page. Do not claim a browser.",
       parameters: {
         type: "object",
@@ -1642,6 +1646,7 @@ export async function dispatch(
         if (!capability || !limit) {
           return "Say what they wanted and the limit, as short phrases, then call note_unmet_request again.";
         }
+        if (isPerMessageSearchCap({ capability, limit, alternative })) return SEARCH_CAP_CONTINUATION;
         return recordCapabilityGap(ctx, { capability, limit, alternative });
       }
       case "ask_user": {

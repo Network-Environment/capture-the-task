@@ -567,6 +567,34 @@ export function setRunAgentForTests(
   runAgentForTests = fn;
 }
 
+/**
+ * Reply shape for the channel the answer will land in. Teams shows a short
+ * formatted chat message; iMessage/SMS shows plain text only. The adapter
+ * strips unsupported markup, so the model should not depend on it.
+ */
+export function channelStyleBlock(channel: string | undefined): string {
+  const emailOffer =
+    'If the full answer is longer than this, end with: Reply "email me this" for the full version. ' +
+    'When they reply that, send the previous answer with send_mail to their own address. ' +
+    "If you do not have their address, ask once for it. Never invent one.";
+  if (channel === "imessage") {
+    return (
+      "\n\nReply style (plain-text text message): no markdown, tables, headers, or links. " +
+      "Keep it to about 6 short lines. Lead with the answer. " +
+      emailOffer
+    );
+  }
+  if (channel === "teams") {
+    return (
+      "\n\nReply style (Teams chat): short paragraphs and \"•\" bullets. " +
+      "No markdown tables, no # headers, no code fences. Keep it to about 15 short lines. " +
+      "Lead with the answer; put dates and owners inline. " +
+      emailOffer
+    );
+  }
+  return "";
+}
+
 export async function runAgent(
   ctx: ToolContext,
   userMessage: string,
@@ -625,7 +653,8 @@ export async function runAgent(
     : [
         {
           role: "system",
-          content: profile.persona + skills + lessons + catalog + orgBlock + checkInBlock,
+          content:
+            profile.persona + skills + lessons + catalog + orgBlock + checkInBlock + channelStyleBlock(ctx.channel),
         },
         ...priorTurns,
         { role: "user", content: userMessage },

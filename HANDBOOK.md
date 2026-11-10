@@ -768,7 +768,7 @@ a specialist profile access via a `server__*` glob in `config/agents.json`.
 
 **Give the agent public-web research:** native `web_search` and `read_public_page`
 both call Tavily (`WEB_SEARCH_API_KEY`). Search first; read a URL only when the user
-named it or a hit must be opened. Caps: 1 search and 3 page reads per turn.
+named it or a hit must be opened. Caps: 3 searches and 3 page reads per message. The cap resets on the next message. A used-up search is not a capability gap.
 SSRF blocks `file:`, localhost, and private IPs before the URL is sent.
 Page text is truncated and is never written to Cosmos/Blob unless the user asks to
 `save_note`. There is no browser, click, type, or login. JavaScript-only pages

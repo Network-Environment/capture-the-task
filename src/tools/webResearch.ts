@@ -3,7 +3,7 @@
  * truncation, and per-turn caps. Page HTML is never persisted from here.
  */
 
-export const MAX_SEARCHES_PER_TURN = 1;
+export const MAX_SEARCHES_PER_TURN = 3;
 export const MAX_PAGE_READS_PER_TURN = 3;
 export const SEARCH_TIMEOUT_MS = 8_000;
 export const NAV_TIMEOUT_MS = 20_000;
@@ -30,7 +30,7 @@ export function ensureResearchBudget(ctx: { research?: ResearchBudget }): Resear
 export function consumeSearchBudget(ctx: { research?: ResearchBudget }): string | undefined {
   const b = ensureResearchBudget(ctx);
   if (b.searches >= MAX_SEARCHES_PER_TURN) {
-    return "Search cap for this turn already used. Work from the hits you have, or open a URL the user named.";
+    return "Search cap for this message is used. It resets on the next message. Answer from the hits you already have, and say what you could not confirm. Do not record this as something you cannot do.";
   }
   b.searches += 1;
   return undefined;
@@ -39,7 +39,7 @@ export function consumeSearchBudget(ctx: { research?: ResearchBudget }): string 
 export function consumePageReadBudget(ctx: { research?: ResearchBudget }): string | undefined {
   const b = ensureResearchBudget(ctx);
   if (b.pageReads >= MAX_PAGE_READS_PER_TURN) {
-    return "Public page cap for this turn already used. Summarize from what you have.";
+    return "Public page cap for this message is used. It resets on the next message. Summarize from the pages you already opened, and say what you could not confirm.";
   }
   b.pageReads += 1;
   return undefined;

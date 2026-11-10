@@ -1,7 +1,7 @@
 import "./setup";
 import { test } from "node:test";
 import assert from "node:assert";
-import { resolveIMessageUser, phoneForUser, toPlainText } from "../src/channels/types";
+import { resolveIMessageUser, phoneForUser, toPlainText, toTeamsText } from "../src/channels/types";
 import {
   botWasMentioned,
   isPersonalTeamsConversation,
@@ -25,6 +25,32 @@ test("plain-text rendering strips markdown", () => {
   assert.ok(!out.includes("**"));
   assert.ok(!out.includes("`"));
   assert.ok(out.endsWith("#pmo"));
+});
+
+test("plain text flattens tables, headers, bullets, and links for SMS", () => {
+  const body = [
+    "## Open risks",
+    "| Risk | Owner | Due |",
+    "|---|---|---|",
+    "| Generator permit | Val | Fri |",
+    "- **Overdue:** warranty review",
+    "See [the sheet](https://example.com/s).",
+  ].join("\n");
+  const out = toPlainText("Digest", body, []);
+  assert.ok(!out.includes("##"));
+  assert.ok(!out.includes("|"));
+  assert.ok(!out.includes("**"));
+  assert.match(out, /Open risks/);
+  assert.match(out, /Generator permit — Val — Fri/);
+  assert.match(out, /• Overdue: warranty review/);
+  assert.match(out, /the sheet \(https:\/\/example\.com\/s\)/);
+});
+
+test("Teams text keeps bold and links but still flattens tables", () => {
+  const out = toTeamsText("Digest", "**Overdue:** warranty\n| A | B |\n|---|---|\n| 1 | 2 |", []);
+  assert.match(out, /\*\*Overdue:\*\* warranty/);
+  assert.ok(!out.includes("|---"));
+  assert.match(out, /1 — 2/);
 });
 
 test("Teams @mention markup is stripped; other people are left intact", () => {
